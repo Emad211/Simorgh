@@ -62,6 +62,35 @@ class AndroidActionContractTest {
         assertEquals(setOf(SelectorField.VIEW_ID), selector.requiredFields)
     }
 
+    @Test
+    fun `strict command validation returns normalized operation and predicate selectors`() {
+        val rawSelector = AndroidNodeSelector(
+            packageName = PACKAGE_NAME,
+            viewId = VIEW_ID,
+            text = TextCriterion("ادامه"),
+        )
+        val normalized = AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 10_000,
+                precondition = ObservationPrecondition(),
+                operation = ClickNodeOperation(selectors = listOf(rawSelector)),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(NodeExistsPredicate(rawSelector)),
+                ),
+            ),
+        )
+
+        val operationSelector = (normalized.operation as ClickNodeOperation).selectors.single()
+        val predicateSelector = (
+            normalized.verification.predicates.single() as NodeExistsPredicate
+            ).selector
+        assertEquals(setOf(SelectorField.VIEW_ID), operationSelector.requiredFields)
+        assertEquals(setOf(SelectorField.VIEW_ID), predicateSelector.requiredFields)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `command lifetime cannot exceed two minutes`() {
         AndroidActionContractValidator.validate(
