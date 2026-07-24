@@ -16,4 +16,5 @@ data class SimorghUiState(
     val accessibilityServiceConnected: Boolean = false,
     val accessibilitySnapshot: AccessibilitySnapshot? = null,
     val accessibilityError: String? = null,
+    val backgroundLaunchAccessGranted: Boolean = false,
 )
