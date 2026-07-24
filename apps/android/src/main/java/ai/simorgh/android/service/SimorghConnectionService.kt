@@ -31,9 +31,13 @@ import ai.simorgh.android.protocol.ActionResultAckStatus
 import ai.simorgh.android.protocol.DeviceActionCancelPayload
 import ai.simorgh.android.protocol.DeviceActionResultAckPayload
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
+import ai.simorgh.android.protocol.DeviceObservationRefreshPayload
 import ai.simorgh.android.protocol.DeviceProtocol
+import ai.simorgh.android.protocol.ObservationRefreshAckStatus
+import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import ai.simorgh.android.protocol.ProtocolEnvelope
 import ai.simorgh.android.transport.AccessibilityObservationPublisher
+import ai.simorgh.android.transport.AccessibilityRefreshCoordinator
 import ai.simorgh.android.transport.ActionResultPublisher
 import ai.simorgh.android.transport.ConnectionPhase
 import ai.simorgh.android.transport.ConnectionState
@@ -55,6 +59,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     private lateinit var connectionStore: SecureConnectionStore
     private lateinit var connectionClient: CoreWebSocketClient
     private lateinit var observationPublisher: AccessibilityObservationPublisher
+    private lateinit var refreshCoordinator: AccessibilityRefreshCoordinator
     private lateinit var actionResultPublisher: ActionResultPublisher
     private lateinit var actionRouter: AndroidActionRouter
     private lateinit var openAppExecutor: OpenAppActionExecutor
@@ -92,6 +97,11 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             sender = connectionClient::send,
             listener = ::onProtocolEvent,
             acknowledgementListener = AccessibilityAcknowledgementBus::publish,
+        )
+        refreshCoordinator = AccessibilityRefreshCoordinator(
+            publisher = observationPublisher,
+            snapshotProjector = snapshotProjector,
+            terminalAcknowledgementEmitter = ::sendObservationRefreshAcknowledgement,
         )
         actionResultPublisher = ActionResultPublisher(
             deviceId = deviceId,
@@ -161,6 +171,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     override fun onDestroy() {
         actionHandlerInstallation.close()
         openAppExecutor.close()
+        refreshCoordinator.close()
         observationSubscription.close()
         latestObservation.set(null)
         observationExecutor.shutdownNow()
@@ -208,6 +219,21 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         observationPublisher.acknowledge(
             acknowledgement = acknowledgement,
             correlationId = correlationId,
+        )
+    }
+
+    override fun onObservationRefreshRequest(
+        requestEnvelopeId: String,
+        payload: DeviceObservationRefreshPayload,
+    ) {
+        val receipt = refreshCoordinator.receive(
+            requestEnvelopeId = requestEnvelopeId,
+            rawPayload = payload,
+        )
+        sendObservationRefreshAcknowledgement(
+            requestId = requestEnvelopeId,
+            status = receipt.status,
+            detail = receipt.detail,
         )
     }
 
@@ -277,6 +303,31 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         if (!publisherAccepted) {
             onProtocolEvent("ACK نتیجه فرمان با پیام درحال‌ارسال تطبیق نداشت")
         }
+    }
+
+    private fun sendObservationRefreshAcknowledgement(
+        requestId: String,
+        status: ObservationRefreshAckStatus,
+        detail: String,
+    ) {
+        val acknowledgement = runCatching {
+            ObservationRefreshProtocol.acknowledgement(
+                deviceId = deviceId,
+                requestEnvelopeId = requestId,
+                requestId = requestId,
+                status = status,
+                detail = detail,
+            )
+        }.getOrElse { error ->
+            onProtocolEvent(
+                "ساخت ACK تازه‌سازی Observation شکست خورد: ${error.javaClass.simpleName}",
+            )
+            return
+        }
+        sendProtocolEnvelope(
+            acknowledgement,
+            event = "پاسخ تازه‌سازی Observation",
+        )
     }
 
     private fun sendProtocolEnvelope(envelope: ProtocolEnvelope, event: String) {
