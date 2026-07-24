@@ -36,13 +36,16 @@ import ai.simorgh.android.transport.ConnectionPhase
 import ai.simorgh.android.transport.ConnectionState
 
 @Composable
-fun SimorghApp(viewModel: SimorghViewModel) {
+fun SimorghApp(
+    viewModel: SimorghViewModel,
+    onConnectRequested: () -> Unit,
+) {
     val state = viewModel.uiState.value
     SimorghApp(
         state = state,
         onEndpointChanged = viewModel::updateEndpoint,
         onDeviceTokenChanged = viewModel::updateDeviceToken,
-        onConnect = viewModel::connect,
+        onConnect = onConnectRequested,
         onDisconnect = viewModel::disconnect,
     )
 }
@@ -75,6 +78,7 @@ private fun SimorghApp(
                 ConnectionCard(
                     endpoint = state.endpoint,
                     token = state.deviceToken,
+                    serviceRunning = state.serviceRunning,
                     connectionState = state.connectionState,
                     lastProtocolEvent = state.lastProtocolEvent,
                     onEndpointChanged = onEndpointChanged,
@@ -92,6 +96,7 @@ private fun SimorghApp(
 private fun ConnectionCard(
     endpoint: String,
     token: String,
+    serviceRunning: Boolean,
     connectionState: ConnectionState,
     lastProtocolEvent: String?,
     onEndpointChanged: (String) -> Unit,
@@ -99,7 +104,7 @@ private fun ConnectionCard(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    val isBusyOrConnected = connectionState.phase in setOf(
+    val isBusyOrConnected = serviceRunning || connectionState.phase in setOf(
         ConnectionPhase.CONNECTING,
         ConnectionPhase.REGISTERING,
         ConnectionPhase.CONNECTED,
@@ -156,7 +161,7 @@ private fun ConnectionCard(
                 }
                 OutlinedButton(
                     onClick = onDisconnect,
-                    enabled = connectionState.phase != ConnectionPhase.DISCONNECTED,
+                    enabled = serviceRunning,
                     modifier = Modifier.weight(1f),
                 ) {
                     Text(stringResource(R.string.disconnect_action))
