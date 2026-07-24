@@ -5,7 +5,6 @@ import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
 import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,26 +16,22 @@ import java.util.concurrent.atomic.AtomicReference
 class OpenAppActionExecutorTest {
     @Test
     fun `successful open app requires fresh matching precondition and Core-acked postcondition`() {
-        val before = acknowledged(
-            sequence = 7,
-            snapshot = snapshot(
-                id = BEFORE_SNAPSHOT_ID,
-                capturedAtMs = 9_500,
-                activePackage = SOURCE_PACKAGE,
-            ),
+        val beforeSnapshot = snapshot(
+            id = BEFORE_SNAPSHOT_ID,
+            capturedAtMs = 9_500,
+            activePackage = SOURCE_PACKAGE,
         )
-        val freshBefore = before.snapshot.copy(
+        val before = acknowledged(sequence = 7, snapshot = beforeSnapshot)
+        val freshBefore = beforeSnapshot.copy(
             snapshotId = FRESH_BEFORE_SNAPSHOT_ID,
             capturedAtMs = NOW_MS,
         )
-        val after = acknowledged(
-            sequence = 8,
-            snapshot = snapshot(
-                id = AFTER_SNAPSHOT_ID,
-                capturedAtMs = NOW_MS + 100,
-                activePackage = TARGET_PACKAGE,
-            ),
+        val afterSnapshot = snapshot(
+            id = AFTER_SNAPSHOT_ID,
+            capturedAtMs = NOW_MS + 100,
+            activePackage = TARGET_PACKAGE,
         )
+        val after = acknowledged(sequence = 8, snapshot = afterSnapshot)
         val policy = verificationPolicy()
         val evidence = FakeEvidenceSource(
             latest = before,
@@ -44,7 +39,7 @@ class OpenAppActionExecutorTest {
             postResult = PostActionEvidenceResult(
                 status = PostActionEvidenceStatus.SATISFIED,
                 observation = after,
-                evaluation = UiPostconditionEvaluator.evaluate(after.snapshot, policy),
+                evaluation = UiPostconditionEvaluator.evaluate(afterSnapshot, policy),
                 detail = "fixture verified",
             ),
         )
@@ -298,15 +293,16 @@ class OpenAppActionExecutorTest {
     )
 
     private fun freshBeforeEvidence(): Pair<AcknowledgedAccessibilityObservation, AccessibilitySnapshot> {
+        val beforeSnapshot = snapshot(
+            id = BEFORE_SNAPSHOT_ID,
+            capturedAtMs = 9_500,
+            activePackage = SOURCE_PACKAGE,
+        )
         val acknowledged = acknowledged(
             sequence = 1,
-            snapshot = snapshot(
-                id = BEFORE_SNAPSHOT_ID,
-                capturedAtMs = 9_500,
-                activePackage = SOURCE_PACKAGE,
-            ),
+            snapshot = beforeSnapshot,
         )
-        return acknowledged to acknowledged.snapshot.copy(
+        return acknowledged to beforeSnapshot.copy(
             snapshotId = FRESH_BEFORE_SNAPSHOT_ID,
             capturedAtMs = NOW_MS,
         )
@@ -383,15 +379,15 @@ class OpenAppActionExecutorTest {
 
     private companion object {
         const val NOW_MS = 10_000L
-        const val COMMAND_ENVELOPE_ID = "11111111-1111-1111-1111-111111111111"
-        const val COMMAND_ID = "22222222-2222-2222-2222-222222222222"
-        const val ACTION_ID = "33333333-3333-3333-3333-333333333333"
-        const val STREAM_ID = "44444444-4444-4444-4444-444444444444"
+        const val SOURCE_PACKAGE = "com.example.source"
+        const val TARGET_PACKAGE = "com.example.target"
+        const val OTHER_PACKAGE = "com.example.other"
+        const val STREAM_ID = "11111111-1111-1111-1111-111111111111"
+        const val COMMAND_ENVELOPE_ID = "22222222-2222-2222-2222-222222222222"
+        const val COMMAND_ID = "33333333-3333-3333-3333-333333333333"
+        const val ACTION_ID = "44444444-4444-4444-4444-444444444444"
         const val BEFORE_SNAPSHOT_ID = "55555555-5555-5555-5555-555555555555"
         const val FRESH_BEFORE_SNAPSHOT_ID = "66666666-6666-6666-6666-666666666666"
         const val AFTER_SNAPSHOT_ID = "77777777-7777-7777-7777-777777777777"
-        const val SOURCE_PACKAGE = "com.android.launcher"
-        const val TARGET_PACKAGE = "com.example.target"
-        const val OTHER_PACKAGE = "com.example.other"
     }
 }
