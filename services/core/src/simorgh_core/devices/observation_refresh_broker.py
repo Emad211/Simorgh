@@ -213,16 +213,38 @@ class ObservationRefreshBroker:
 
             previous = record.acknowledgement
             if previous is not None:
-                if not self._ack_statuses_equivalent(
-                    previous.status,
-                    acknowledgement.status,
-                ):
+                if record.terminal:
+                    if self._ack_statuses_equivalent(
+                        previous.status,
+                        acknowledgement.status,
+                    ):
+                        return record
                     raise ObservationRefreshConflictError(
-                        "refresh acknowledgement changed after it was recorded"
+                        "terminal refresh acknowledgement changed after completion"
                     )
-                if acknowledgement.status in _ACCEPTED_ACK_STATUSES and not record.terminal:
+
+                if previous.status not in _ACCEPTED_ACK_STATUSES:
+                    raise ObservationRefreshConflictError(
+                        "non-terminal refresh has an invalid prior acknowledgement"
+                    )
+                if acknowledgement.status in _ACCEPTED_ACK_STATUSES:
                     record.phase = ObservationRefreshPhase.ACCEPTED
                     record.updated_at_ms = now_ms
+                    return record
+
+                record.acknowledgement = acknowledgement
+                terminal_phase = (
+                    ObservationRefreshPhase.EXPIRED
+                    if acknowledgement.status == "expired"
+                    else ObservationRefreshPhase.REJECTED
+                )
+                self._finish_locked(
+                    key=key,
+                    record=record,
+                    phase=terminal_phase,
+                    detail=acknowledgement.detail,
+                    now_ms=now_ms,
+                )
                 return record
 
             record.acknowledgement = acknowledgement
@@ -231,10 +253,11 @@ class ObservationRefreshBroker:
             if acknowledgement.status in _ACCEPTED_ACK_STATUSES:
                 record.phase = ObservationRefreshPhase.ACCEPTED
                 return record
-            if acknowledgement.status == "expired":
-                terminal_phase = ObservationRefreshPhase.EXPIRED
-            else:
-                terminal_phase = ObservationRefreshPhase.REJECTED
+            terminal_phase = (
+                ObservationRefreshPhase.EXPIRED
+                if acknowledgement.status == "expired"
+                else ObservationRefreshPhase.REJECTED
+            )
             self._finish_locked(
                 key=key,
                 record=record,
