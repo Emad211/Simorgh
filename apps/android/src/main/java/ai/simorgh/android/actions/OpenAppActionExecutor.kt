@@ -108,7 +108,7 @@ class OpenAppActionExecutor(
             )
         }
 
-        val acknowledgedBefore = evidenceSource.latestAcknowledged()
+        val initiallyAcknowledged = evidenceSource.latestAcknowledged()
             ?: return result(
                 command = command,
                 outcome = ActionOutcome.BLOCKED,
@@ -118,12 +118,12 @@ class OpenAppActionExecutor(
                 attempts = 0,
                 detail = "no Accessibility observation acknowledged by Core is available",
             )
-        val preconditionFailure = validatePrecondition(
+        val initialPreconditionFailure = validatePrecondition(
             command = command,
-            observation = acknowledgedBefore,
+            observation = initiallyAcknowledged,
             nowMs = startedAtMs,
         )
-        if (preconditionFailure != null) {
+        if (initialPreconditionFailure != null) {
             return result(
                 command = command,
                 outcome = ActionOutcome.BLOCKED,
@@ -131,8 +131,8 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
                 attempts = 0,
-                before = acknowledgedBefore.toReference(),
-                detail = preconditionFailure,
+                before = initiallyAcknowledged.toReference(),
+                detail = initialPreconditionFailure,
             )
         }
 
@@ -148,7 +148,7 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
                 attempts = 0,
-                before = acknowledgedBefore.toReference(),
+                before = initiallyAcknowledged.toReference(),
                 detail = "no deadline budget remained for a fresh pre-launch observation",
             )
         }
@@ -161,7 +161,7 @@ class OpenAppActionExecutor(
                 command = command,
                 startedAtMs = startedAtMs,
                 attempts = 0,
-                before = acknowledgedBefore.toReference(),
+                before = initiallyAcknowledged.toReference(),
             )
         }
         if (freshBefore == null) {
@@ -172,12 +172,12 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
                 attempts = 0,
-                before = acknowledgedBefore.toReference(),
+                before = initiallyAcknowledged.toReference(),
                 detail = "fresh pre-launch Accessibility snapshot was unavailable",
             )
         }
         val freshFingerprint = AccessibilitySnapshotFingerprint.calculate(freshBefore)
-        if (freshFingerprint != acknowledgedBefore.stateFingerprint) {
+        if (freshFingerprint != initiallyAcknowledged.stateFingerprint) {
             return result(
                 command = command,
                 outcome = ActionOutcome.BLOCKED,
@@ -185,8 +185,58 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
                 attempts = 0,
-                before = acknowledgedBefore.toReference(),
+                before = initiallyAcknowledged.toReference(),
                 detail = "UI changed after the last Core-acknowledged observation",
+            )
+        }
+
+        val currentlyAcknowledged = evidenceSource.latestAcknowledged()
+            ?: return result(
+                command = command,
+                outcome = ActionOutcome.BLOCKED,
+                failureCode = ActionFailureCode.PRECONDITION_FAILED,
+                startedAtMs = startedAtMs,
+                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                attempts = 0,
+                before = initiallyAcknowledged.toReference(),
+                detail = "Core acknowledgement was invalidated before the launch boundary",
+            )
+        val revalidationTimeMs = wallClockMillis().coerceAtLeast(startedAtMs)
+        val currentPreconditionFailure = validatePrecondition(
+            command = command,
+            observation = currentlyAcknowledged,
+            nowMs = revalidationTimeMs,
+        )
+        if (currentPreconditionFailure != null) {
+            return result(
+                command = command,
+                outcome = ActionOutcome.BLOCKED,
+                failureCode = ActionFailureCode.PRECONDITION_FAILED,
+                startedAtMs = startedAtMs,
+                finishedAtMs = revalidationTimeMs,
+                attempts = 0,
+                before = currentlyAcknowledged.toReference(),
+                detail = "pre-launch evidence revalidation failed: $currentPreconditionFailure",
+            )
+        }
+        if (currentlyAcknowledged.stateFingerprint != freshFingerprint) {
+            return result(
+                command = command,
+                outcome = ActionOutcome.BLOCKED,
+                failureCode = ActionFailureCode.PRECONDITION_FAILED,
+                startedAtMs = startedAtMs,
+                finishedAtMs = revalidationTimeMs,
+                attempts = 0,
+                before = currentlyAcknowledged.toReference(),
+                detail = "current Core acknowledgement no longer matches the fresh local state",
+            )
+        }
+        if (execution.cancelled.get()) {
+            return cancelledResult(
+                command = command,
+                startedAtMs = startedAtMs,
+                attempts = 0,
+                before = currentlyAcknowledged.toReference(),
             )
         }
 
@@ -202,18 +252,18 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
                 attempts = 0,
-                before = acknowledgedBefore.toReference(),
-                after = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
+                after = currentlyAcknowledged.toReference(),
                 predicates = existingState.evidence,
                 detail = (
                     "declared postconditions already held in a fresh state matching the " +
-                        "latest Core-acknowledged fingerprint; launch was skipped"
+                        "current Core-acknowledged fingerprint; launch was skipped"
                     ).take(MAX_DETAIL_LENGTH),
             )
         }
 
         val operation = command.operation as OpenAppOperation
-        val launchedAtMs = wallClockMillis().coerceAtLeast(startedAtMs)
+        val launchedAtMs = wallClockMillis().coerceAtLeast(revalidationTimeMs)
         val launch = launcher.launch(operation)
         if (!launch.accepted) {
             return launchFailureResult(
@@ -221,7 +271,7 @@ class OpenAppActionExecutor(
                 launch = launch,
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(launchedAtMs),
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
             )
         }
         markLaunchAccepted()
@@ -231,7 +281,7 @@ class OpenAppActionExecutor(
                 command = command,
                 startedAtMs = startedAtMs,
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 detail = "cancellation arrived after Android accepted the launch request",
             )
         }
@@ -248,13 +298,13 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = wallClockMillis().coerceAtLeast(launchedAtMs),
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 detail = "command deadline elapsed before post-launch verification",
             )
         }
 
         val evidence = evidenceSource.awaitVerifiedObservation(
-            before = acknowledgedBefore,
+            before = currentlyAcknowledged,
             launchedAtMs = launchedAtMs,
             policy = command.verification,
             timeoutMillis = verificationBudget,
@@ -272,7 +322,7 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = finishedAtMs,
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 after = evidence.observation?.toReference(),
                 predicates = evidence.evaluation?.evidence.orEmpty(),
                 detail = detail,
@@ -282,7 +332,7 @@ class OpenAppActionExecutor(
                 command = command,
                 startedAtMs = startedAtMs,
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 after = evidence.observation?.toReference(),
                 detail = detail,
             )
@@ -294,7 +344,7 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = finishedAtMs,
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 after = evidence.observation?.toReference(),
                 predicates = evidence.evaluation?.evidence.orEmpty(),
                 detail = detail,
@@ -307,7 +357,7 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = finishedAtMs,
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 after = evidence.observation?.toReference(),
                 predicates = evidence.evaluation?.evidence.orEmpty(),
                 detail = detail,
@@ -322,7 +372,7 @@ class OpenAppActionExecutor(
                 startedAtMs = startedAtMs,
                 finishedAtMs = finishedAtMs,
                 attempts = 1,
-                before = acknowledgedBefore.toReference(),
+                before = currentlyAcknowledged.toReference(),
                 after = evidence.observation?.toReference(),
                 predicates = evidence.evaluation?.evidence.orEmpty(),
                 detail = detail,
@@ -336,7 +386,7 @@ class OpenAppActionExecutor(
         nowMs: Long,
     ): String? {
         val precondition = command.precondition
-        val age = nowMs - observation.snapshot.capturedAtMs
+        val age = nowMs - observation.capturedAtMs
         if (age < 0) {
             return "acknowledged observation timestamp is in the future"
         }
@@ -363,7 +413,7 @@ class OpenAppActionExecutor(
         }
         if (
             precondition.expectedActivePackage != null &&
-            precondition.expectedActivePackage != observation.snapshot.activePackage
+            precondition.expectedActivePackage != observation.activePackage
         ) {
             return "active package does not match command precondition"
         }
@@ -451,10 +501,10 @@ class OpenAppActionExecutor(
         ObservationReference(
             streamId = streamId,
             sequence = sequence,
-            snapshotId = snapshot.snapshotId,
+            snapshotId = snapshotId,
             stateFingerprint = stateFingerprint,
-            capturedAtMs = snapshot.capturedAtMs,
-            activePackage = snapshot.activePackage,
+            capturedAtMs = capturedAtMs,
+            activePackage = activePackage,
         )
 
     private fun remainingBudget(command: AndroidActionCommand, requestedMillis: Long): Long {
