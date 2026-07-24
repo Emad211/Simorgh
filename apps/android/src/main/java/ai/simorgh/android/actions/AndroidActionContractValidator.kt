@@ -73,7 +73,29 @@ object AndroidActionContractValidator {
         }) {
             "open_app active_package_equals predicates must match operation package_name"
         }
+
+        val destinationSelectors = verification.predicates.mapNotNull(::selectorForPredicate)
+        require(destinationSelectors.all { selector ->
+            selector.packageName == operation.packageName
+        }) {
+            "open_app node predicates must target operation package_name"
+        }
+        if (operation.uri != null) {
+            require(destinationSelectors.isNotEmpty()) {
+                "open_app with uri requires a target-package node predicate proving the destination"
+            }
+        }
     }
+
+    private fun selectorForPredicate(predicate: UiPredicate): AndroidNodeSelector? =
+        when (predicate) {
+            is ActivePackageEqualsPredicate -> null
+            is NodeExistsPredicate -> predicate.selector
+            is NodeAbsentPredicate -> predicate.selector
+            is NodeTextEqualsPredicate -> predicate.selector
+            is NodeCheckedEqualsPredicate -> predicate.selector
+            is NodeEnabledEqualsPredicate -> predicate.selector
+        }
 
     private fun normalizeOperation(operation: AndroidOperation): AndroidOperation =
         when (operation) {
