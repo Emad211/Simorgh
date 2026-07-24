@@ -40,194 +40,322 @@ class AndroidActionRouter(
         }.getOrElse { error ->
             return ActionCommandReceipt(
                 status = ActionCommandAckStatus.REJECTED,
-                detail = error.message.orEmpty().take(1_000),
+                detail = error.message.orEmpty().take(MAX_DETAIL_LENGTH),
             )
         }
         val commandHash = hashCommand(command)
-        val now = nowMillis()
-
-        val replayDelivery: PendingActionResultDelivery?
-        synchronized(lock) {
-            when (val loaded = ledger.load()) {
-                is ActionLedgerLoadResult.Corrupt -> return ActionCommandReceipt(
-                    status = ActionCommandAckStatus.REJECTED,
-                    detail = "encrypted action ledger is unreadable: ${loaded.detail}".take(1_000),
-                )
-
-                is ActionLedgerLoadResult.Loaded -> {
-                    val entry = loaded.entry
-                    if (entry.matches(commandEnvelopeId, command, commandHash)) {
-                        if (entry.phase == ActionLedgerPhase.COMPLETED) {
-                            replayDelivery = entry.pendingDelivery()
-                            replayDelivery?.let(resultEmitter)
-                            return ActionCommandReceipt(
-                                status = ActionCommandAckStatus.DUPLICATE,
-                                detail = "command was already completed",
-                            )
-                        }
-                        if (activeInProcess?.matches(commandEnvelopeId, command, commandHash) == true) {
-                            return ActionCommandReceipt(
-                                status = ActionCommandAckStatus.DUPLICATE,
-                                detail = "command is already active",
-                            )
-                        }
-
-                        val recovered = recoveryBlockedResult(entry, now)
-                        ledger.save(recovered)
-                        activeInProcess = null
-                        recovered.pendingDelivery()?.let(resultEmitter)
-                        return ActionCommandReceipt(
-                            status = ActionCommandAckStatus.DUPLICATE,
-                            detail = "previous execution state was unknown after process restart",
-                        )
-                    }
-
-                    if (entry.phase == ActionLedgerPhase.ACTIVE) {
-                        return ActionCommandReceipt(
-                            status = ActionCommandAckStatus.BUSY,
-                            detail = "another action is active or awaiting recovery",
-                        )
-                    }
-                }
-
-                ActionLedgerLoadResult.Empty -> Unit
-            }
-
-            if (command.deadlineAtMs <= now) {
-                return ActionCommandReceipt(
-                    status = ActionCommandAckStatus.EXPIRED,
-                    detail = "command deadline elapsed before Android acceptance",
-                )
-            }
-
-            val handler = handlerProvider()
-                ?: return ActionCommandReceipt(
-                    status = ActionCommandAckStatus.REJECTED,
-                    detail = "Android action executor is not available",
-                )
-
-            val activeEntry = PersistedActionEntry(
+        val plan = synchronized(lock) {
+            planCommand(
                 commandEnvelopeId = commandEnvelopeId,
-                commandHash = commandHash,
                 command = command,
-                phase = ActionLedgerPhase.ACTIVE,
-            ).validated()
-            ledger.save(activeEntry)
-            activeInProcess = activeEntry
-
-            val accepted = runCatching {
-                handler.submit(
-                    ReceivedAndroidAction(
-                        commandEnvelopeId = commandEnvelopeId,
-                        command = command,
-                    ),
-                    AndroidActionCompletion { result ->
-                        complete(
-                            commandEnvelopeId = commandEnvelopeId,
-                            commandHash = commandHash,
-                            command = command,
-                            result = result,
-                        )
-                    },
-                )
-            }.getOrElse { error ->
-                eventListener("action handler submit failed: ${error.javaClass.simpleName}")
-                false
-            }
-
-            if (!accepted) {
-                activeInProcess = null
-                ledger.clear()
-                return ActionCommandReceipt(
-                    status = ActionCommandAckStatus.REJECTED,
-                    detail = "Android action executor rejected the command",
-                )
-            }
+                commandHash = commandHash,
+                now = nowMillis(),
+            )
         }
 
-        return ActionCommandReceipt(status = ActionCommandAckStatus.ACCEPTED)
+        return when (plan) {
+            is CommandPlan.Return -> {
+                plan.delivery?.let(resultEmitter)
+                plan.receipt
+            }
+
+            is CommandPlan.Submit -> submitOutsideLock(plan)
+        }
     }
 
     fun receiveCancellation(
         cancellation: DeviceActionCancelPayload,
-    ): ActionCancelAckStatus = synchronized(lock) {
-        if (
-            !isUuid(cancellation.commandId) ||
-            !isUuid(cancellation.actionId)
-        ) {
-            return@synchronized ActionCancelAckStatus.NOT_FOUND
-        }
+    ): ActionCancelAckStatus {
+        val plan = synchronized(lock) { planCancellation(cancellation) }
+        return when (plan) {
+            is CancellationPlan.Return -> {
+                plan.delivery?.let(resultEmitter)
+                plan.status
+            }
 
-        val loaded = ledger.load()
-        val entry = (loaded as? ActionLedgerLoadResult.Loaded)?.entry
-            ?: return@synchronized ActionCancelAckStatus.NOT_FOUND
-        if (
-            entry.command.commandId != cancellation.commandId ||
-            entry.command.actionId != cancellation.actionId
-        ) {
-            return@synchronized ActionCancelAckStatus.NOT_FOUND
+            is CancellationPlan.Invoke -> {
+                val accepted = runCatching {
+                    plan.handler.cancel(
+                        cancellation.commandId,
+                        cancellation.actionId,
+                        cancellation.reason,
+                    )
+                }.getOrElse { error ->
+                    eventListener("action cancellation failed: ${error.javaClass.simpleName}")
+                    false
+                }
+                if (accepted) {
+                    ActionCancelAckStatus.ACCEPTED
+                } else {
+                    ActionCancelAckStatus.NOT_FOUND
+                }
+            }
         }
-        if (entry.phase == ActionLedgerPhase.COMPLETED) {
-            return@synchronized ActionCancelAckStatus.COMPLETED
-        }
-
-        val active = activeInProcess
-        if (active == null || active.command.actionId != cancellation.actionId) {
-            return@synchronized ActionCancelAckStatus.NOT_FOUND
-        }
-        val accepted = handlerProvider()?.cancel(
-            cancellation.commandId,
-            cancellation.actionId,
-            cancellation.reason,
-        ) == true
-        if (accepted) ActionCancelAckStatus.ACCEPTED else ActionCancelAckStatus.NOT_FOUND
     }
 
     fun acknowledgeResult(
         acknowledgement: DeviceActionResultAckPayload,
         correlationId: String?,
-    ): Boolean = synchronized(lock) {
-        val loaded = ledger.load()
-        val entry = (loaded as? ActionLedgerLoadResult.Loaded)?.entry ?: return@synchronized false
-        if (entry.phase != ActionLedgerPhase.COMPLETED) {
-            return@synchronized false
-        }
-        if (
-            entry.command.commandId != acknowledgement.commandId ||
-            entry.command.actionId != acknowledgement.actionId ||
-            entry.resultMessageId != correlationId
-        ) {
-            return@synchronized false
-        }
-
-        when (acknowledgement.status) {
-            ActionResultAckStatus.ACCEPTED,
-            ActionResultAckStatus.DUPLICATE,
-            -> {
-                ledger.save(entry.copy(resultAcknowledged = true).validated())
-                true
+    ): Boolean {
+        var rejectedStatus: ActionResultAckStatus? = null
+        val accepted = synchronized(lock) {
+            val entry = (ledger.load() as? ActionLedgerLoadResult.Loaded)?.entry
+                ?: return@synchronized false
+            if (entry.phase != ActionLedgerPhase.COMPLETED) {
+                return@synchronized false
+            }
+            if (
+                entry.command.commandId != acknowledgement.commandId ||
+                entry.command.actionId != acknowledgement.actionId ||
+                entry.resultMessageId != correlationId
+            ) {
+                return@synchronized false
             }
 
-            ActionResultAckStatus.UNKNOWN_ACTION,
-            ActionResultAckStatus.REJECTED,
-            -> {
-                eventListener(
-                    "Core did not accept action result: ${acknowledgement.status.name.lowercase()}",
-                )
-                false
+            when (acknowledgement.status) {
+                ActionResultAckStatus.ACCEPTED,
+                ActionResultAckStatus.DUPLICATE,
+                -> {
+                    ledger.save(entry.copy(resultAcknowledged = true).validated())
+                    true
+                }
+
+                ActionResultAckStatus.UNKNOWN_ACTION,
+                ActionResultAckStatus.REJECTED,
+                -> {
+                    rejectedStatus = acknowledgement.status
+                    false
+                }
             }
         }
+        rejectedStatus?.let { status ->
+            eventListener("Core did not accept action result: ${status.name.lowercase()}")
+        }
+        return accepted
     }
 
     fun recoverUnacknowledgedResult() {
-        synchronized(lock) {
-            val entry = (ledger.load() as? ActionLedgerLoadResult.Loaded)?.entry ?: return
-            entry.pendingDelivery()?.let(resultEmitter)
+        val delivery = synchronized(lock) {
+            val entry = (ledger.load() as? ActionLedgerLoadResult.Loaded)?.entry
+            entry?.pendingDelivery()
         }
+        delivery?.let(resultEmitter)
+    }
+
+    private fun planCommand(
+        commandEnvelopeId: String,
+        command: AndroidActionCommand,
+        commandHash: String,
+        now: Long,
+    ): CommandPlan {
+        when (val loaded = ledger.load()) {
+            is ActionLedgerLoadResult.Corrupt -> return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.REJECTED,
+                    detail = (
+                        "encrypted action ledger is unreadable: ${loaded.detail}"
+                        ).take(MAX_DETAIL_LENGTH),
+                ),
+            )
+
+            is ActionLedgerLoadResult.Loaded -> {
+                val entry = loaded.entry
+                if (entry.matches(commandEnvelopeId, command, commandHash)) {
+                    return planMatchingCommand(entry, now)
+                }
+
+                if (entry.phase == ActionLedgerPhase.ACTIVE) {
+                    return CommandPlan.Return(
+                        receipt = ActionCommandReceipt(
+                            status = ActionCommandAckStatus.BUSY,
+                            detail = "another action is active or awaiting recovery",
+                        ),
+                    )
+                }
+                if (!entry.resultAcknowledged) {
+                    return CommandPlan.Return(
+                        receipt = ActionCommandReceipt(
+                            status = ActionCommandAckStatus.BUSY,
+                            detail = "previous action result is awaiting Core acknowledgement",
+                        ),
+                        delivery = entry.pendingDelivery(),
+                    )
+                }
+            }
+
+            ActionLedgerLoadResult.Empty -> Unit
+        }
+
+        if (command.deadlineAtMs <= now) {
+            return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.EXPIRED,
+                    detail = "command deadline elapsed before Android acceptance",
+                ),
+            )
+        }
+
+        val handler = handlerProvider()
+            ?: return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.REJECTED,
+                    detail = "Android action executor is not available",
+                ),
+            )
+
+        val activeEntry = PersistedActionEntry(
+            commandEnvelopeId = commandEnvelopeId,
+            commandHash = commandHash,
+            command = command,
+            phase = ActionLedgerPhase.ACTIVE,
+        ).validated()
+        ledger.save(activeEntry)
+        activeInProcess = activeEntry
+        return CommandPlan.Submit(
+            handler = handler,
+            entry = activeEntry,
+        )
+    }
+
+    private fun planMatchingCommand(
+        entry: PersistedActionEntry,
+        now: Long,
+    ): CommandPlan {
+        if (entry.phase == ActionLedgerPhase.COMPLETED) {
+            return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.DUPLICATE,
+                    detail = "command was already completed",
+                ),
+                delivery = entry.pendingDelivery(),
+            )
+        }
+        if (activeInProcess?.sameIdentity(entry) == true) {
+            return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.DUPLICATE,
+                    detail = "command is already active",
+                ),
+            )
+        }
+
+        val recovered = recoveryBlockedResult(entry, now)
+        ledger.save(recovered)
+        activeInProcess = null
+        return CommandPlan.Return(
+            receipt = ActionCommandReceipt(
+                status = ActionCommandAckStatus.DUPLICATE,
+                detail = "previous execution state was unknown after process restart",
+            ),
+            delivery = recovered.pendingDelivery(),
+        )
+    }
+
+    private fun submitOutsideLock(plan: CommandPlan.Submit): ActionCommandReceipt {
+        val entry = plan.entry
+        val accepted = runCatching {
+            plan.handler.submit(
+                ReceivedAndroidAction(
+                    commandEnvelopeId = entry.commandEnvelopeId,
+                    command = entry.command,
+                ),
+                AndroidActionCompletion { result ->
+                    complete(
+                        commandEnvelopeId = entry.commandEnvelopeId,
+                        commandHash = entry.commandHash,
+                        command = entry.command,
+                        result = result,
+                    )
+                },
+            )
+        }.getOrElse { error ->
+            eventListener("action handler submit failed: ${error.javaClass.simpleName}")
+            false
+        }
+
+        if (accepted) {
+            return ActionCommandReceipt(status = ActionCommandAckStatus.ACCEPTED)
+        }
+
+        val rollback = synchronized(lock) { rollbackRejectedSubmit(entry) }
+        rollback.delivery?.let(resultEmitter)
+        return rollback.receipt
+    }
+
+    private fun rollbackRejectedSubmit(entry: PersistedActionEntry): CommandPlan.Return {
+        val loaded = (ledger.load() as? ActionLedgerLoadResult.Loaded)?.entry
+        if (loaded?.sameIdentity(entry) != true) {
+            activeInProcess = null
+            return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.REJECTED,
+                    detail = "action ledger changed while executor rejected the command",
+                ),
+            )
+        }
+        if (loaded.phase == ActionLedgerPhase.COMPLETED) {
+            activeInProcess = null
+            eventListener(
+                "action handler completed synchronously but returned rejected; preserving result",
+            )
+            return CommandPlan.Return(
+                receipt = ActionCommandReceipt(
+                    status = ActionCommandAckStatus.ACCEPTED,
+                    detail = "executor completed synchronously",
+                ),
+                delivery = loaded.pendingDelivery(),
+            )
+        }
+
+        activeInProcess = null
+        ledger.clear()
+        return CommandPlan.Return(
+            receipt = ActionCommandReceipt(
+                status = ActionCommandAckStatus.REJECTED,
+                detail = "Android action executor rejected the command",
+            ),
+        )
+    }
+
+    private fun planCancellation(
+        cancellation: DeviceActionCancelPayload,
+    ): CancellationPlan {
+        if (!isUuid(cancellation.commandId) || !isUuid(cancellation.actionId)) {
+            return CancellationPlan.Return(ActionCancelAckStatus.NOT_FOUND)
+        }
+
+        val entry = (ledger.load() as? ActionLedgerLoadResult.Loaded)?.entry
+            ?: return CancellationPlan.Return(ActionCancelAckStatus.NOT_FOUND)
+        if (
+            entry.command.commandId != cancellation.commandId ||
+            entry.command.actionId != cancellation.actionId
+        ) {
+            return CancellationPlan.Return(ActionCancelAckStatus.NOT_FOUND)
+        }
+        if (entry.phase == ActionLedgerPhase.COMPLETED) {
+            return CancellationPlan.Return(
+                status = ActionCancelAckStatus.COMPLETED,
+                delivery = entry.pendingDelivery(),
+            )
+        }
+
+        val active = activeInProcess
+        if (active == null || !active.sameIdentity(entry)) {
+            val recovered = recoveryBlockedResult(entry, nowMillis())
+            ledger.save(recovered)
+            activeInProcess = null
+            return CancellationPlan.Return(
+                status = ActionCancelAckStatus.COMPLETED,
+                delivery = recovered.pendingDelivery(),
+            )
+        }
+
+        val handler = handlerProvider()
+            ?: return CancellationPlan.Return(ActionCancelAckStatus.NOT_FOUND)
+        return CancellationPlan.Invoke(handler)
     }
 
     private fun complete(
-        *,
         commandEnvelopeId: String,
         commandHash: String,
         command: AndroidActionCommand,
@@ -247,33 +375,48 @@ class AndroidActionRouter(
             return
         }
 
-        val delivery: PendingActionResultDelivery
-        synchronized(lock) {
-            val loaded = ledger.load()
-            val entry = (loaded as? ActionLedgerLoadResult.Loaded)?.entry ?: return
-            if (!entry.matches(commandEnvelopeId, command, commandHash)) {
-                eventListener("action result arrived for a replaced ledger entry")
-                return
-            }
-            if (entry.phase == ActionLedgerPhase.COMPLETED) {
-                if (entry.result != validatedResult) {
-                    eventListener("action handler attempted to complete twice with different results")
-                }
-                entry.pendingDelivery()?.let(resultEmitter)
-                return
-            }
-
-            val completed = entry.copy(
-                phase = ActionLedgerPhase.COMPLETED,
-                resultMessageId = UUID.randomUUID().toString(),
+        val plan = synchronized(lock) {
+            planCompletion(
+                commandEnvelopeId = commandEnvelopeId,
+                commandHash = commandHash,
+                command = command,
                 result = validatedResult,
-                resultAcknowledged = false,
-            ).validated()
-            ledger.save(completed)
-            activeInProcess = null
-            delivery = requireNotNull(completed.pendingDelivery())
+            )
         }
-        resultEmitter(delivery)
+        plan.event?.let(eventListener)
+        plan.delivery?.let(resultEmitter)
+    }
+
+    private fun planCompletion(
+        commandEnvelopeId: String,
+        commandHash: String,
+        command: AndroidActionCommand,
+        result: AndroidActionResult,
+    ): CompletionPlan {
+        val entry = (ledger.load() as? ActionLedgerLoadResult.Loaded)?.entry
+            ?: return CompletionPlan(event = "action result arrived without a ledger entry")
+        if (!entry.matches(commandEnvelopeId, command, commandHash)) {
+            return CompletionPlan(event = "action result arrived for a replaced ledger entry")
+        }
+        if (entry.phase == ActionLedgerPhase.COMPLETED) {
+            return if (entry.result != result) {
+                CompletionPlan(
+                    event = "action handler attempted to complete twice with different results",
+                )
+            } else {
+                CompletionPlan(delivery = entry.pendingDelivery())
+            }
+        }
+
+        val completed = entry.copy(
+            phase = ActionLedgerPhase.COMPLETED,
+            resultMessageId = UUID.randomUUID().toString(),
+            result = result,
+            resultAcknowledged = false,
+        ).validated()
+        ledger.save(completed)
+        activeInProcess = null
+        return CompletionPlan(delivery = completed.pendingDelivery())
     }
 
     private fun recoveryBlockedResult(
@@ -288,7 +431,10 @@ class AndroidActionRouter(
             startedAtMs = now,
             finishedAtMs = now,
             attempts = 0,
-            detail = "execution state was unknown after Android process restart; command was not re-executed",
+            detail = (
+                "execution state was unknown after Android process restart; " +
+                    "command was not re-executed"
+                ),
         )
         return entry.copy(
             phase = ActionLedgerPhase.COMPLETED,
@@ -313,6 +459,12 @@ class AndroidActionRouter(
             this.command.actionId == command.actionId &&
             this.commandHash == commandHash
 
+    private fun PersistedActionEntry.sameIdentity(other: PersistedActionEntry): Boolean =
+        commandEnvelopeId == other.commandEnvelopeId &&
+            commandHash == other.commandHash &&
+            command.commandId == other.command.commandId &&
+            command.actionId == other.command.actionId
+
     private fun PersistedActionEntry.pendingDelivery(): PendingActionResultDelivery? {
         if (
             phase != ActionLedgerPhase.COMPLETED ||
@@ -335,4 +487,34 @@ class AndroidActionRouter(
 
     private fun isUuid(value: String): Boolean =
         runCatching { UUID.fromString(value) }.isSuccess
+
+    private sealed interface CommandPlan {
+        data class Return(
+            val receipt: ActionCommandReceipt,
+            val delivery: PendingActionResultDelivery? = null,
+        ) : CommandPlan
+
+        data class Submit(
+            val handler: AndroidActionHandler,
+            val entry: PersistedActionEntry,
+        ) : CommandPlan
+    }
+
+    private sealed interface CancellationPlan {
+        data class Return(
+            val status: ActionCancelAckStatus,
+            val delivery: PendingActionResultDelivery? = null,
+        ) : CancellationPlan
+
+        data class Invoke(val handler: AndroidActionHandler) : CancellationPlan
+    }
+
+    private data class CompletionPlan(
+        val delivery: PendingActionResultDelivery? = null,
+        val event: String? = null,
+    )
+
+    private companion object {
+        const val MAX_DETAIL_LENGTH = 1_000
+    }
 }
