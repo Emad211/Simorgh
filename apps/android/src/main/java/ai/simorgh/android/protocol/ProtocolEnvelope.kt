@@ -1,5 +1,6 @@
 package ai.simorgh.android.protocol
 
+import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -69,6 +70,34 @@ data class DeviceHeartbeatAckPayload(
 )
 
 @Serializable
+data class DeviceObservationPayload(
+    @SerialName("state_fingerprint")
+    val stateFingerprint: String,
+    val snapshot: AccessibilitySnapshot,
+)
+
+@Serializable
+enum class ObservationAckStatus {
+    @SerialName("accepted")
+    ACCEPTED,
+
+    @SerialName("duplicate")
+    DUPLICATE,
+
+    @SerialName("stale")
+    STALE,
+}
+
+@Serializable
+data class DeviceObservationAckPayload(
+    @SerialName("snapshot_id")
+    val snapshotId: String,
+    val status: ObservationAckStatus,
+    @SerialName("received_at_ms")
+    val receivedAtMs: Long,
+)
+
+@Serializable
 data class DeviceErrorPayload(
     val code: String,
     val message: String,
@@ -79,6 +108,8 @@ object DeviceProtocol {
     const val TYPE_REGISTERED: String = "device.registered"
     const val TYPE_HEARTBEAT: String = "device.heartbeat"
     const val TYPE_HEARTBEAT_ACK: String = "device.heartbeat_ack"
+    const val TYPE_OBSERVATION: String = "device.observation"
+    const val TYPE_OBSERVATION_ACK: String = "device.observation_ack"
     const val TYPE_ERROR: String = "device.error"
 
     val json: Json = Json {
@@ -114,6 +145,24 @@ object DeviceProtocol {
         ).jsonObject,
     )
 
+    fun observation(
+        deviceId: String,
+        stateFingerprint: String,
+        snapshot: AccessibilitySnapshot,
+        nowMs: Long = System.currentTimeMillis(),
+    ): ProtocolEnvelope = ProtocolEnvelope(
+        messageId = UUID.randomUUID().toString(),
+        type = TYPE_OBSERVATION,
+        sentAtMs = nowMs,
+        deviceId = deviceId,
+        payload = json.encodeToJsonElement(
+            DeviceObservationPayload(
+                stateFingerprint = stateFingerprint,
+                snapshot = snapshot,
+            ),
+        ).jsonObject,
+    )
+
     fun encode(envelope: ProtocolEnvelope): String = json.encodeToString(envelope)
 
     fun decode(raw: String): ProtocolEnvelope = json.decodeFromString(raw)
@@ -122,6 +171,9 @@ object DeviceProtocol {
         json.decodeFromJsonElement(envelope.payload)
 
     fun decodeHeartbeatAck(envelope: ProtocolEnvelope): DeviceHeartbeatAckPayload =
+        json.decodeFromJsonElement(envelope.payload)
+
+    fun decodeObservationAck(envelope: ProtocolEnvelope): DeviceObservationAckPayload =
         json.decodeFromJsonElement(envelope.payload)
 
     fun decodeError(envelope: ProtocolEnvelope): DeviceErrorPayload =
