@@ -24,9 +24,16 @@ OTHER_PACKAGE = "com.example.other"
 TARGET_URI = "example://items/42"
 
 
-def _command(*, uri: str | None, include_node: bool, node_package: str = TARGET_PACKAGE):
+def _command(
+    *,
+    uri: str | None,
+    include_node: bool,
+    node_package: str = TARGET_PACKAGE,
+) -> AndroidActionCommand:
     now_ms = int(time.time() * 1000)
-    predicates = [ActivePackageEqualsPredicate(package_name=TARGET_PACKAGE)]
+    predicates: list[object] = [
+        ActivePackageEqualsPredicate(package_name=TARGET_PACKAGE)
+    ]
     if include_node:
         predicates.append(
             NodeExistsPredicate(
@@ -42,7 +49,9 @@ def _command(*, uri: str | None, include_node: bool, node_package: str = TARGET_
         deadline_at_ms=now_ms + 30_000,
         precondition=ObservationPrecondition(),
         operation=OpenAppOperation(package_name=TARGET_PACKAGE, uri=uri),
-        verification=AndroidVerificationPolicy(predicates=predicates),
+        verification=AndroidVerificationPolicy(
+            predicates=predicates,  # type: ignore[arg-type]
+        ),
     )
 
 
