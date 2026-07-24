@@ -14,19 +14,33 @@ import android.os.IBinder
 import android.os.Looper
 import ai.simorgh.android.MainActivity
 import ai.simorgh.android.R
+import ai.simorgh.android.accessibility.AccessibilityObservationBus
+import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.device.DeviceIdentityStore
+import ai.simorgh.android.protocol.DeviceObservationAckPayload
+import ai.simorgh.android.transport.AccessibilityObservationPublisher
 import ai.simorgh.android.transport.ConnectionPhase
 import ai.simorgh.android.transport.ConnectionState
 import ai.simorgh.android.transport.CoreConnectionConfig
 import ai.simorgh.android.transport.CoreConnectionListener
 import ai.simorgh.android.transport.CoreWebSocketClient
+import java.io.Closeable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class SimorghConnectionService : Service(), CoreConnectionListener {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val observationExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val latestObservation = AtomicReference<AccessibilitySnapshot?>(null)
+    private val observationDrainScheduled = AtomicBoolean(false)
 
     private lateinit var connectionStore: SecureConnectionStore
     private lateinit var connectionClient: CoreWebSocketClient
+    private lateinit var observationPublisher: AccessibilityObservationPublisher
+    private lateinit var observationSubscription: Closeable
     private lateinit var notificationManager: NotificationManager
 
     private var currentState: ConnectionState = ConnectionState.Disconnected
@@ -40,11 +54,24 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         createNotificationChannel()
 
         val capabilities = DeviceCapabilities.current()
+        val deviceId = DeviceIdentityStore(this).getOrCreateDeviceId()
         connectionClient = CoreWebSocketClient(
-            deviceId = DeviceIdentityStore(this).getOrCreateDeviceId(),
+            deviceId = deviceId,
             capabilities = capabilities,
             listener = this,
         )
+        observationPublisher = AccessibilityObservationPublisher(
+            deviceId = deviceId,
+            sender = connectionClient::send,
+            listener = ::onProtocolEvent,
+        )
+        observationSubscription = AccessibilityObservationBus.subscribe { observerState ->
+            val snapshot = observerState.latestSnapshot ?: return@subscribe
+            if (snapshot.activePackage == packageName) {
+                return@subscribe
+            }
+            enqueueLatestObservation(snapshot)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,6 +109,10 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        observationSubscription.close()
+        latestObservation.set(null)
+        observationExecutor.shutdownNow()
+        observationPublisher.close()
         connectionClient.close()
         ConnectionStatusBus.publish(
             ServiceConnectionSnapshot(
@@ -94,6 +125,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     }
 
     override fun onStateChanged(state: ConnectionState) {
+        observationPublisher.setConnected(state.phase == ConnectionPhase.CONNECTED)
         mainHandler.post {
             currentState = state
             publishSnapshot()
@@ -107,6 +139,37 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         mainHandler.post {
             lastProtocolEvent = detail
             publishSnapshot()
+        }
+    }
+
+    override fun onObservationAcknowledged(
+        acknowledgement: DeviceObservationAckPayload,
+        correlationId: String?,
+    ) {
+        observationPublisher.acknowledge(
+            acknowledgement = acknowledgement,
+            correlationId = correlationId,
+        )
+    }
+
+    private fun enqueueLatestObservation(snapshot: AccessibilitySnapshot) {
+        latestObservation.set(snapshot)
+        if (observationDrainScheduled.compareAndSet(false, true)) {
+            observationExecutor.execute(::drainLatestObservations)
+        }
+    }
+
+    private fun drainLatestObservations() {
+        while (true) {
+            val snapshot = latestObservation.getAndSet(null) ?: break
+            observationPublisher.submit(snapshot)
+        }
+        observationDrainScheduled.set(false)
+        if (
+            latestObservation.get() != null &&
+            observationDrainScheduled.compareAndSet(false, true)
+        ) {
+            observationExecutor.execute(::drainLatestObservations)
         }
     }
 

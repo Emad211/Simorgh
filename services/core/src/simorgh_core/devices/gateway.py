@@ -14,6 +14,8 @@ from simorgh_core.devices.protocol import (
     DeviceErrorPayload,
     DeviceHeartbeatAckPayload,
     DeviceHeartbeatPayload,
+    DeviceObservationAckPayload,
+    DeviceObservationPayload,
     DeviceRegisteredPayload,
     DeviceRegistrationPayload,
     ProtocolEnvelope,
@@ -25,6 +27,8 @@ SettingsDependency = Annotated[Settings, Depends(get_settings)]
 
 REGISTRATION_TIMEOUT_SECONDS = 15
 HEARTBEAT_INTERVAL_SECONDS = 25
+MAX_REGISTRATION_BYTES = 64_000
+MAX_DEVICE_MESSAGE_BYTES = 2_000_000
 
 
 def _is_authorized(websocket: WebSocket, settings: Settings) -> bool:
@@ -35,6 +39,10 @@ def _is_authorized(websocket: WebSocket, settings: Settings) -> bool:
     provided = websocket.headers.get("authorization", "")
     scheme, _, token = provided.partition(" ")
     return scheme.lower() == "bearer" and secrets.compare_digest(token, expected)
+
+
+def _encoded_size(raw_message: str) -> int:
+    return len(raw_message.encode("utf-8"))
 
 
 async def _send_error(
@@ -49,9 +57,57 @@ async def _send_error(
         message_type="device.error",
         device_id=device_id,
         correlation_id=correlation_id,
-        payload=DeviceErrorPayload(code=code, message=message),
+        payload=DeviceErrorPayload(code=code, message=message[:1_000]),
     )
     await websocket.send_text(envelope.model_dump_json())
+
+
+async def _handle_heartbeat(
+    websocket: WebSocket,
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+) -> None:
+    heartbeat = DeviceHeartbeatPayload.model_validate(envelope.payload)
+    acknowledgement = ProtocolEnvelope.create(
+        message_type="device.heartbeat_ack",
+        device_id=session.device_id,
+        correlation_id=envelope.message_id,
+        payload=DeviceHeartbeatAckPayload(
+            sequence=heartbeat.sequence,
+            server_time_ms=int(time.time() * 1000),
+        ),
+    )
+    await websocket.send_text(acknowledgement.model_dump_json())
+
+
+async def _handle_observation(
+    websocket: WebSocket,
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+) -> None:
+    received_at_ms = int(time.time() * 1000)
+    observation = DeviceObservationPayload.model_validate(envelope.payload)
+    observation_status = await registry.record_observation(
+        session=session,
+        message_id=envelope.message_id,
+        observation=observation,
+        received_at_ms=received_at_ms,
+    )
+    acknowledgement = ProtocolEnvelope.create(
+        message_type="device.observation_ack",
+        device_id=session.device_id,
+        correlation_id=envelope.message_id,
+        payload=DeviceObservationAckPayload(
+            stream_id=observation.stream_id,
+            sequence=observation.sequence,
+            snapshot_id=observation.snapshot.snapshot_id,
+            status=observation_status,
+            received_at_ms=received_at_ms,
+        ),
+    )
+    await websocket.send_text(acknowledgement.model_dump_json())
 
 
 @router.websocket("/ws")
@@ -73,6 +129,13 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
             await websocket.close(
                 code=status.WS_1008_POLICY_VIOLATION,
                 reason="registration timeout",
+            )
+            return
+
+        if _encoded_size(raw_registration) > MAX_REGISTRATION_BYTES:
+            await websocket.close(
+                code=status.WS_1009_MESSAGE_TOO_BIG,
+                reason="registration message too large",
             )
             return
 
@@ -122,33 +185,55 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
 
         while True:
             raw_message = await websocket.receive_text()
-            try:
-                envelope = ProtocolEnvelope.model_validate_json(raw_message)
-                if envelope.device_id != session.device_id:
-                    raise ValueError("message device_id does not match registered device")
-                if envelope.type != "device.heartbeat":
-                    raise ValueError(f"unsupported message type: {envelope.type}")
-                heartbeat = DeviceHeartbeatPayload.model_validate(envelope.payload)
-            except (ValidationError, ValueError) as exc:
+            if _encoded_size(raw_message) > MAX_DEVICE_MESSAGE_BYTES:
                 await _send_error(
                     websocket,
                     device_id=session.device_id,
                     correlation_id=None,
+                    code="message_too_large",
+                    message="device message exceeded the configured byte limit",
+                )
+                await websocket.close(
+                    code=status.WS_1009_MESSAGE_TOO_BIG,
+                    reason="device message too large",
+                )
+                return
+
+            if not await registry.is_current(session):
+                await websocket.close(
+                    code=status.WS_1000_NORMAL_CLOSURE,
+                    reason="device session replaced",
+                )
+                return
+
+            envelope: ProtocolEnvelope | None = None
+            try:
+                envelope = ProtocolEnvelope.model_validate_json(raw_message)
+                if envelope.device_id != session.device_id:
+                    raise ValueError("message device_id does not match registered device")
+
+                if envelope.type == "device.heartbeat":
+                    await _handle_heartbeat(
+                        websocket,
+                        session=session,
+                        envelope=envelope,
+                    )
+                elif envelope.type == "device.observation":
+                    await _handle_observation(
+                        websocket,
+                        session=session,
+                        envelope=envelope,
+                    )
+                else:
+                    raise ValueError(f"unsupported message type: {envelope.type}")
+            except (ValidationError, ValueError) as exc:
+                await _send_error(
+                    websocket,
+                    device_id=session.device_id,
+                    correlation_id=envelope.message_id if envelope is not None else None,
                     code="invalid_message",
                     message=str(exc),
                 )
-                continue
-
-            acknowledgement = ProtocolEnvelope.create(
-                message_type="device.heartbeat_ack",
-                device_id=session.device_id,
-                correlation_id=envelope.message_id,
-                payload=DeviceHeartbeatAckPayload(
-                    sequence=heartbeat.sequence,
-                    server_time_ms=int(time.time() * 1000),
-                ),
-            )
-            await websocket.send_text(acknowledgement.model_dump_json())
 
     except WebSocketDisconnect:
         pass
