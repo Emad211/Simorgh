@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -70,12 +74,23 @@ jobs:
           gradle-version: "9.5.0"
 
       - name: Build, lint, and unit test Android app
-        run: >-
-          gradle
-          :apps:android:assembleDebug
-          :apps:android:testDebugUnitTest
-          :apps:android:lintDebug
-          --stacktrace
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          gradle \
+            :apps:android:assembleDebug \
+            :apps:android:testDebugUnitTest \
+            :apps:android:lintDebug \
+            --stacktrace 2>&1 | tee artifacts/android-build.log
+
+      - name: Upload Android build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-diagnostics
+          path: artifacts/android-build.log
+          if-no-files-found: error
 
       - name: Upload debug APK
         if: success()
