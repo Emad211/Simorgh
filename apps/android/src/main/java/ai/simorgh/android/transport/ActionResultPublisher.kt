@@ -36,6 +36,7 @@ class ActionResultPublisher(
             commandEnvelopeId = pending.commandEnvelopeId,
             result = validated,
             messageId = pending.resultMessageId,
+            nowMs = validated.finishedAtMs,
         )
         if (DeviceProtocol.encodedSizeBytes(envelope) > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
             listener("action result ${pending.result.actionId} exceeds the transport byte limit")
