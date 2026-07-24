@@ -17,6 +17,10 @@ from simorgh_core.devices.action_broker import (
     DeviceActionRecord,
     action_broker,
 )
+from simorgh_core.devices.action_semantics import (
+    AndroidActionSemanticError,
+    validate_dispatch_semantics,
+)
 from simorgh_core.devices.actions import AndroidActionCommand, AndroidActionResult
 from simorgh_core.devices.protocol import DeviceActionCommandAckPayload
 
@@ -101,7 +105,13 @@ async def dispatch_action(
     _: OperatorDependency,
 ) -> DeviceActionStatusResponse:
     try:
-        record = await action_broker.dispatch(device_id=device_id, command=command)
+        validated_command = validate_dispatch_semantics(command)
+        record = await action_broker.dispatch(
+            device_id=device_id,
+            command=validated_command,
+        )
+    except AndroidActionSemanticError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except DeviceActionBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except DeviceActionConflictError as exc:
