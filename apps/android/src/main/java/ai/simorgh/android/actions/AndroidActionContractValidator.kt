@@ -8,10 +8,13 @@ object AndroidActionContractValidator {
         command.validated()
         requireUuid(command.commandId, "command_id")
         requireUuid(command.actionId, "action_id")
+        require(command.issuedAtMs >= 0) { "issued_at_ms cannot be negative" }
+        require(command.deadlineAtMs >= 0) { "deadline_at_ms cannot be negative" }
         validatePrecondition(command.precondition)
-        validateOperation(command.operation)
-        validateVerification(command.verification)
-        return command
+        return command.copy(
+            operation = normalizeOperation(command.operation),
+            verification = normalizeVerification(command.verification),
+        )
     }
 
     fun validate(result: AndroidActionResult): AndroidActionResult {
@@ -50,20 +53,21 @@ object AndroidActionContractValidator {
         }
     }
 
-    private fun validateOperation(operation: AndroidOperation) {
+    private fun normalizeOperation(operation: AndroidOperation): AndroidOperation =
         when (operation) {
             is OpenAppOperation -> {
                 requireBoundedNonBlank(operation.packageName, 512, "open_app package_name")
                 operation.uri?.let { uri ->
                     requireBoundedNonBlank(uri, 4_096, "open_app uri")
                 }
+                operation
             }
 
             is ClickNodeOperation -> {
                 require(operation.selectors.size in 1..5) {
                     "click_node requires 1..5 selectors"
                 }
-                operation.selectors.forEach(::validateSelector)
+                operation.copy(selectors = operation.selectors.map(::normalizeSelector))
             }
 
             is SetTextOperation -> {
@@ -73,7 +77,7 @@ object AndroidActionContractValidator {
                 require(operation.text.length <= 10_000) {
                     "set_text text exceeds 10000 characters"
                 }
-                operation.selectors.forEach(::validateSelector)
+                operation.copy(selectors = operation.selectors.map(::normalizeSelector))
             }
 
             is ScrollNodeOperation -> {
@@ -83,17 +87,21 @@ object AndroidActionContractValidator {
                 require(operation.amount > 0.0 && operation.amount <= 1.0) {
                     "scroll amount must be in (0, 1]"
                 }
-                operation.selectors.forEach(::validateSelector)
+                operation.copy(selectors = operation.selectors.map(::normalizeSelector))
             }
 
-            is GlobalActionOperation -> Unit
-            is WaitOperation -> require(operation.durationMs in 50..10_000) {
-                "wait duration_ms must be in 50..10000"
+            is GlobalActionOperation -> operation
+            is WaitOperation -> {
+                require(operation.durationMs in 50..10_000) {
+                    "wait duration_ms must be in 50..10000"
+                }
+                operation
             }
         }
-    }
 
-    private fun validateVerification(policy: AndroidVerificationPolicy) {
+    private fun normalizeVerification(
+        policy: AndroidVerificationPolicy,
+    ): AndroidVerificationPolicy {
         require(policy.predicates.size in 1..10) {
             "verification requires 1..10 predicates"
         }
@@ -103,44 +111,58 @@ object AndroidActionContractValidator {
         require(policy.stableSamples in 1..3) {
             "verification stable_samples must be in 1..3"
         }
-        policy.predicates.forEach(::validatePredicate)
+        return policy.copy(predicates = policy.predicates.map(::normalizePredicate))
     }
 
-    private fun validatePredicate(predicate: UiPredicate) {
+    private fun normalizePredicate(predicate: UiPredicate): UiPredicate =
         when (predicate) {
-            is ActivePackageEqualsPredicate ->
-                requireBoundedNonBlank(predicate.packageName, 512, "predicate package_name")
-            is NodeExistsPredicate -> validateSelector(predicate.selector)
-            is NodeAbsentPredicate -> validateSelector(predicate.selector)
+            is ActivePackageEqualsPredicate -> {
+                requireBoundedNonBlank(
+                    predicate.packageName,
+                    512,
+                    "predicate package_name",
+                )
+                predicate
+            }
+            is NodeExistsPredicate -> predicate.copy(
+                selector = normalizeSelector(predicate.selector),
+            )
+            is NodeAbsentPredicate -> predicate.copy(
+                selector = normalizeSelector(predicate.selector),
+            )
             is NodeTextEqualsPredicate -> {
-                validateSelector(predicate.selector)
                 require(predicate.expectedText.length <= 512) {
                     "predicate expected_text exceeds 512 characters"
                 }
+                predicate.copy(selector = normalizeSelector(predicate.selector))
             }
-            is NodeCheckedEqualsPredicate -> validateSelector(predicate.selector)
-            is NodeEnabledEqualsPredicate -> validateSelector(predicate.selector)
+            is NodeCheckedEqualsPredicate -> predicate.copy(
+                selector = normalizeSelector(predicate.selector),
+            )
+            is NodeEnabledEqualsPredicate -> predicate.copy(
+                selector = normalizeSelector(predicate.selector),
+            )
         }
-    }
 
-    private fun validateSelector(selector: AndroidNodeSelector) {
-        selector.validated()
-        selector.viewId?.let { value ->
+    private fun normalizeSelector(selector: AndroidNodeSelector): AndroidNodeSelector {
+        val normalized = selector.validated()
+        normalized.viewId?.let { value ->
             requireBoundedNonBlank(value, 512, "selector view_id")
         }
-        selector.className?.let { value ->
+        normalized.className?.let { value ->
             requireBoundedNonBlank(value, 512, "selector class_name")
         }
-        selector.path?.let { value ->
+        normalized.path?.let { value ->
             require(value.length <= 512) { "selector path exceeds 512 characters" }
         }
-        selector.bounds?.let(::validateBounds)
-        require(selector.requiredFields.size <= 7) {
+        normalized.bounds?.let(::validateBounds)
+        require(normalized.requiredFields.size <= 7) {
             "selector required_fields exceed 7 entries"
         }
-        require(selector.requiredCapabilities.size <= 6) {
+        require(normalized.requiredCapabilities.size <= 6) {
             "selector required_capabilities exceed 6 entries"
         }
+        return normalized
     }
 
     private fun validateBounds(bounds: ScreenBounds) {
