@@ -46,11 +46,7 @@ class AndroidOpenAppLauncher(
 
     override fun launch(operation: OpenAppOperation): OpenAppLaunchAttempt {
         if (!launchAllowed()) {
-            return OpenAppLaunchAttempt(
-                status = OpenAppLaunchStatus.BACKGROUND_START_BLOCKED,
-                adapter = "background_launch_guard",
-                detail = "Simorgh is not visible and display-over-other-apps access is not granted",
-            )
+            return backgroundLaunchBlocked()
         }
 
         return operation.uri?.let { uri ->
@@ -93,24 +89,29 @@ class AndroidOpenAppLauncher(
         return startActivity(intent, adapter = "getLaunchIntentForPackage")
     }
 
-    private fun startActivity(intent: Intent, adapter: String): OpenAppLaunchAttempt = try {
-        applicationContext.startActivity(intent)
-        OpenAppLaunchAttempt(
-            status = OpenAppLaunchStatus.ACCEPTED,
-            adapter = adapter,
-            detail = "Android accepted the activity launch request",
-        )
-    } catch (error: ActivityNotFoundException) {
-        targetNotFound(
-            adapter = adapter,
-            detail = error.message.orEmpty().ifBlank { "target activity was not found" },
-        )
-    } catch (error: SecurityException) {
-        OpenAppLaunchAttempt(
-            status = OpenAppLaunchStatus.REJECTED,
-            adapter = adapter,
-            detail = error.message.orEmpty().ifBlank { "Android rejected the activity launch" },
-        )
+    private fun startActivity(intent: Intent, adapter: String): OpenAppLaunchAttempt {
+        if (!launchAllowed()) {
+            return backgroundLaunchBlocked()
+        }
+        return try {
+            applicationContext.startActivity(intent)
+            OpenAppLaunchAttempt(
+                status = OpenAppLaunchStatus.ACCEPTED,
+                adapter = adapter,
+                detail = "Android accepted the activity launch request",
+            )
+        } catch (error: ActivityNotFoundException) {
+            targetNotFound(
+                adapter = adapter,
+                detail = error.message.orEmpty().ifBlank { "target activity was not found" },
+            )
+        } catch (error: SecurityException) {
+            OpenAppLaunchAttempt(
+                status = OpenAppLaunchStatus.REJECTED,
+                adapter = adapter,
+                detail = error.message.orEmpty().ifBlank { "Android rejected the activity launch" },
+            )
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -124,6 +125,9 @@ class AndroidOpenAppLauncher(
                     "target package is unknown or has no front-door activity"
                 },
             )
+        }
+        if (!launchAllowed()) {
+            return backgroundLaunchBlocked()
         }
 
         return try {
@@ -157,6 +161,12 @@ class AndroidOpenAppLauncher(
             )
         }
     }
+
+    private fun backgroundLaunchBlocked(): OpenAppLaunchAttempt = OpenAppLaunchAttempt(
+        status = OpenAppLaunchStatus.BACKGROUND_START_BLOCKED,
+        adapter = "background_launch_guard",
+        detail = "Simorgh is not visible and display-over-other-apps access is not granted",
+    )
 
     private fun targetNotFound(adapter: String, detail: String): OpenAppLaunchAttempt =
         OpenAppLaunchAttempt(
