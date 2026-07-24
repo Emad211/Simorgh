@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import ai.simorgh.android.accessibility.AccessibilityObservationBus
 import ai.simorgh.android.accessibility.AccessibilityServiceStatus
+import ai.simorgh.android.device.BackgroundLaunchAccess
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.service.ConnectionStatusBus
 import ai.simorgh.android.service.SecureConnectionStore
@@ -30,6 +31,7 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
                 ?: connectionPreferences.loadEndpoint(),
             startOnBootEnabled = secureConnectionStore.isStartOnBootEnabled(),
             accessibilityEnabled = AccessibilityServiceStatus.isEnabled(application),
+            backgroundLaunchAccessGranted = BackgroundLaunchAccess.isGranted(application),
         ),
     )
     val uiState: State<SimorghUiState> = mutableUiState
@@ -82,6 +84,16 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
 
     fun openAccessibilitySettings() {
         AccessibilityServiceStatus.openSystemSettings(getApplication())
+    }
+
+    fun refreshBackgroundLaunchAccess() {
+        mutableUiState.value = mutableUiState.value.copy(
+            backgroundLaunchAccessGranted = BackgroundLaunchAccess.isGranted(getApplication()),
+        )
+    }
+
+    fun openBackgroundLaunchAccessSettings() {
+        BackgroundLaunchAccess.openSettings(getApplication())
     }
 
     fun connect() {
