@@ -19,7 +19,7 @@ from simorgh_core.devices.action_semantics import (
     AndroidActionSemanticError,
     validate_result_semantics,
 )
-from simorgh_core.devices.actions import AndroidActionResult
+from simorgh_core.devices.actions import AndroidActionResult, ObservationReference
 from simorgh_core.devices.protocol import (
     ActionResultAckStatus,
     DeviceActionCancelAckPayload,
@@ -34,7 +34,11 @@ from simorgh_core.devices.protocol import (
     DeviceRegistrationPayload,
     ProtocolEnvelope,
 )
-from simorgh_core.devices.registry import DeviceSession, registry
+from simorgh_core.devices.registry import (
+    DeviceSession,
+    StoredObservationEvidence,
+    registry,
+)
 
 router = APIRouter(prefix="/v1/devices", tags=["devices"])
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
@@ -178,6 +182,22 @@ async def _reject_action_result(
     )
 
 
+async def _evidence_for_reference(
+    *,
+    device_id: UUID,
+    reference: ObservationReference | None,
+) -> StoredObservationEvidence | None:
+    if reference is None:
+        return None
+    return await registry.observation_evidence(
+        device_id=device_id,
+        stream_id=reference.stream_id,
+        sequence=reference.sequence,
+        snapshot_id=reference.snapshot_id,
+        state_fingerprint=reference.state_fingerprint,
+    )
+
+
 async def _handle_action_result(
     *,
     session: DeviceSession,
@@ -226,12 +246,20 @@ async def _handle_action_result(
         return
 
     if record.result is None:
-        latest = await registry.latest_observation(session.device_id)
+        before_evidence = await _evidence_for_reference(
+            device_id=session.device_id,
+            reference=result.before_observation,
+        )
+        after_evidence = await _evidence_for_reference(
+            device_id=session.device_id,
+            reference=result.after_observation,
+        )
         try:
             validate_result_semantics(
                 command=record.command,
                 result=result,
-                latest_observation=latest.payload if latest is not None else None,
+                before_evidence=before_evidence,
+                after_evidence=after_evidence,
             )
         except AndroidActionSemanticError as exc:
             await _reject_action_result(
