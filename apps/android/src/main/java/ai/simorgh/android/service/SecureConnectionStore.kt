@@ -14,7 +14,7 @@ import javax.crypto.spec.GCMParameterSpec
 class SecureConnectionStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
-    fun save(config: CoreConnectionConfig, autoResume: Boolean = true) {
+    fun save(config: CoreConnectionConfig, connectionEnabled: Boolean = true) {
         val validated = config.validated()
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -24,7 +24,7 @@ class SecureConnectionStore(context: Context) {
             .putString(KEY_ENDPOINT, validated.endpoint)
             .putString(KEY_TOKEN_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .putString(KEY_TOKEN_CIPHERTEXT, Base64.encodeToString(encryptedToken, Base64.NO_WRAP))
-            .putBoolean(KEY_AUTO_RESUME, autoResume)
+            .putBoolean(KEY_CONNECTION_ENABLED, connectionEnabled)
             .apply()
     }
 
@@ -47,13 +47,21 @@ class SecureConnectionStore(context: Context) {
         }.getOrNull()
     }
 
-    fun loadForAutoResume(): CoreConnectionConfig? = if (isAutoResumeEnabled()) load() else null
+    fun loadForServiceResume(): CoreConnectionConfig? = if (isConnectionEnabled()) load() else null
 
-    fun setAutoResumeEnabled(enabled: Boolean) {
-        preferences.edit().putBoolean(KEY_AUTO_RESUME, enabled).apply()
+    fun loadForBoot(): CoreConnectionConfig? = if (isStartOnBootEnabled()) load() else null
+
+    fun setConnectionEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_CONNECTION_ENABLED, enabled).apply()
     }
 
-    fun isAutoResumeEnabled(): Boolean = preferences.getBoolean(KEY_AUTO_RESUME, false)
+    fun isConnectionEnabled(): Boolean = preferences.getBoolean(KEY_CONNECTION_ENABLED, false)
+
+    fun setStartOnBootEnabled(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_START_ON_BOOT, enabled).apply()
+    }
+
+    fun isStartOnBootEnabled(): Boolean = preferences.getBoolean(KEY_START_ON_BOOT, false)
 
     fun clear() {
         preferences.edit().clear().apply()
@@ -85,7 +93,8 @@ class SecureConnectionStore(context: Context) {
         const val KEY_ENDPOINT = "endpoint"
         const val KEY_TOKEN_IV = "device_token_iv"
         const val KEY_TOKEN_CIPHERTEXT = "device_token_ciphertext"
-        const val KEY_AUTO_RESUME = "auto_resume"
+        const val KEY_CONNECTION_ENABLED = "connection_enabled"
+        const val KEY_START_ON_BOOT = "start_on_boot"
         const val KEY_ALIAS = "simorgh_device_transport_key_v1"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
