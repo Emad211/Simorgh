@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
+import java.io.Closeable
 
 class SimorghAccessibilityService : AccessibilityService() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -13,12 +14,17 @@ class SimorghAccessibilityService : AccessibilityService() {
     private var latestPackageName: String? = null
     private var latestWindowId: Int? = null
     private var serviceConnected = false
+    private var captureInstallation: Closeable? = null
 
     private val captureRunnable = Runnable(::captureSnapshot)
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         serviceConnected = true
+        captureInstallation?.close()
+        captureInstallation = AccessibilityCaptureController.install {
+            mainHandler.post { scheduleCapture(immediate = true) }
+        }
         AccessibilityObservationBus.publish(
             AccessibilityObserverState(serviceConnected = true),
         )
@@ -44,6 +50,8 @@ class SimorghAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         serviceConnected = false
+        captureInstallation?.close()
+        captureInstallation = null
         mainHandler.removeCallbacks(captureRunnable)
         AccessibilityObservationBus.publish(
             AccessibilityObserverState(serviceConnected = false),
