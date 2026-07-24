@@ -1,5 +1,6 @@
 package ai.simorgh.android.transport
 
+import ai.simorgh.android.accessibility.AccessibilityAcknowledgementBus
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
 import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
@@ -15,6 +16,7 @@ class AccessibilityObservationPublisher(
     private val sender: (ProtocolEnvelope) -> Boolean,
     private val listener: (String) -> Unit = {},
     private val acknowledgementListener: (AcknowledgedAccessibilityObservation) -> Unit = {},
+    private val acknowledgementInvalidator: () -> Unit = AccessibilityAcknowledgementBus::reset,
     private val scheduler: ObservationScheduler = ExecutorObservationScheduler(),
     private val minimumSendIntervalMillis: Long = 500,
     private val acknowledgementTimeoutMillis: Long = 10_000,
@@ -28,6 +30,7 @@ class AccessibilityObservationPublisher(
     private var nextSequence = 0L
     private var lastSendAtMillis: Long? = null
     private var lastAcknowledgedFingerprint: String? = null
+    private var latestSnapshot: AccessibilitySnapshot? = null
     private var pending: ObservationDelivery? = null
     private var inFlight: ObservationDelivery? = null
     private var sendTask: ScheduledObservationTask? = null
@@ -44,40 +47,26 @@ class AccessibilityObservationPublisher(
         val fingerprint = AccessibilitySnapshotFingerprint.calculate(snapshot)
 
         synchronized(lock) {
-            if (closed || fingerprint == lastAcknowledgedFingerprint) {
+            if (closed) {
+                return false
+            }
+            latestSnapshot = snapshot
+            if (fingerprint == lastAcknowledgedFingerprint) {
                 return false
             }
             if (fingerprint == inFlight?.fingerprint || fingerprint == pending?.fingerprint) {
                 return false
             }
-
-            val sequence = nextSequence
-            val envelope = DeviceProtocol.observation(
-                deviceId = deviceId,
-                streamId = streamId,
-                sequence = sequence,
-                stateFingerprint = fingerprint,
-                snapshot = snapshot,
-            )
-            if (DeviceProtocol.encodedSizeBytes(envelope) > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
-                listener("observation ${snapshot.snapshotId} exceeds the transport byte limit")
+            if (!enqueueLocked(snapshot, fingerprint)) {
                 return false
             }
-
-            nextSequence += 1
-            pending = ObservationDelivery(
-                envelope = envelope,
-                streamId = streamId,
-                sequence = sequence,
-                snapshot = snapshot,
-                fingerprint = fingerprint,
-            )
             scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
         }
         return true
     }
 
     fun setConnected(isConnected: Boolean) {
+        var invalidateAcknowledgement = false
         synchronized(lock) {
             if (closed || connected == isConnected) {
                 return
@@ -90,9 +79,22 @@ class AccessibilityObservationPublisher(
 
             if (!connected) {
                 inFlight = inFlight?.copy(awaitingAcknowledgement = false)
-                return
+                invalidateAcknowledgement = true
+            } else {
+                lastAcknowledgedFingerprint = null
+                if (inFlight == null && pending == null) {
+                    latestSnapshot?.let { snapshot ->
+                        enqueueLocked(
+                            snapshot = snapshot,
+                            fingerprint = AccessibilitySnapshotFingerprint.calculate(snapshot),
+                        )
+                    }
+                }
+                scheduleSendLocked(delayMillis = 0)
             }
-            scheduleSendLocked(delayMillis = 0)
+        }
+        if (invalidateAcknowledgement) {
+            acknowledgementInvalidator()
         }
     }
 
@@ -150,10 +152,40 @@ class AccessibilityObservationPublisher(
             acknowledgementTask?.cancel()
             sendTask = null
             acknowledgementTask = null
+            latestSnapshot = null
             pending = null
             inFlight = null
         }
+        acknowledgementInvalidator()
         scheduler.close()
+    }
+
+    private fun enqueueLocked(
+        snapshot: AccessibilitySnapshot,
+        fingerprint: String,
+    ): Boolean {
+        val sequence = nextSequence
+        val envelope = DeviceProtocol.observation(
+            deviceId = deviceId,
+            streamId = streamId,
+            sequence = sequence,
+            stateFingerprint = fingerprint,
+            snapshot = snapshot,
+        )
+        if (DeviceProtocol.encodedSizeBytes(envelope) > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
+            listener("observation ${snapshot.snapshotId} exceeds the transport byte limit")
+            return false
+        }
+
+        nextSequence += 1
+        pending = ObservationDelivery(
+            envelope = envelope,
+            streamId = streamId,
+            sequence = sequence,
+            snapshot = snapshot,
+            fingerprint = fingerprint,
+        )
+        return true
     }
 
     private fun scheduleSendLocked(delayMillis: Long) {
