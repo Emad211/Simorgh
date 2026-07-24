@@ -2,6 +2,7 @@ package ai.simorgh.android.transport
 
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
+import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
 import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.ObservationAckStatus
@@ -13,6 +14,7 @@ class AccessibilityObservationPublisher(
     private val deviceId: String,
     private val sender: (ProtocolEnvelope) -> Boolean,
     private val listener: (String) -> Unit = {},
+    private val acknowledgementListener: (AcknowledgedAccessibilityObservation) -> Unit = {},
     private val scheduler: ObservationScheduler = ExecutorObservationScheduler(),
     private val minimumSendIntervalMillis: Long = 500,
     private val acknowledgementTimeoutMillis: Long = 10_000,
@@ -67,7 +69,7 @@ class AccessibilityObservationPublisher(
                 envelope = envelope,
                 streamId = streamId,
                 sequence = sequence,
-                snapshotId = snapshot.snapshotId,
+                snapshot = snapshot,
                 fingerprint = fingerprint,
             )
             scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
@@ -98,12 +100,13 @@ class AccessibilityObservationPublisher(
         acknowledgement: DeviceObservationAckPayload,
         correlationId: String?,
     ): Boolean {
+        var published: AcknowledgedAccessibilityObservation? = null
         synchronized(lock) {
             val active = inFlight ?: return false
             if (
                 acknowledgement.streamId != active.streamId ||
                 acknowledgement.sequence != active.sequence ||
-                acknowledgement.snapshotId != active.snapshotId ||
+                acknowledgement.snapshotId != active.snapshot.snapshotId ||
                 correlationId != active.envelope.messageId
             ) {
                 return false
@@ -114,19 +117,27 @@ class AccessibilityObservationPublisher(
             inFlight = null
             if (acknowledgement.status != ObservationAckStatus.STALE) {
                 lastAcknowledgedFingerprint = active.fingerprint
+                published = AcknowledgedAccessibilityObservation(
+                    streamId = active.streamId,
+                    sequence = active.sequence,
+                    stateFingerprint = active.fingerprint,
+                    snapshot = active.snapshot,
+                    acknowledgedAtMs = acknowledgement.receivedAtMs,
+                )
             }
             listener(
                 "observation ${acknowledgement.snapshotId} " +
                     acknowledgement.status.name.lowercase(),
             )
             scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
-            return true
         }
+        published?.let(acknowledgementListener)
+        return true
     }
 
-    fun pendingSnapshotId(): String? = synchronized(lock) { pending?.snapshotId }
+    fun pendingSnapshotId(): String? = synchronized(lock) { pending?.snapshot?.snapshotId }
 
-    fun inFlightSnapshotId(): String? = synchronized(lock) { inFlight?.snapshotId }
+    fun inFlightSnapshotId(): String? = synchronized(lock) { inFlight?.snapshot?.snapshotId }
 
     override fun close() {
         synchronized(lock) {
@@ -174,7 +185,9 @@ class AccessibilityObservationPublisher(
             val active = inFlight ?: pending?.also { pending = null } ?: return
             if (active.attempts >= maxAttempts) {
                 inFlight = null
-                listener("observation ${active.snapshotId} failed after $maxAttempts attempts")
+                listener(
+                    "observation ${active.snapshot.snapshotId} failed after $maxAttempts attempts",
+                )
                 scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
                 return
             }
@@ -207,7 +220,7 @@ class AccessibilityObservationPublisher(
                     attempts = (delivery.attempts - 1).coerceAtLeast(0),
                     awaitingAcknowledgement = false,
                 )
-                listener("observation ${delivery.snapshotId} paused until reconnect")
+                listener("observation ${delivery.snapshot.snapshotId} paused until reconnect")
                 return
             }
 
@@ -226,7 +239,9 @@ class AccessibilityObservationPublisher(
                 return
             }
             inFlight = active.copy(awaitingAcknowledgement = false)
-            listener("observation ${active.snapshotId} acknowledgement timeout")
+            listener(
+                "observation ${active.snapshot.snapshotId} acknowledgement timeout",
+            )
             scheduleSendLocked(delayMillis = minimumSendIntervalMillis)
         }
     }
@@ -241,7 +256,7 @@ class AccessibilityObservationPublisher(
         val envelope: ProtocolEnvelope,
         val streamId: String,
         val sequence: Long,
-        val snapshotId: String,
+        val snapshot: AccessibilitySnapshot,
         val fingerprint: String,
         val attempts: Int = 0,
         val awaitingAcknowledgement: Boolean = false,
