@@ -5,47 +5,47 @@
 
 ## Context
 
-Android action preconditions intentionally use a strict observation-age budget. The normal observation publisher also intentionally suppresses unchanged canonical UI state.
+Android action preconditions intentionally use a strict observation-age budget. The normal observation publisher intentionally suppresses unchanged canonical UI state.
 
-Those two correct behaviors create a liveness gap:
+Together, those correct behaviors create a liveness gap:
 
 1. the visible screen remains unchanged and still correct;
-2. the last Core acknowledgement becomes older than the action freshness budget;
-3. normal publishing suppresses another identical state;
-4. Core cannot safely bind a new action to fresh evidence;
+2. its last Core acknowledgement becomes older than the action freshness budget;
+3. normal publication suppresses the same canonical state;
+4. Core cannot safely bind a new action to recent evidence;
 5. increasing `maximum_age_ms` would weaken stale-state protection.
 
-The system needs an explicit, bounded handshake that obtains newly acknowledged evidence without turning unchanged UI into continuous network traffic.
+Simorgh therefore needs an explicit, bounded mechanism that asks Android to capture the current screen again, while preserving ordinary state deduplication and all existing action safety rules.
 
 ## Decision
 
-Simorgh will add a typed observation-refresh protocol independent of action execution.
+Simorgh will implement a typed observation-refresh protocol independent of action execution.
 
 ### Message flow
 
 ```text
-Core operator API
+trusted operator API
         |
         v
 device.observation_refresh
         |
         v
-Android validates request and observer availability
+Android validates request identity and observer availability
         |
         v
 device.observation_refresh_ack
         |
-        +---- rejected / unavailable / busy ----------> terminal failure
+        +---- unavailable / busy / rejected ----------> terminal refresh state
         |
         v
 explicit Accessibility capture
         |
         v
 forced device.observation
-correlation_id = refresh envelope message_id
+correlation_id = refresh request message_id
         |
         v
-Core registry validation and evidence storage
+Core registry validation + compact evidence storage
         |
         v
 device.observation_ack
@@ -54,69 +54,107 @@ device.observation_ack
 Core refresh record = completed
 ```
 
-The ordinary observation payload and canonical fingerprint remain unchanged. Refresh identity is carried by the observation envelope's `correlation_id`, not by UI data.
+Refresh identity is transport metadata carried by `correlation_id`. It is not added to the Accessibility snapshot or canonical UI fingerprint.
+
+### Protocol identity
+
+The request envelope and payload share one UUID:
+
+```text
+envelope.message_id == payload.request_id
+```
+
+The Android acknowledgement must satisfy:
+
+```text
+ack.correlation_id == request.message_id
+ack.payload.request_id == request.message_id
+```
+
+The correlated observation satisfies:
+
+```text
+observation.correlation_id == request.message_id
+```
+
+Retries and reconnect redelivery preserve the exact request or observation envelope, including its message ID and payload.
 
 ### Core request payload
 
 The request contains:
 
-- `request_id`, equal to the refresh envelope message ID;
-- relative `timeout_ms`;
-- optional expected state fingerprint;
+- `request_id`;
+- relative `timeout_ms` in `250..10000`;
+- optional expected canonical fingerprint;
 - optional expected active package;
 - bounded diagnostic reason.
 
-Android uses the relative timeout with a monotonic clock. It does not compare Core wall-clock deadlines to device wall time.
+Android uses the relative timeout with its local monotonic scheduler. It does not compare a Core wall-clock deadline against device wall time.
 
-Core retains its own absolute expiry for record lifecycle and redelivery.
+Core independently stores an absolute expiry for record lifecycle and reconnect redelivery.
 
 ### Android acknowledgement
 
-Android immediately emits a typed acknowledgement:
+Android emits a typed acknowledgement:
 
-- `accepted`: capture ownership was accepted;
-- `duplicate`: the exact request is already active or represented by queued/in-flight delivery;
-- `busy`: another refresh owns the single-flight coordinator;
-- `expired`: local processing could not begin within the request timeout;
-- `observer_unavailable`: Accessibility capture is unavailable;
-- `rejected`: malformed or internally inconsistent request.
+- `accepted`: the coordinator owns a new capture request;
+- `duplicate`: the same request already owns capture, delivery, or recent acknowledged history;
+- `busy`: another refresh owns the single-flight path;
+- `expired`: no new snapshot arrived within the local timeout;
+- `observer_unavailable`: the Accessibility observer or capture requester is unavailable;
+- `rejected`: request validation, publisher state, or transport-size validation failed.
 
-An accepted ACK is not freshness proof. Only the correlated observation acknowledged by Core is proof.
+An accepted ACK is not freshness proof. Only a correlated observation that Core records and acknowledges can complete the refresh.
 
-### Forced observation delivery
-
-The observation publisher gains one priority refresh slot in addition to normal latest-wins state:
-
-- normal pending observations remain latest-wins;
-- a refresh observation bypasses canonical-fingerprint deduplication;
-- refresh delivery is never replaced by a normal observation;
-- only one refresh correlation is pending or in flight;
-- an existing normal in-flight observation finishes before the refresh;
-- the refresh then has priority over normal pending state;
-- retries preserve the exact observation envelope and correlation ID;
-- reconnect resumes exact in-flight delivery;
-- normal minimum send interval and message-size limits still apply.
-
-This preserves backpressure while allowing one explicit unchanged-state proof.
+Android may emit a terminal ACK after its initial accepted ACK. Core may also expire the record first. Once Core reaches a terminal state, that state is authoritative: a later same-request Android ACK is identity-checked and ignored without reopening or rewriting the record.
 
 ### Capture coordinator
 
-Android uses a single-flight coordinator:
+Android uses one single-flight capture coordinator:
 
-1. records the current local snapshot ID;
-2. registers request ownership;
-3. asks the system Accessibility service for an immediate capture;
-4. accepts only a subsequently published snapshot with a different ID;
-5. projects the snapshot through the same transport projection used by normal observation;
-6. checks optional expected fingerprint/package locally;
-7. submits a forced correlated observation;
-8. times out or fails closed when the observer disappears or no new snapshot arrives.
+1. validate request identity and timeout bounds;
+2. reject or deduplicate competing ownership;
+3. verify that Accessibility is connected;
+4. record the current snapshot ID;
+5. schedule a bounded local timeout;
+6. request immediate capture from `SimorghAccessibilityService`;
+7. accept only a subsequently published snapshot with a different ID;
+8. apply the same privacy projection used by normal transport;
+9. submit the projected snapshot to the publisher's priority refresh slot.
 
-Concurrent ordinary Accessibility events may satisfy the request if they occur after ownership and produce a new snapshot. They still represent fresh current state.
+Concurrent ordinary Accessibility events may satisfy the request when they are published after ownership and contain a new snapshot ID. They still represent current device state.
+
+The optional expected fingerprint and package are checked by Core, not used to suppress Android publication. This is deliberate: if the screen changed, Core must still learn and acknowledge the new ordinary device state even though the refresh request itself is rejected.
+
+### Forced observation publisher
+
+The observation publisher has:
+
+- one ordinary latest-wins pending slot;
+- one priority refresh pending slot;
+- one in-flight delivery.
+
+Rules:
+
+- ordinary unchanged state remains deduplicated;
+- a refresh bypasses canonical-state deduplication;
+- only one refresh is pending or in flight;
+- an existing in-flight ordinary observation finishes first;
+- a fresh captured refresh supersedes older unsent ordinary state;
+- after the in-flight delivery completes, refresh has priority;
+- a normal observation cannot replace the refresh;
+- retries reuse the exact materialized envelope;
+- reconnect resumes the exact in-flight delivery;
+- minimum send interval and maximum message size still apply;
+- an oversized rejected snapshot is not retained as a reconnect replay candidate.
+
+Sequence numbers are assigned only when a pending state is materialized for actual delivery. Replaced pending states do not consume sequence numbers, and refresh priority cannot create an out-of-order sequence.
+
+Transport-size preview uses the serialized width of `Long.MAX_VALUE`, so a payload accepted near the byte limit cannot later exceed it only because its sequence number grew.
 
 ### Core refresh broker
 
-Core maintains one active refresh per device with phases:
+Core maintains one non-terminal refresh per device with phases:
 
 - `queued`;
 - `delivered`;
@@ -126,22 +164,42 @@ Core maintains one active refresh per device with phases:
 - `expired`;
 - `cancelled`.
 
-The request envelope identity and payload remain stable across reconnect redelivery. Refresh is observation-only, so recapture after Android process restart is safe; however, exact in-flight observation delivery is preferred when available.
+The request envelope is stable across reconnect. Delivery ownership belongs to the latest Session ID that received the request.
 
-Core completion requires:
+Session race rules:
 
-- current registered device session;
-- matching refresh request correlation;
-- observation registry status other than `stale`;
-- optional expected fingerprint/package match;
-- exact compact evidence present in Core's acknowledged-observation history;
-- successful transmission of the observation ACK before the record becomes `completed`.
+- a Create that loses its Session before any replacement delivery marks the inserted record rejected, so the device is not left permanently busy;
+- if a replacement Session already owns or completed the same request, the old Create path preserves that newer ownership;
+- a redelivery call from an obsolete Session is a no-op;
+- a replacement Session lacking `android.observation.refresh.v1` terminally rejects the active refresh;
+- messages from a Session that does not own current delivery are rejected as conflicts.
 
-Sending the ACK first ensures a later action command cannot overtake the acknowledgement on the serialized WebSocket.
+Network send failure returns the record to `queued`, except that an already accepted record remains accepted. The exact envelope is retried after reconnect.
+
+### Core completion
+
+A correlated observation can complete a non-terminal refresh only when:
+
+- it comes from the Session that owns current delivery;
+- the record is `delivered` or `accepted`;
+- registry status is not `stale`;
+- optional expected fingerprint and package match;
+- exact compact evidence exists in Core's acknowledged-observation history.
+
+The gateway order is:
+
+1. validate and store the observation;
+2. prepare a completion candidate;
+3. send `device.observation_ack` on the serialized Session socket;
+4. commit the refresh as `completed`.
+
+Sending the ACK first prevents a subsequent action command from overtaking the evidence acknowledgement on the same WebSocket.
+
+If sending the ACK fails, Android retries the exact observation after reconnect. Core then resolves the same compact evidence and can complete the still-active refresh.
 
 ### Operator API
 
-Core exposes explicit create, read, and cancel resources:
+Core exposes:
 
 ```text
 POST /v1/devices/{device_id}/observation-refreshes
@@ -149,62 +207,82 @@ GET  /v1/devices/{device_id}/observation-refreshes/{request_id}
 POST /v1/devices/{device_id}/observation-refreshes/{request_id}/cancel
 ```
 
-The create endpoint returns `202` with a stable request ID. Callers poll until terminal state. A completed response contains compact evidence suitable for constructing a strict `ObservationPrecondition`.
+Create returns `202` with a stable request ID. Callers poll until a terminal phase.
 
-The raw action API remains unchanged. An orchestrator can:
+A completed response includes compact evidence:
+
+- observation message ID;
+- Session ID;
+- Core acknowledgement time;
+- stream ID;
+- sequence;
+- snapshot ID;
+- state fingerprint;
+- capture time;
+- active package.
+
+An orchestrator uses the result as follows:
 
 1. create refresh;
-2. wait for completed evidence;
-3. construct a new action command whose precondition binds to that evidence;
-4. dispatch the action.
+2. wait for `completed`;
+3. construct a new `AndroidActionCommand` bound to the returned evidence;
+4. dispatch that action without relaxing `maximum_age_ms`.
 
-This avoids silently rewriting caller-supplied action identifiers or deadlines.
+The raw action API and caller-supplied command identity remain unchanged.
 
 ### Capability requirement
 
-A refresh requires the versioned device capability:
+A refresh requires:
 
 ```text
 android.observation.refresh.v1
 ```
 
-Core creates a refresh only for a currently connected session advertising that capability. Redelivery to a replacement session also requires the capability.
+Core creates a request only for a current connected Session advertising that versioned capability. The same requirement is applied to replacement Sessions during redelivery.
 
 ### Cancellation
 
-Cancellation is Core-side and terminal. A late correlated observation remains valid ordinary device state but cannot complete the cancelled refresh. No device-side cancellation message is required because capture has no external side effect and is bounded by a short timeout.
+Cancellation is Core-side and terminal. A late ACK or correlated observation cannot reopen or complete a cancelled record.
+
+A late correlated observation is still validated, stored, and acknowledged as ordinary device state. It simply has no refresh completion candidate.
+
+No device-side cancellation message is required because capture is observation-only and bounded by a short local timeout.
 
 ### Restart semantics
 
-A refresh broker is process-local in this increment:
+The refresh broker is process-local in this increment:
 
-- reconnect within the same Core process redelivers the exact request;
+- reconnect within one Core process redelivers the exact request;
 - Core process restart loses non-terminal refresh records;
-- a late correlated observation after restart is recorded as ordinary state but cannot complete an unknown refresh;
-- the caller safely creates a new refresh after restart.
+- a late correlated observation after restart remains valid ordinary state but cannot complete an unknown refresh;
+- the caller safely creates a new refresh.
 
-Refresh has no external side effect, so retry is safe. Durable action recovery remains a separate problem in issue #22.
+Refresh has no external side effect, so creating a replacement request is safe. Durable action/result recovery remains issue #22.
 
 ## Consequences
 
 ### Positive
 
-- unchanged screens can produce fresh strict evidence on demand;
-- action freshness policy remains strict;
-- normal observation traffic remains deduplicated and latest-wins;
-- refresh observation cannot be displaced by ordinary UI churn;
-- protocol correlation is explicit and replay-safe;
-- Android uses monotonic relative time instead of cross-device wall-clock comparison;
-- Core ACK ordering prevents action delivery from overtaking evidence acknowledgement;
-- cancellation and reconnect behavior are deterministic;
-- the raw action transport remains stable.
+- unchanged screens produce fresh strict evidence on demand;
+- action freshness remains strict;
+- normal observation traffic remains deduplicated and bounded;
+- refresh delivery cannot be displaced by ordinary UI churn;
+- sequence ordering remains monotonic without gaps from replaced pending state;
+- request, ACK, and observation correlation are explicit;
+- exact reconnect replay is safe;
+- expected-state mismatch still updates Core's ordinary device state;
+- Core/Android timer races do not create false protocol conflicts;
+- stale Session races cannot permanently lock the device;
+- Android uses local relative time instead of cross-device wall-clock comparison;
+- action transport and identifiers remain unchanged.
 
 ### Negative
 
-- one action-planning cycle gains an additional network round trip;
-- a refresh can fail even when UI is visible if Accessibility capture is unavailable;
-- one priority refresh slot adds publisher state-machine complexity;
-- process restart requires a new refresh request;
+- one planning cycle gains an additional network round trip;
+- one priority slot and capture coordinator add state-machine complexity;
+- refresh can fail when Accessibility is unavailable even if the UI is visible;
+- expected-state mismatch completes ordinary observation transport but rejects the refresh goal;
+- Core restart requires a new request;
 - callers must explicitly bind completed evidence into a new action command;
 - physical OEM validation remains necessary.
 
@@ -212,47 +290,57 @@ Refresh has no external side effect, so retry is safe. Durable action recovery r
 
 ### Increase `maximum_age_ms`
 
-Rejected because it weakens protection against stale plans rather than producing fresh proof.
+Rejected because it weakens stale-plan protection instead of producing fresh proof.
 
-### Disable observation deduplication
+### Disable ordinary observation deduplication
 
-Rejected because a stable screen would continuously transmit large unchanged trees.
+Rejected because a stable screen would continuously transmit large identical trees.
 
-### Add refresh fields to the canonical snapshot
+### Add refresh identity to canonical UI state
 
-Rejected because request identity is transport metadata, not UI state, and would incorrectly alter canonical fingerprints.
+Rejected because request identity is transport metadata and would corrupt state deduplication semantics.
 
-### Complete refresh on Android ACK alone
+### Check expected state only on Android and suppress mismatch publication
 
-Rejected because scheduling a capture does not prove Core observed or acknowledged the resulting state.
+Rejected because Core must learn the actual current screen when it changed.
 
-### Complete refresh before sending observation ACK
+### Complete on Android ACK alone
 
-Rejected because a newly dispatched action could overtake the ACK on the same device connection.
+Rejected because accepting capture ownership does not prove Core observed the resulting state.
 
-### Reuse raw `device.error` for all refresh outcomes
+### Complete before sending observation ACK
 
-Rejected because observer unavailability, busy state, expiry, and rejection are expected typed protocol outcomes.
+Rejected because an action could overtake the evidence acknowledgement.
+
+### Reserve sequence numbers when pending state is queued
+
+Rejected because latest-wins replacement and refresh priority could create gaps or out-of-order delivery.
+
+### Treat late terminal ACK as a conflicting state transition
+
+Rejected because Core and Android use independently bounded timers; Core terminal state is already authoritative.
 
 ### Automatically mutate an existing action command
 
-Rejected because command IDs, issue/deadline times, and caller intent should not be silently rewritten. A higher-level orchestration API can be added later.
+Rejected because command IDs, issue/deadline times, and caller intent must not be silently rewritten. A higher-level orchestration API can be added separately.
 
 ## Validation
 
-Required automated coverage:
+Automated coverage must include:
 
-- protocol round trip on Python and Kotlin;
-- unchanged-state forced delivery bypassing dedupe;
-- refresh priority over normal pending state;
+- Python and Kotlin protocol round trip;
+- unchanged-state forced delivery;
+- refresh priority and monotonic sequence assignment;
 - exact envelope retry and reconnect;
-- duplicate request handling;
-- observer unavailable;
-- concurrent UI change and expected-state mismatch;
+- duplicate versus competing request;
+- observer unavailable and disconnect;
 - timeout;
-- cancellation followed by late observation;
-- replacement session redelivery;
-- unknown refresh after Core broker recreation;
-- completed evidence used to dispatch a strict action.
+- expected-state mismatch while retaining ordinary observation;
+- cancellation followed by late ACK and observation;
+- replacement Session ownership and obsolete redelivery;
+- failed initial delivery not leaving the device busy;
+- Core expiry followed by late Android timeout ACK;
+- unknown refresh after broker recreation;
+- completed evidence used in a strict action precondition.
 
-Physical Galaxy A53 validation remains separate and must be recorded before OEM support is claimed.
+Physical Samsung Galaxy A53 validation remains separate and must be recorded before OEM support is claimed.
