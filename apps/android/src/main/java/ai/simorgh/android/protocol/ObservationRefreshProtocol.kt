@@ -57,7 +57,10 @@ object ObservationRefreshProtocol {
     const val CAPABILITY: String = "android.observation.refresh.v1"
 
     fun decodeRequest(envelope: ProtocolEnvelope): DeviceObservationRefreshPayload =
-        DeviceProtocol.json.decodeFromJsonElement(envelope.payload)
+        DeviceProtocol.json.decodeFromJsonElement(
+            DeviceObservationRefreshPayload.serializer(),
+            envelope.payload,
+        )
 
     fun acknowledgement(
         deviceId: String,
@@ -67,10 +70,7 @@ object ObservationRefreshProtocol {
         detail: String = "",
         nowMs: Long = System.currentTimeMillis(),
     ): ProtocolEnvelope {
-        requireUuid(requestEnvelopeId, "request envelope id")
-        require(requestId == requestEnvelopeId) {
-            "refresh request_id must equal request envelope message_id"
-        }
+        validateRequestIdentity(requestEnvelopeId, requestId)
         return ProtocolEnvelope(
             messageId = UUID.randomUUID().toString(),
             type = TYPE_REFRESH_ACK,
@@ -117,15 +117,10 @@ object ObservationRefreshProtocol {
     }
 
     fun validateRequest(
-        envelope: ProtocolEnvelope,
+        requestEnvelopeId: String,
         payload: DeviceObservationRefreshPayload,
     ): DeviceObservationRefreshPayload {
-        require(envelope.type == TYPE_REFRESH) { "unexpected refresh message type" }
-        requireUuid(envelope.messageId, "refresh envelope message_id")
-        require(envelope.correlationId == null) { "refresh request cannot have correlation_id" }
-        require(payload.requestId == envelope.messageId) {
-            "refresh request_id must equal envelope message_id"
-        }
+        validateRequestIdentity(requestEnvelopeId, payload.requestId)
         require(payload.timeoutMs in 250..10_000) {
             "refresh timeout_ms must be in 250..10000"
         }
@@ -141,6 +136,13 @@ object ObservationRefreshProtocol {
         }
         require(payload.reason.length <= 1_000) { "refresh reason exceeds 1000 characters" }
         return payload
+    }
+
+    private fun validateRequestIdentity(requestEnvelopeId: String, requestId: String) {
+        requireUuid(requestEnvelopeId, "refresh envelope message_id")
+        require(requestId == requestEnvelopeId) {
+            "refresh request_id must equal envelope message_id"
+        }
     }
 
     private fun requireUuid(value: String, field: String) {
