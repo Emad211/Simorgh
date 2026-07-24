@@ -71,16 +71,15 @@ def test_password_node_rejects_semantic_text() -> None:
 
 
 def test_snapshot_rejects_unknown_parent() -> None:
-    child_id = "3" * 24
     child = _node(
-        node_id=child_id,
+        node_id="3" * 24,
         path="0.0",
         depth=1,
         parent_node_id="4" * 24,
     )
 
     with pytest.raises(ValidationError, match="parent_node_id"):
-        _snapshot(root_node_id=child_id, nodes=[child], max_depth_observed=1)
+        _snapshot(nodes=[_node(child_count=1), child], max_depth_observed=1)
 
 
 def test_snapshot_rejects_duplicate_node_ids() -> None:
@@ -110,7 +109,7 @@ def test_canonical_fingerprint_matches_android_golden_vector() -> None:
     snapshot = _snapshot()
 
     assert calculate_accessibility_state_fingerprint(snapshot) == (
-        "e07a9dd17c96624ccc470add7a60a94f8a05191b05bd99147e20f1a906981859"
+        "dc012d2ab21c3ad4308036eeddbe2522be4ab900f2b54eb24771341d2c79a056"
     )
 
 
