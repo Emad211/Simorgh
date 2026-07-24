@@ -22,6 +22,8 @@ data class DeviceCapabilities(
                 add("device.identity")
                 add("device.network_state")
                 add("android.launcher_surface")
+                add("android.accessibility.observe.platform")
+                add("android.accessibility.node_action.platform")
 
                 if (compatibility.canDispatchGestures) {
                     add("android.accessibility.gesture.platform")
