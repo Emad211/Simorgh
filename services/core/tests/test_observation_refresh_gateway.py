@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -22,6 +23,7 @@ from simorgh_core.devices.observation_refresh_protocol import (
     DeviceObservationRefreshAckPayload,
     DeviceObservationRefreshEnvelope,
     DeviceObservationRefreshPayload,
+    ObservationRefreshAckStatus,
 )
 from simorgh_core.devices.protocol import (
     AccessibilitySnapshotPayload,
@@ -142,11 +144,11 @@ def _send_refresh_ack(
     *,
     device_id: UUID,
     request_id: UUID,
-    status: str = "accepted",
+    status: ObservationRefreshAckStatus = "accepted",
 ) -> None:
     acknowledgement = DeviceObservationRefreshAckPayload(
         request_id=request_id,
-        status=status,  # type: ignore[arg-type]
+        status=status,
         received_at_ms=int(time.time() * 1000),
         detail=f"fixture {status}",
     )
@@ -177,7 +179,7 @@ def _create_refresh(
     *,
     device_id: UUID,
     expected_fingerprint: str,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     response = client.post(
         f"/v1/devices/{device_id}/observation-refreshes",
         headers=OPERATOR_HEADERS,
@@ -254,9 +256,9 @@ def test_unchanged_screen_refresh_returns_strict_action_evidence(
             headers=OPERATOR_HEADERS,
         )
         assert status_response.status_code == 200
-        completed = status_response.json()
+        completed: dict[str, Any] = status_response.json()
         assert completed["phase"] == "completed"
-        evidence = completed["evidence"]
+        evidence: dict[str, Any] = completed["evidence"]
         assert evidence["stream_id"] == str(stream_id)
         assert evidence["sequence"] == 1
         assert evidence["snapshot_id"] == str(refreshed.snapshot.snapshot_id)
@@ -269,10 +271,10 @@ def test_unchanged_screen_refresh_returns_strict_action_evidence(
             issued_at_ms=action_now_ms,
             deadline_at_ms=action_now_ms + 30_000,
             precondition=ObservationPrecondition(
-                expected_stream_id=UUID(evidence["stream_id"]),
-                minimum_sequence=evidence["sequence"],
-                expected_state_fingerprint=evidence["state_fingerprint"],
-                expected_active_package=evidence["active_package"],
+                expected_stream_id=UUID(str(evidence["stream_id"])),
+                minimum_sequence=int(evidence["sequence"]),
+                expected_state_fingerprint=str(evidence["state_fingerprint"]),
+                expected_active_package=str(evidence["active_package"]),
                 maximum_age_ms=2_000,
             ),
             operation=OpenAppOperation(package_name=ACTIVE_PACKAGE),
@@ -366,7 +368,7 @@ def test_cancelled_refresh_ignores_late_ack_and_observation(
             headers=OPERATOR_HEADERS,
         )
         assert final_response.status_code == 200
-        final = final_response.json()
+        final: dict[str, Any] = final_response.json()
         assert final["phase"] == "cancelled"
         assert final["evidence"] is None
         assert final["detail"] == "fixture cancellation"
