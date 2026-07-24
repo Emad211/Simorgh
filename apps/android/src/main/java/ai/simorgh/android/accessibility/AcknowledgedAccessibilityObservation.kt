@@ -44,7 +44,7 @@ data class AcknowledgedAccessibilityObservation(
 
 object AccessibilityAcknowledgementBus {
     private val listeners =
-        CopyOnWriteArraySet<(AcknowledgedAccessibilityObservation) -> Unit>()
+        CopyOnWriteArraySet<(AcknowledgedAccessibilityObservation?) -> Unit>()
 
     @Volatile
     private var latest: AcknowledgedAccessibilityObservation? = null
@@ -56,16 +56,24 @@ object AccessibilityAcknowledgementBus {
         listeners.forEach { listener -> listener(observation) }
     }
 
-    fun subscribe(listener: (AcknowledgedAccessibilityObservation) -> Unit): Closeable {
+    /**
+     * Invalidate executable evidence from the previous Core connection without breaking subscribers.
+     */
+    internal fun reset() {
+        latest = null
+        listeners.forEach { listener -> listener(null) }
+    }
+
+    fun subscribe(
+        listener: (AcknowledgedAccessibilityObservation?) -> Unit,
+    ): Closeable {
         listeners.add(listener)
-        latest?.let(listener)
+        listener(latest)
         return Closeable { listeners.remove(listener) }
     }
 
-    internal fun reset() {
+    internal fun clearForTest() {
         latest = null
         listeners.clear()
     }
-
-    internal fun clearForTest() = reset()
 }
