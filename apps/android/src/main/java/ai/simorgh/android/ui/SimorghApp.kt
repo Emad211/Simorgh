@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -45,6 +46,7 @@ fun SimorghApp(
         state = state,
         onEndpointChanged = viewModel::updateEndpoint,
         onDeviceTokenChanged = viewModel::updateDeviceToken,
+        onStartOnBootChanged = viewModel::updateStartOnBoot,
         onConnect = onConnectRequested,
         onDisconnect = viewModel::disconnect,
     )
@@ -55,6 +57,7 @@ private fun SimorghApp(
     state: SimorghUiState,
     onEndpointChanged: (String) -> Unit,
     onDeviceTokenChanged: (String) -> Unit,
+    onStartOnBootChanged: (Boolean) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -79,10 +82,12 @@ private fun SimorghApp(
                     endpoint = state.endpoint,
                     token = state.deviceToken,
                     serviceRunning = state.serviceRunning,
+                    startOnBootEnabled = state.startOnBootEnabled,
                     connectionState = state.connectionState,
                     lastProtocolEvent = state.lastProtocolEvent,
                     onEndpointChanged = onEndpointChanged,
                     onDeviceTokenChanged = onDeviceTokenChanged,
+                    onStartOnBootChanged = onStartOnBootChanged,
                     onConnect = onConnect,
                     onDisconnect = onDisconnect,
                 )
@@ -97,10 +102,12 @@ private fun ConnectionCard(
     endpoint: String,
     token: String,
     serviceRunning: Boolean,
+    startOnBootEnabled: Boolean,
     connectionState: ConnectionState,
     lastProtocolEvent: String?,
     onEndpointChanged: (String) -> Unit,
     onDeviceTokenChanged: (String) -> Unit,
+    onStartOnBootChanged: (Boolean) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -147,6 +154,26 @@ private fun ConnectionCard(
                 textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
                 supportingText = { Text(stringResource(R.string.device_token_hint)) },
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.start_on_boot_label),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = stringResource(R.string.start_on_boot_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(
+                    checked = startOnBootEnabled,
+                    onCheckedChange = onStartOnBootChanged,
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
