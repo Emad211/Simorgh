@@ -92,6 +92,40 @@ class AndroidActionContractTest {
     }
 
     @Test(expected = IllegalArgumentException::class)
+    fun `open app requires a target active-package predicate`() {
+        AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 10_000,
+                precondition = ObservationPrecondition(),
+                operation = OpenAppOperation(packageName = PACKAGE_NAME),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(NodeExistsPredicate(selector())),
+                ),
+            ),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `open app rejects an active-package predicate for another package`() {
+        AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 10_000,
+                precondition = ObservationPrecondition(),
+                operation = OpenAppOperation(packageName = PACKAGE_NAME),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(ActivePackageEqualsPredicate(OTHER_PACKAGE_NAME)),
+                ),
+            ),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
     fun `command lifetime cannot exceed two minutes`() {
         AndroidActionContractValidator.validate(
             AndroidActionCommand(
@@ -154,6 +188,7 @@ class AndroidActionContractTest {
                 operation = OpenAppOperation(packageName = PACKAGE_NAME),
                 verification = AndroidVerificationPolicy(
                     predicates = listOf(
+                        ActivePackageEqualsPredicate(PACKAGE_NAME),
                         NodeExistsPredicate(
                             AndroidNodeSelector(
                                 packageName = PACKAGE_NAME,
@@ -218,6 +253,7 @@ class AndroidActionContractTest {
         const val ACTION_ID = "22222222-2222-2222-2222-222222222222"
         const val STREAM_ID = "33333333-3333-3333-3333-333333333333"
         const val PACKAGE_NAME = "com.example"
+        const val OTHER_PACKAGE_NAME = "com.example.other"
         const val VIEW_ID = "com.example:id/continue_button"
     }
 }
