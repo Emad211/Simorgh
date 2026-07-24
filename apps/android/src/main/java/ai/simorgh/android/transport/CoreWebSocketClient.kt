@@ -2,6 +2,7 @@ package ai.simorgh.android.transport
 
 import android.os.SystemClock
 import ai.simorgh.android.device.DeviceCapabilities
+import ai.simorgh.android.protocol.DeviceObservationAckPayload
 import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.DeviceRegistrationPayload
 import ai.simorgh.android.protocol.ProtocolEnvelope
@@ -21,6 +22,11 @@ interface CoreConnectionListener {
     fun onStateChanged(state: ConnectionState)
 
     fun onProtocolEvent(detail: String)
+
+    fun onObservationAcknowledged(
+        acknowledgement: DeviceObservationAckPayload,
+        correlationId: String?,
+    ) = Unit
 }
 
 class CoreWebSocketClient(
@@ -204,6 +210,21 @@ class CoreWebSocketClient(
                     DeviceProtocol.decodeHeartbeatAck(envelope)
                 }.getOrElse { return }
                 listener.onProtocolEvent("heartbeat ${acknowledgement.sequence} تأیید شد")
+            }
+
+            DeviceProtocol.TYPE_OBSERVATION_ACK -> {
+                val acknowledgement = runCatching {
+                    DeviceProtocol.decodeObservationAck(envelope)
+                }.getOrElse { error ->
+                    listener.onProtocolEvent(
+                        "پاسخ Observation نامعتبر است: ${error.message.orEmpty()}",
+                    )
+                    return
+                }
+                listener.onObservationAcknowledged(
+                    acknowledgement = acknowledgement,
+                    correlationId = envelope.correlationId,
+                )
             }
 
             DeviceProtocol.TYPE_ERROR -> {
