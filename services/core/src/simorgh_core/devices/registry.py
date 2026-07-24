@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ class ObservationStreamConflictError(ValueError):
 
 
 class ObservationSequenceConflictError(ValueError):
-    """Raised when one stream reuses a sequence for different observation content."""
+    """Raised when one stream or message identity is reused with different content."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,20 @@ class ObservationIdentity:
             sequence=payload.sequence,
             snapshot_id=payload.snapshot.snapshot_id,
             state_fingerprint=payload.state_fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationMessageReceipt:
+    identity: ObservationIdentity
+    payload_hash: str
+
+    @classmethod
+    def from_payload(cls, payload: DeviceObservationPayload) -> ObservationMessageReceipt:
+        canonical = payload.model_dump_json().encode("utf-8")
+        return cls(
+            identity=ObservationIdentity.from_payload(payload),
+            payload_hash=hashlib.sha256(canonical).hexdigest(),
         )
 
 
@@ -106,13 +121,19 @@ class _DeviceObservationState:
     highest_sequence: int = -1
     latest_session_id: UUID | None = None
     latest: StoredDeviceObservation | None = None
-    recent_messages: OrderedDict[UUID, ObservationIdentity] = field(default_factory=OrderedDict)
+    recent_messages: OrderedDict[UUID, ObservationMessageReceipt] = field(
+        default_factory=OrderedDict
+    )
     recent_evidence: OrderedDict[ObservationIdentity, StoredObservationEvidence] = field(
         default_factory=OrderedDict
     )
 
-    def remember_message(self, message_id: UUID, identity: ObservationIdentity) -> None:
-        self.recent_messages[message_id] = identity
+    def remember_message(
+        self,
+        message_id: UUID,
+        receipt: ObservationMessageReceipt,
+    ) -> None:
+        self.recent_messages[message_id] = receipt
         self.recent_messages.move_to_end(message_id)
         while len(self.recent_messages) > MAX_RECENT_OBSERVATION_MESSAGES:
             self.recent_messages.popitem(last=False)
@@ -194,7 +215,8 @@ class DeviceRegistry:
         observation: DeviceObservationPayload,
         received_at_ms: int,
     ) -> ObservationAckStatus:
-        identity = ObservationIdentity.from_payload(observation)
+        receipt = ObservationMessageReceipt.from_payload(observation)
+        identity = receipt.identity
 
         async with self._lock:
             current = self._sessions.get(session.device_id)
@@ -212,11 +234,11 @@ class DeviceRegistry:
                 session.device_id,
                 _DeviceObservationState(),
             )
-            previous_identity = state.recent_messages.get(message_id)
-            if previous_identity is not None:
-                if previous_identity != identity:
+            previous_receipt = state.recent_messages.get(message_id)
+            if previous_receipt is not None:
+                if previous_receipt != receipt:
                     raise ObservationSequenceConflictError(
-                        "message_id was reused for different observation content"
+                        "message_id was reused for different observation payload"
                     )
                 replay = self._stored_observation(
                     session=session,
@@ -224,7 +246,7 @@ class DeviceRegistry:
                     observation=observation,
                     received_at_ms=received_at_ms,
                 )
-                state.remember_message(message_id, identity)
+                state.remember_message(message_id, receipt)
                 state.remember_evidence(StoredObservationEvidence.from_stored(replay))
                 return "duplicate"
 
@@ -236,24 +258,24 @@ class DeviceRegistry:
 
             if not stream_changed:
                 if observation.sequence < state.highest_sequence:
-                    state.remember_message(message_id, identity)
+                    state.remember_message(message_id, receipt)
                     return "stale"
                 if observation.sequence == state.highest_sequence:
                     latest = state.latest
-                    if latest is not None and latest.identity == identity:
+                    if latest is not None and latest.payload == observation:
                         replay = self._stored_observation(
                             session=session,
                             message_id=message_id,
                             observation=observation,
                             received_at_ms=received_at_ms,
                         )
-                        state.remember_message(message_id, identity)
+                        state.remember_message(message_id, receipt)
                         state.remember_evidence(
                             StoredObservationEvidence.from_stored(replay)
                         )
                         return "duplicate"
                     raise ObservationSequenceConflictError(
-                        "observation sequence was reused for different content"
+                        "observation sequence was reused for different payload"
                     )
 
             latest = state.latest
@@ -273,7 +295,7 @@ class DeviceRegistry:
             state.highest_sequence = observation.sequence
             state.latest_session_id = session.session_id
             state.latest = stored
-            state.remember_message(message_id, identity)
+            state.remember_message(message_id, receipt)
             state.remember_evidence(StoredObservationEvidence.from_stored(stored))
             return status
 
