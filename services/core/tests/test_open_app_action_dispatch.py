@@ -12,11 +12,11 @@ from simorgh_core.config import get_settings
 from simorgh_core.devices.actions import (
     ActivePackageEqualsPredicate,
     AndroidActionCommand,
+    AndroidNodeSelector,
     AndroidVerificationPolicy,
     NodeExistsPredicate,
     ObservationPrecondition,
     OpenAppOperation,
-    AndroidNodeSelector,
     SelectorField,
     TextCriterion,
 )
