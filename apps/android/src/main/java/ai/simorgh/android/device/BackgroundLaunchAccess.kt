@@ -1,5 +1,6 @@
 package ai.simorgh.android.device
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -12,10 +13,24 @@ object BackgroundLaunchAccess {
         SimorghAppVisibility.isVisible() || isGranted(context)
 
     fun openSettings(context: Context) {
-        val intent = Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:${context.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        val applicationContext = context.applicationContext
+        val candidates = listOf(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:${applicationContext.packageName}"),
+            ),
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
+            Intent(Settings.ACTION_SETTINGS),
+        )
+
+        candidates.firstOrNull { intent ->
+            runCatching {
+                applicationContext.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.onFailure { error ->
+                if (error !is ActivityNotFoundException && error !is SecurityException) {
+                    throw error
+                }
+            }.isSuccess
+        }
     }
 }
