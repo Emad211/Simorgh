@@ -17,6 +17,7 @@ import ai.simorgh.android.R
 import ai.simorgh.android.accessibility.AccessibilityAcknowledgementBus
 import ai.simorgh.android.accessibility.AccessibilityObservationBus
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
+import ai.simorgh.android.accessibility.AccessibilitySnapshotProjection
 import ai.simorgh.android.actions.AccessibilityActionEvidenceSource
 import ai.simorgh.android.actions.AndroidActionCommand
 import ai.simorgh.android.actions.AndroidActionHandlerRegistry
@@ -71,9 +72,16 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         connectionStore = SecureConnectionStore(this)
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
+        AccessibilityAcknowledgementBus.reset()
 
         val capabilities = DeviceCapabilities.current()
         deviceId = DeviceIdentityStore(this).getOrCreateDeviceId()
+        val snapshotProjector: (AccessibilitySnapshot) -> AccessibilitySnapshot = { snapshot ->
+            AccessibilitySnapshotProjection.forDeviceTransport(
+                snapshot = snapshot,
+                simorghPackageName = packageName,
+            )
+        }
         connectionClient = CoreWebSocketClient(
             deviceId = deviceId,
             capabilities = capabilities,
@@ -92,7 +100,9 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         )
         openAppExecutor = OpenAppActionExecutor(
             launcher = AndroidOpenAppLauncher(this),
-            evidenceSource = AccessibilityActionEvidenceSource(),
+            evidenceSource = AccessibilityActionEvidenceSource(
+                snapshotProjector = snapshotProjector,
+            ),
         )
         actionHandlerInstallation = AndroidActionHandlerRegistry.install(openAppExecutor)
         actionRouter = AndroidActionRouter(
@@ -110,10 +120,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
 
         observationSubscription = AccessibilityObservationBus.subscribe { observerState ->
             val snapshot = observerState.latestSnapshot ?: return@subscribe
-            if (snapshot.activePackage == packageName) {
-                return@subscribe
-            }
-            enqueueLatestObservation(snapshot)
+            enqueueLatestObservation(snapshotProjector(snapshot))
         }
     }
 
@@ -158,6 +165,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         latestObservation.set(null)
         observationExecutor.shutdownNow()
         observationPublisher.close()
+        AccessibilityAcknowledgementBus.reset()
         actionResultPublisher.close()
         connectionClient.close()
         ConnectionStatusBus.publish(
