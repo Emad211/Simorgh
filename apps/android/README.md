@@ -16,9 +16,11 @@ Transport, accessibility observation, execution, and screen capture are implemen
 ## Build requirements
 
 - JDK 17
-- Android SDK Platform 37
+- stable Android SDK Platform 36
 - Android Build Tools available through the current SDK installation
 - Gradle 9.5
+
+Android 17/API 37 remains a preview target and will be tested separately rather than used as the baseline build platform.
 
 ## Build and test
 
