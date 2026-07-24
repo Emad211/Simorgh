@@ -15,7 +15,7 @@ import java.util.PriorityQueue
 
 class AccessibilityObservationAcknowledgementTest {
     @Test
-    fun `accepted observation exposes the exact snapshot as Core-acknowledged evidence`() {
+    fun `accepted observation exposes compact Core-acknowledged evidence`() {
         val scheduler = ManualObservationScheduler()
         val sent = mutableListOf<ProtocolEnvelope>()
         val acknowledged = mutableListOf<AcknowledgedAccessibilityObservation>()
@@ -53,7 +53,9 @@ class AccessibilityObservationAcknowledgementTest {
         assertEquals(payload.streamId, evidence.streamId)
         assertEquals(payload.sequence, evidence.sequence)
         assertEquals(payload.stateFingerprint, evidence.stateFingerprint)
-        assertEquals(snapshot, evidence.snapshot)
+        assertEquals(snapshot.snapshotId, evidence.snapshotId)
+        assertEquals(snapshot.capturedAtMs, evidence.capturedAtMs)
+        assertEquals(snapshot.activePackage, evidence.activePackage)
         assertEquals(2_000, evidence.acknowledgedAtMs)
         publisher.close()
     }
