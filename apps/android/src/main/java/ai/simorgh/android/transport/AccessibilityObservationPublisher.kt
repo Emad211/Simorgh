@@ -9,15 +9,9 @@ import ai.simorgh.android.protocol.ProtocolEnvelope
 import java.io.Closeable
 import java.util.UUID
 
-enum class ObservationSendResult {
-    SENT,
-    NOT_CONNECTED,
-    REJECTED_TOO_LARGE,
-}
-
 class AccessibilityObservationPublisher(
     private val deviceId: String,
-    private val sender: (ProtocolEnvelope) -> ObservationSendResult,
+    private val sender: (ProtocolEnvelope) -> Boolean,
     private val listener: (String) -> Unit = {},
     private val scheduler: ObservationScheduler = ExecutorObservationScheduler(),
     private val minimumSendIntervalMillis: Long = 500,
@@ -202,33 +196,24 @@ class AccessibilityObservationPublisher(
             lastSendAtMillis = scheduler.nowMillis()
         }
 
-        val sendResult = sender(delivery.envelope)
+        val sent = sender(delivery.envelope)
         synchronized(lock) {
             if (closed || inFlight?.envelope?.messageId != delivery.envelope.messageId) {
                 return
             }
-            when (sendResult) {
-                ObservationSendResult.SENT -> {
-                    acknowledgementTask?.cancel()
-                    acknowledgementTask = scheduler.schedule(acknowledgementTimeoutMillis) {
-                        onAcknowledgementTimeout(delivery.envelope.messageId)
-                    }
-                }
+            if (!sent) {
+                connected = false
+                inFlight = delivery.copy(
+                    attempts = (delivery.attempts - 1).coerceAtLeast(0),
+                    awaitingAcknowledgement = false,
+                )
+                listener("observation ${delivery.snapshotId} paused until reconnect")
+                return
+            }
 
-                ObservationSendResult.NOT_CONNECTED -> {
-                    connected = false
-                    inFlight = delivery.copy(
-                        attempts = (delivery.attempts - 1).coerceAtLeast(0),
-                        awaitingAcknowledgement = false,
-                    )
-                    listener("observation ${delivery.snapshotId} paused until reconnect")
-                }
-
-                ObservationSendResult.REJECTED_TOO_LARGE -> {
-                    inFlight = null
-                    listener("observation ${delivery.snapshotId} rejected by transport size limit")
-                    scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
-                }
+            acknowledgementTask?.cancel()
+            acknowledgementTask = scheduler.schedule(acknowledgementTimeoutMillis) {
+                onAcknowledgementTimeout(delivery.envelope.messageId)
             }
         }
     }
