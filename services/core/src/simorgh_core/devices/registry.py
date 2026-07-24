@@ -218,7 +218,14 @@ class DeviceRegistry:
                     raise ObservationSequenceConflictError(
                         "message_id was reused for different observation content"
                     )
-                state.recent_messages.move_to_end(message_id)
+                replay = self._stored_observation(
+                    session=session,
+                    message_id=message_id,
+                    observation=observation,
+                    received_at_ms=received_at_ms,
+                )
+                state.remember_message(message_id, identity)
+                state.remember_evidence(StoredObservationEvidence.from_stored(replay))
                 return "duplicate"
 
             stream_changed = state.current_stream_id != observation.stream_id
@@ -234,7 +241,16 @@ class DeviceRegistry:
                 if observation.sequence == state.highest_sequence:
                     latest = state.latest
                     if latest is not None and latest.identity == identity:
+                        replay = self._stored_observation(
+                            session=session,
+                            message_id=message_id,
+                            observation=observation,
+                            received_at_ms=received_at_ms,
+                        )
                         state.remember_message(message_id, identity)
+                        state.remember_evidence(
+                            StoredObservationEvidence.from_stored(replay)
+                        )
                         return "duplicate"
                     raise ObservationSequenceConflictError(
                         "observation sequence was reused for different content"
@@ -247,11 +263,11 @@ class DeviceRegistry:
                 and latest.payload.state_fingerprint == observation.state_fingerprint
                 else "accepted"
             )
-            stored = StoredDeviceObservation(
+            stored = self._stored_observation(
+                session=session,
                 message_id=message_id,
-                session_id=session.session_id,
+                observation=observation,
                 received_at_ms=received_at_ms,
-                payload=observation,
             )
             state.current_stream_id = observation.stream_id
             state.highest_sequence = observation.sequence
@@ -293,6 +309,21 @@ class DeviceRegistry:
     async def count(self) -> int:
         async with self._lock:
             return len(self._sessions)
+
+    @staticmethod
+    def _stored_observation(
+        *,
+        session: DeviceSession,
+        message_id: UUID,
+        observation: DeviceObservationPayload,
+        received_at_ms: int,
+    ) -> StoredDeviceObservation:
+        return StoredDeviceObservation(
+            message_id=message_id,
+            session_id=session.session_id,
+            received_at_ms=received_at_ms,
+            payload=observation,
+        )
 
 
 registry = DeviceRegistry()
