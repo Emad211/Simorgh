@@ -79,7 +79,7 @@ object UiPostconditionEvaluator {
         selector: AndroidNodeSelector,
         shouldExist: Boolean,
     ): PredicateEvaluation {
-        val resolution = NodeSelectorMatcher.resolve(snapshot, selector)
+        val resolution = resolveForVerification(snapshot, selector)
         return when (resolution.outcome) {
             SelectorResolutionOutcome.RESOLVED -> PredicateEvaluation(
                 outcome = if (shouldExist) {
@@ -115,7 +115,7 @@ object UiPostconditionEvaluator {
         snapshot: AccessibilitySnapshot,
         predicate: NodeTextEqualsPredicate,
     ): PredicateEvaluation {
-        val resolution = NodeSelectorMatcher.resolve(snapshot, predicate.selector)
+        val resolution = resolveForVerification(snapshot, predicate.selector)
         val selected = resolution.selected?.node
         if (resolution.outcome != SelectorResolutionOutcome.RESOLVED || selected == null) {
             return unresolvedPredicate(resolution)
@@ -137,7 +137,7 @@ object UiPostconditionEvaluator {
         snapshot: AccessibilitySnapshot,
         predicate: NodeCheckedEqualsPredicate,
     ): PredicateEvaluation {
-        val resolution = NodeSelectorMatcher.resolve(snapshot, predicate.selector)
+        val resolution = resolveForVerification(snapshot, predicate.selector)
         val selected = resolution.selected?.node
         if (resolution.outcome != SelectorResolutionOutcome.RESOLVED || selected == null) {
             return unresolvedPredicate(resolution)
@@ -158,7 +158,7 @@ object UiPostconditionEvaluator {
         snapshot: AccessibilitySnapshot,
         predicate: NodeEnabledEqualsPredicate,
     ): PredicateEvaluation {
-        val resolution = NodeSelectorMatcher.resolve(snapshot, predicate.selector)
+        val resolution = resolveForVerification(snapshot, predicate.selector)
         val selected = resolution.selected?.node
         if (resolution.outcome != SelectorResolutionOutcome.RESOLVED || selected == null) {
             return unresolvedPredicate(resolution)
@@ -174,6 +174,15 @@ object UiPostconditionEvaluator {
             resolution = resolution,
         )
     }
+
+    private fun resolveForVerification(
+        snapshot: AccessibilitySnapshot,
+        selector: AndroidNodeSelector,
+    ): SelectorResolution = NodeSelectorMatcher.resolve(
+        snapshot = snapshot,
+        selector = selector,
+        mode = SelectorResolutionMode.VERIFICATION,
+    )
 
     private fun unresolvedPredicate(resolution: SelectorResolution): PredicateEvaluation =
         PredicateEvaluation(
