@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID, uuid4
+
+from fastapi import WebSocketDisconnect
 
 from simorgh_core.devices.observation_refresh_protocol import (
     OBSERVATION_REFRESH_CAPABILITY,
@@ -23,6 +26,12 @@ from simorgh_core.devices.registry import (
 
 MAX_TERMINAL_REFRESHES = 256
 _ACCEPTED_ACKS = frozenset({"accepted", "duplicate"})
+_ACTIVE_DELIVERY_PHASES = frozenset(
+    {
+        "delivered",
+        "accepted",
+    }
+)
 
 
 class ObservationRefreshBrokerError(ValueError):
@@ -89,14 +98,16 @@ class ObservationRefreshRecord:
 
 @dataclass(frozen=True, slots=True)
 class ObservationRefreshCompletionCandidate:
+    device_id: UUID
     request_id: UUID
+    session_id: UUID
     evidence: StoredObservationEvidence
 
 
 class ObservationRefreshBroker:
     """Single-flight observation refresh delivery and exact evidence binding."""
 
-    def __init__(self, *, now_ms: callable | None = None) -> None:
+    def __init__(self, *, now_ms: Callable[[], int] | None = None) -> None:
         self._lock = asyncio.Lock()
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
         self._records: dict[tuple[UUID, UUID], ObservationRefreshRecord] = {}
@@ -160,11 +171,16 @@ class ObservationRefreshBroker:
             return
         if OBSERVATION_REFRESH_CAPABILITY not in session.registration.capabilities:
             async with self._lock:
-                if not record.terminal:
-                    record.phase = ObservationRefreshPhase.REJECTED
-                    record.updated_at_ms = now_ms
-                    record.detail = "replacement device session lacks observation refresh capability"
-                    self._remember_terminal_locked((record.device_id, record.request_id))
+                current = self._records.get((record.device_id, record.request_id))
+                if current is not None and not current.terminal:
+                    current.phase = ObservationRefreshPhase.REJECTED
+                    current.updated_at_ms = now_ms
+                    current.detail = (
+                        "replacement device session lacks observation refresh capability"
+                    )
+                    self._remember_terminal_locked(
+                        (current.device_id, current.request_id)
+                    )
             return
         await self._deliver(record, session)
 
@@ -196,11 +212,17 @@ class ObservationRefreshBroker:
 
             previous = record.acknowledgement
             if previous is not None:
-                if self._ack_statuses_equivalent(previous.status, acknowledgement.status):
-                    return record
-                raise ObservationRefreshConflictError(
-                    "refresh acknowledgement changed after it was recorded"
-                )
+                if not self._ack_statuses_equivalent(
+                    previous.status,
+                    acknowledgement.status,
+                ):
+                    raise ObservationRefreshConflictError(
+                        "refresh acknowledgement changed after it was recorded"
+                    )
+                if acknowledgement.status in _ACCEPTED_ACKS:
+                    record.phase = ObservationRefreshPhase.ACCEPTED
+                    record.updated_at_ms = now_ms
+                return record
 
             record.acknowledgement = acknowledgement
             record.updated_at_ms = now_ms
@@ -231,6 +253,10 @@ class ObservationRefreshBroker:
             if record is None or record.terminal:
                 return None
             self._require_current_delivery(record, session)
+            if record.phase.value not in _ACTIVE_DELIVERY_PHASES:
+                raise ObservationRefreshConflictError(
+                    "correlated observation arrived before refresh delivery ownership"
+                )
             if observation_status == "stale":
                 record.phase = ObservationRefreshPhase.REJECTED
                 record.updated_at_ms = now_ms
@@ -275,22 +301,25 @@ class ObservationRefreshBroker:
                     self._remember_terminal_locked(key)
             return None
         return ObservationRefreshCompletionCandidate(
+            device_id=session.device_id,
             request_id=refresh_request_id,
+            session_id=session.session_id,
             evidence=evidence,
         )
 
     async def complete_observation(
         self,
         *,
-        device_id: UUID,
         candidate: ObservationRefreshCompletionCandidate,
     ) -> ObservationRefreshRecord | None:
-        key = (device_id, candidate.request_id)
+        key = (candidate.device_id, candidate.request_id)
         now_ms = self._now_ms()
         async with self._lock:
             self._expire_locked(now_ms)
             record = self._records.get(key)
             if record is None or record.terminal:
+                return record
+            if record.last_session_id != candidate.session_id:
                 return record
             record.evidence = candidate.evidence
             record.phase = ObservationRefreshPhase.COMPLETED
@@ -346,34 +375,50 @@ class ObservationRefreshBroker:
                 "device session was replaced before refresh delivery"
             )
         now_ms = self._now_ms()
+        key = (record.device_id, record.request_id)
         async with self._lock:
             self._expire_locked(now_ms)
-            current = self._records.get((record.device_id, record.request_id))
+            current = self._records.get(key)
             if current is None or current.terminal:
                 return
             if current.deadline_at_ms <= now_ms:
                 return
+            previous_phase = current.phase
+            current.phase = ObservationRefreshPhase.DELIVERED
+            current.updated_at_ms = now_ms
+            current.delivery_count += 1
+            current.last_session_id = session.session_id
+            current.detail = "refresh request delivery started"
 
         try:
             await session.send_envelope(record.request_envelope)
-        except Exception:
+        except (RuntimeError, WebSocketDisconnect):
             async with self._lock:
-                current = self._records.get((record.device_id, record.request_id))
-                if current is not None and not current.terminal:
-                    current.phase = ObservationRefreshPhase.QUEUED
+                current = self._records.get(key)
+                if (
+                    current is not None
+                    and not current.terminal
+                    and current.last_session_id == session.session_id
+                ):
+                    current.phase = previous_phase
+                    if current.phase not in {
+                        ObservationRefreshPhase.ACCEPTED,
+                        ObservationRefreshPhase.DELIVERED,
+                    }:
+                        current.phase = ObservationRefreshPhase.QUEUED
                     current.updated_at_ms = self._now_ms()
                     current.detail = "refresh delivery paused until reconnect"
-            raise
+            return
 
         async with self._lock:
-            current = self._records.get((record.device_id, record.request_id))
-            if current is None or current.terminal:
-                return
-            current.phase = ObservationRefreshPhase.DELIVERED
-            current.updated_at_ms = self._now_ms()
-            current.delivery_count += 1
-            current.last_session_id = session.session_id
-            current.detail = "refresh request delivered to Android"
+            current = self._records.get(key)
+            if (
+                current is not None
+                and not current.terminal
+                and current.last_session_id == session.session_id
+            ):
+                current.detail = "refresh request delivered to Android"
+                current.updated_at_ms = self._now_ms()
 
     def _expire_locked(self, now_ms: int) -> None:
         for key, record in list(self._records.items()):
