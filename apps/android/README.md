@@ -1,6 +1,6 @@
 # Simorgh Android
 
-Native Android surface and future device operator for Simorgh.
+Native Android surface and private device operator for Simorgh.
 
 ## Current scope
 
@@ -25,10 +25,13 @@ The application currently contains:
 - deterministic Persian-aware selector and postcondition evaluation;
 - an encrypted write-ahead action ledger;
 - command, cancellation, and result transport with stable replay identities;
-- a single-handler boundary for the future live executor;
+- a verified `open_app` action executor;
+- fresh pre-launch TOCTOU protection;
+- stable post-launch samples plus matching Core acknowledgement;
+- a Persian setup surface for background app-launch special access;
 - an installable Compose application boundary.
 
-The action transport deliberately installs no side-effect executor yet. App launch, node reacquisition, click, text entry, scroll, gesture, global action, screenshot transport, and post-action observation waiting are implemented in separate reviewed increments.
+Only `open_app` is enabled as a live side effect. Click, text entry, scroll, gestures, global actions, screenshot transport, and visual grounding remain rejected until their separate reviewed increments.
 
 ## Supported Android versions
 
@@ -102,7 +105,7 @@ The observer:
 - caps nodes, depth, children, actions, and text length;
 - strips semantic text from password nodes;
 - ignores self-snapshots in the inspector;
-- performs no clicks, typing, gestures, or global actions in the current transport increment.
+- performs no clicks, typing, gestures, or global actions in the current increment.
 
 When the foreground service is connected, external-app snapshots are published from a background executor. The publisher keeps one in-flight state and only the newest pending state, verifies a correlated acknowledgement, retries the exact envelope up to three sends, and pauses without consuming an attempt when the socket is unavailable.
 
@@ -121,16 +124,67 @@ Current transport guarantees:
 - a new command remains blocked while the prior result awaits Core acknowledgement;
 - malformed, oversized, wrong-device, unsupported, or unknown messages fail closed.
 
-Until the first real handler is installed, typed commands are returned as `rejected` rather than being silently ignored.
+## Enable autonomous app launch
 
-See:
+Android 10 and newer restrict background Activity starts. A Foreground Service alone is not enough to open another app. Simorgh allows a launch only when:
 
-- [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the device channel;
-- [`docs/OBSERVATION_TRANSPORT.md`](../../docs/OBSERVATION_TRANSPORT.md) for ordering, fingerprinting, retry, and validation;
-- [`docs/ANDROID_ACTION_TRANSPORT.md`](../../docs/ANDROID_ACTION_TRANSPORT.md) for command, ledger, replay, cancellation, and result semantics;
-- [`docs/ANDROID_ACTION_EXECUTOR.md`](../../docs/ANDROID_ACTION_EXECUTOR.md) for typed operations, selectors, and verification;
-- [`docs/ANDROID_ALWAYS_ON.md`](../../docs/ANDROID_ALWAYS_ON.md) for lifecycle and Samsung setup;
-- [`docs/ANDROID_ACCESSIBILITY_OBSERVER.md`](../../docs/ANDROID_ACCESSIBILITY_OBSERVER.md) for the snapshot schema and validation plan.
+- the Simorgh Activity is currently visible; or
+- **Display over other apps** special access is granted.
+
+The Persian diagnostics screen shows the current state and opens the correct system settings page. Without this access, a background `open_app` command returns a typed `blocked / unsupported_capability` result and performs no launch.
+
+This special access is a launch prerequisite only. A successful result still requires a fresh visible postcondition and a matching Core acknowledgement.
+
+## Verified `open_app`
+
+The live handler supports:
+
+```text
+open_app(package_name)
+open_app(package_name, uri)
+```
+
+Execution path:
+
+```text
+latest Core-ACKed observation
+        ↓
+command precondition
+        ↓
+explicit fresh local capture
+        ↓
+canonical fingerprint equality
+        ↓
+already satisfied? ── yes → success, attempts=0
+        ↓ no
+version-aware launch adapter
+        ↓
+stable local postconditions
+        ↓
+matching newer Core ACK
+        ↓
+typed ActionResult
+```
+
+Version paths:
+
+- API 24–32: `getLaunchIntentForPackage`;
+- API 33+: `getLaunchIntentSenderForPackage` and `Context.startIntentSender` with explicit sender opt-in options;
+- explicit URI: package-scoped `ACTION_VIEW`.
+
+Android API acceptance is never treated as final success. If the target does not become observably correct before timeout, the result is failed, blocked, or timed out with structured evidence.
+
+See [`docs/ANDROID_OPEN_APP_EXECUTOR.md`](../../docs/ANDROID_OPEN_APP_EXECUTOR.md) for the complete state machine, failure matrix, official Android references, and Galaxy A53 validation protocol.
+
+## Documentation
+
+- [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) — device channel;
+- [`docs/OBSERVATION_TRANSPORT.md`](../../docs/OBSERVATION_TRANSPORT.md) — ordering, fingerprinting, retry, and validation;
+- [`docs/ANDROID_ACTION_TRANSPORT.md`](../../docs/ANDROID_ACTION_TRANSPORT.md) — command, ledger, replay, cancellation, and result semantics;
+- [`docs/ANDROID_ACTION_EXECUTOR.md`](../../docs/ANDROID_ACTION_EXECUTOR.md) — typed operations, selectors, and verification;
+- [`docs/ANDROID_OPEN_APP_EXECUTOR.md`](../../docs/ANDROID_OPEN_APP_EXECUTOR.md) — verified app launching;
+- [`docs/ANDROID_ALWAYS_ON.md`](../../docs/ANDROID_ALWAYS_ON.md) — lifecycle and Samsung setup;
+- [`docs/ANDROID_ACCESSIBILITY_OBSERVER.md`](../../docs/ANDROID_ACCESSIBILITY_OBSERVER.md) — snapshot schema and validation plan.
 
 ## Package
 
@@ -151,3 +205,5 @@ ai.simorgh.android
 - Observation messages bypass the generic reconnect queue and use their own latest-wins state machine.
 - Action results bypass the generic reconnect queue and use a stable persisted delivery identity.
 - An uncertain active action after Android process restart is blocked, never blindly replayed.
+- A background Activity launch without a visible Simorgh window or overlay special access is blocked.
+- An Android launch API return is acceptance evidence only; postconditions determine success.
