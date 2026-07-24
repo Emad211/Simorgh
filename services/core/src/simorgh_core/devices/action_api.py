@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
@@ -12,9 +12,12 @@ from simorgh_core.devices.action_broker import (
     DeviceActionBrokerError,
     DeviceActionBusyError,
     DeviceActionConflictError,
+    DeviceActionDeviceUnavailableError,
     DeviceActionNotFoundError,
     DeviceActionPhase,
     DeviceActionRecord,
+    DeviceActionUnsupportedCapabilityError,
+    DeviceActionUnsupportedOperationError,
     action_broker,
 )
 from simorgh_core.devices.action_semantics import (
@@ -27,6 +30,23 @@ from simorgh_core.devices.protocol import DeviceActionCommandAckPayload
 router = APIRouter(prefix="/v1/devices", tags=["device-actions"])
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
 AuthorizationHeader = Annotated[str | None, Header(alias="Authorization")]
+
+DispatchErrorCode = Literal[
+    "device_not_connected",
+    "unsupported_device_capability",
+    "unsupported_operation",
+]
+
+
+class DeviceActionDispatchErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: DispatchErrorCode
+    message: str = Field(min_length=1, max_length=2_000)
+    operation_kind: str = Field(min_length=1, max_length=128)
+    required_capabilities: list[str] = Field(default_factory=list, max_length=32)
+    missing_capabilities: list[str] = Field(default_factory=list, max_length=32)
+    available_capabilities: list[str] = Field(default_factory=list, max_length=256)
 
 
 class DeviceActionStatusResponse(BaseModel):
@@ -94,6 +114,17 @@ def _require_operator(
 OperatorDependency = Annotated[None, Depends(_require_operator)]
 
 
+def _dispatch_error(
+    *,
+    status_code: int,
+    detail: DeviceActionDispatchErrorDetail,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=detail.model_dump(mode="json"),
+    )
+
+
 @router.post(
     "/{device_id}/actions",
     response_model=DeviceActionStatusResponse,
@@ -112,6 +143,36 @@ async def dispatch_action(
         )
     except AndroidActionSemanticError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except DeviceActionDeviceUnavailableError as exc:
+        raise _dispatch_error(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=DeviceActionDispatchErrorDetail(
+                code="device_not_connected",
+                message=str(exc),
+                operation_kind=exc.operation_kind,
+            ),
+        ) from exc
+    except DeviceActionUnsupportedCapabilityError as exc:
+        raise _dispatch_error(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=DeviceActionDispatchErrorDetail(
+                code="unsupported_device_capability",
+                message=str(exc),
+                operation_kind=exc.operation_kind,
+                required_capabilities=list(exc.required_capabilities),
+                missing_capabilities=list(exc.missing_capabilities),
+                available_capabilities=list(exc.available_capabilities),
+            ),
+        ) from exc
+    except DeviceActionUnsupportedOperationError as exc:
+        raise _dispatch_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=DeviceActionDispatchErrorDetail(
+                code="unsupported_operation",
+                message=str(exc),
+                operation_kind=exc.operation_kind,
+            ),
+        ) from exc
     except DeviceActionBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except DeviceActionConflictError as exc:
