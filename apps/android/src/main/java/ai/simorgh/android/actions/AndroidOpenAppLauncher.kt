@@ -8,6 +8,7 @@ import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import androidx.annotation.RequiresApi
 import ai.simorgh.android.device.BackgroundLaunchAccess
 
 enum class OpenAppLaunchStatus {
@@ -109,6 +110,7 @@ class AndroidOpenAppLauncher(
         )
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun launchWithIntentSender(packageName: String): OpenAppLaunchAttempt {
         val sender = try {
             packageManager.getLaunchIntentSenderForPackage(packageName)
@@ -160,12 +162,10 @@ class AndroidOpenAppLauncher(
             detail = detail,
         )
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     @Suppress("DEPRECATION")
-    private fun backgroundActivityOptions(): android.os.Bundle? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            return null
-        }
-        return ActivityOptions.makeBasic().apply {
+    private fun backgroundActivityOptions(): android.os.Bundle =
+        ActivityOptions.makeBasic().apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 setPendingIntentBackgroundActivityStartMode(
                     ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
@@ -174,5 +174,4 @@ class AndroidOpenAppLauncher(
                 setPendingIntentBackgroundActivityLaunchAllowed(true)
             }
         }.toBundle()
-    }
 }
