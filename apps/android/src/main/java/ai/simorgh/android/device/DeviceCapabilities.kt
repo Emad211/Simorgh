@@ -23,6 +23,8 @@ data class DeviceCapabilities(
                 add("device.network_state")
                 add("device.action_transport.v1")
                 add("android.action.contract.v1")
+                add("android.open_app.execution.v1")
+                add("android.open_app.background_launch.requires_overlay_access")
                 add("android.launcher_surface")
                 add("android.accessibility.observe.platform")
 
