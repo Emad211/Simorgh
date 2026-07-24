@@ -22,7 +22,6 @@ from simorgh_core.devices.actions import (
 )
 
 
-
 def _selector(**overrides: object) -> AndroidNodeSelector:
     values: dict[str, object] = {
         "package_name": "com.example",
@@ -34,8 +33,7 @@ def _selector(**overrides: object) -> AndroidNodeSelector:
     return AndroidNodeSelector.model_validate(values)
 
 
-
-def _command(operation: object) -> AndroidActionCommand:
+def _command(operation: AndroidOperationPayload) -> AndroidActionCommand:
     return AndroidActionCommand(
         action_id=uuid4(),
         issued_at_ms=1_000,
@@ -53,11 +51,9 @@ def _command(operation: object) -> AndroidActionCommand:
     )
 
 
-
 def test_selector_requires_identity_signal() -> None:
     with pytest.raises(ValidationError, match="identity field"):
         AndroidNodeSelector(package_name="com.example")
-
 
 
 def test_selector_rejects_required_field_without_value() -> None:
@@ -65,12 +61,10 @@ def test_selector_rejects_required_field_without_value() -> None:
         _selector(required_fields=[SelectorField.TEXT])
 
 
-
 def test_selector_promotes_the_strongest_available_signal_to_required() -> None:
     selector = _selector(required_fields=[])
 
     assert selector.required_fields == {SelectorField.VIEW_ID}
-
 
 
 def test_discriminated_operation_round_trip() -> None:
@@ -87,14 +81,12 @@ def test_discriminated_operation_round_trip() -> None:
     assert decoded.selectors[0].view_id == "com.example:id/continue_button"
 
 
-
 def test_open_app_command_is_schema_valid() -> None:
     command = _command(OpenAppOperation(package_name="com.slack"))
 
     assert command.schema_version == "1.0"
     assert command.operation.kind == "open_app"
     assert command.verification.predicates[0].kind == "active_package_equals"
-
 
 
 def test_command_rejects_nonpositive_or_excessive_lifetime() -> None:
@@ -124,7 +116,6 @@ def test_command_rejects_nonpositive_or_excessive_lifetime() -> None:
         )
 
 
-
 def test_text_and_node_predicate_are_bounded_and_typed() -> None:
     selector = _selector(
         text=TextCriterion(value="ادامه بده"),
@@ -138,7 +129,6 @@ def test_text_and_node_predicate_are_bounded_and_typed() -> None:
 
     assert policy.predicates[0].kind == "node_exists"
     assert policy.stable_samples == 2
-
 
 
 def test_action_result_enforces_failure_code_consistency() -> None:
