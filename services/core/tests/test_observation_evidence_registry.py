@@ -4,6 +4,7 @@ import asyncio
 from typing import cast
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import WebSocket
 
 from simorgh_core.devices.protocol import (
@@ -15,6 +16,7 @@ from simorgh_core.devices.protocol import (
 from simorgh_core.devices.registry import (
     DeviceRegistry,
     DeviceSession,
+    ObservationSequenceConflictError,
     StoredObservationEvidence,
 )
 
@@ -138,6 +140,43 @@ def test_exact_replay_refreshes_message_and_evidence_lru_together() -> None:
         assert evidence is not None
         assert evidence.message_id == original_message_id
         assert evidence.received_at_ms == 30_000
+
+    asyncio.run(scenario())
+
+
+def test_same_message_id_cannot_change_capture_metadata() -> None:
+    async def scenario() -> None:
+        registry = DeviceRegistry()
+        session = _session()
+        await registry.register(session)
+
+        message_id = uuid4()
+        original = _observation(0)
+        assert await _record(
+            registry,
+            session,
+            message_id=message_id,
+            observation=original,
+            received_at_ms=20_000,
+        ) == "accepted"
+
+        changed_snapshot = original.snapshot.model_copy(
+            update={"captured_at_ms": original.snapshot.captured_at_ms + 1_000}
+        )
+        conflicting = original.model_copy(update={"snapshot": changed_snapshot})
+        assert conflicting.state_fingerprint == original.state_fingerprint
+
+        with pytest.raises(
+            ObservationSequenceConflictError,
+            match="different observation payload",
+        ):
+            await _record(
+                registry,
+                session,
+                message_id=message_id,
+                observation=conflicting,
+                received_at_ms=21_000,
+            )
 
     asyncio.run(scenario())
 
