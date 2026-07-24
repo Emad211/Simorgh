@@ -9,6 +9,7 @@ import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -85,12 +86,7 @@ class AccessibilityActionEvidenceSourceTest {
             activePackage = SOURCE_PACKAGE,
         )
         val before = acknowledged(sequence = 4, snapshot = beforeSnapshot)
-        AccessibilityObservationBus.publish(
-            AccessibilityObserverState(
-                serviceConnected = true,
-                latestSnapshot = beforeSnapshot,
-            ),
-        )
+        publishLocal(beforeSnapshot)
         AccessibilityAcknowledgementBus.publish(before)
 
         val source = AccessibilityActionEvidenceSource(
@@ -123,37 +119,98 @@ class AccessibilityActionEvidenceSourceTest {
                 capturedAtMs = 2_010,
                 activePackage = TARGET_PACKAGE,
             )
-            AccessibilityObservationBus.publish(
-                AccessibilityObserverState(
-                    serviceConnected = true,
-                    latestSnapshot = first,
-                ),
-            )
+            publishLocal(first)
 
             assertNotNull(captureRequests.poll(1, TimeUnit.SECONDS))
             val second = first.copy(
                 snapshotId = SECOND_POST_SNAPSHOT_ID,
                 capturedAtMs = 2_020,
             )
-            AccessibilityObservationBus.publish(
-                AccessibilityObserverState(
-                    serviceConnected = true,
-                    latestSnapshot = second,
-                ),
-            )
+            publishLocal(second)
             AccessibilityAcknowledgementBus.publish(
                 acknowledged(sequence = 5, snapshot = first),
             )
 
             val result = future.get(1, TimeUnit.SECONDS)
             assertEquals(PostActionEvidenceStatus.SATISFIED, result.status)
-            assertEquals(FIRST_POST_SNAPSHOT_ID, result.observation?.snapshot?.snapshotId)
+            assertEquals(FIRST_POST_SNAPSHOT_ID, result.observation?.snapshotId)
             assertEquals(PredicateOutcome.SATISFIED, result.evaluation?.outcome)
             assertTrue(result.detail.contains("Core ACK"))
         } finally {
             source.close()
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun `newer unsatisfied snapshot prevents success from an older matching acknowledgement`() {
+        val beforeSnapshot = snapshot(
+            id = BASELINE_SNAPSHOT_ID,
+            capturedAtMs = 1_900,
+            activePackage = SOURCE_PACKAGE,
+        )
+        val before = acknowledged(sequence = 4, snapshot = beforeSnapshot)
+        publishLocal(beforeSnapshot)
+        AccessibilityAcknowledgementBus.publish(before)
+
+        val source = AccessibilityActionEvidenceSource(
+            captureRequester = { true },
+            pollIntervalMillis = 25,
+        )
+        val executor = Executors.newSingleThreadExecutor()
+        val policy = AndroidVerificationPolicy(
+            predicates = listOf(ActivePackageEqualsPredicate(TARGET_PACKAGE)),
+            timeoutMs = 250,
+            stableSamples = 2,
+        )
+        try {
+            val future = executor.submit<PostActionEvidenceResult> {
+                source.awaitVerifiedObservation(
+                    before = before,
+                    launchedAtMs = 2_000,
+                    policy = policy,
+                    timeoutMillis = 250,
+                    cancelled = { false },
+                )
+            }
+
+            val first = snapshot(
+                id = FIRST_POST_SNAPSHOT_ID,
+                capturedAtMs = 2_010,
+                activePackage = TARGET_PACKAGE,
+            )
+            val second = first.copy(
+                snapshotId = SECOND_POST_SNAPSHOT_ID,
+                capturedAtMs = 2_020,
+            )
+            val regressed = snapshot(
+                id = REGRESSED_SNAPSHOT_ID,
+                capturedAtMs = 2_030,
+                activePackage = SOURCE_PACKAGE,
+            )
+            publishLocal(first)
+            publishLocal(second)
+            publishLocal(regressed)
+            AccessibilityAcknowledgementBus.publish(
+                acknowledged(sequence = 5, snapshot = first),
+            )
+
+            val result = future.get(1, TimeUnit.SECONDS)
+            assertNotEquals(PostActionEvidenceStatus.SATISFIED, result.status)
+            assertEquals(PredicateOutcome.UNSATISFIED, result.evaluation?.outcome)
+        } finally {
+            source.close()
+            executor.shutdownNow()
+        }
+    }
+
+    private fun publishLocal(snapshot: AccessibilitySnapshot) {
+        AccessibilityObservationBus.publish(
+            AccessibilityObserverState(
+                serviceConnected = true,
+                latestSnapshot = snapshot,
+            ),
+        )
     }
 
     private fun acknowledged(
@@ -189,6 +246,7 @@ class AccessibilityActionEvidenceSourceTest {
         const val FRESH_SNAPSHOT_ID = "33333333-3333-3333-3333-333333333333"
         const val FIRST_POST_SNAPSHOT_ID = "44444444-4444-4444-4444-444444444444"
         const val SECOND_POST_SNAPSHOT_ID = "55555555-5555-5555-5555-555555555555"
+        const val REGRESSED_SNAPSHOT_ID = "66666666-6666-6666-6666-666666666666"
         const val SOURCE_PACKAGE = "com.android.launcher"
         const val TARGET_PACKAGE = "com.example.target"
     }
