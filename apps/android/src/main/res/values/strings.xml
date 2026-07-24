@@ -27,4 +27,18 @@
     <string name="service_notification_channel_description">وضعیت اتصال گوشی به هسته خصوصی سیمرغ</string>
     <string name="service_initializing">در حال آماده‌سازی سرویس</string>
     <string name="service_missing_configuration">تنظیمات ذخیره‌شده برای اتصال موجود نیست</string>
+
+    <string name="accessibility_service_label">مشاهده‌گر صفحه سیمرغ</string>
+    <string name="accessibility_service_summary">خواندن ساختار اپ فعال برای دستیار خصوصی سیمرغ</string>
+    <string name="accessibility_service_description">سیمرغ ساختار صفحه، متن‌های قابل‌مشاهده و کنترل‌های اپ فعال را برای ساخت Snapshot محدود و قابل‌بررسی می‌خواند. متن فیلدهای رمز عبور ذخیره نمی‌شود.</string>
+    <string name="accessibility_title">مشاهده‌گر Accessibility</string>
+    <string name="accessibility_disabled">سرویس مشاهده صفحه فعال نیست</string>
+    <string name="accessibility_connected">سرویس مشاهده صفحه متصل است</string>
+    <string name="accessibility_open_settings">بازکردن تنظیمات Accessibility</string>
+    <string name="accessibility_active_package">اپ فعال</string>
+    <string name="accessibility_node_count">تعداد گره‌ها</string>
+    <string name="accessibility_window_count">تعداد پنجره‌ها</string>
+    <string name="accessibility_snapshot_truncated">Snapshot به‌دلیل سقف ایمنی کوتاه شده است</string>
+    <string name="accessibility_no_snapshot">هنوز Snapshotی ثبت نشده است</string>
+    <string name="accessibility_tree_preview">پیش‌نمایش ساختار صفحه</string>
 </resources>
