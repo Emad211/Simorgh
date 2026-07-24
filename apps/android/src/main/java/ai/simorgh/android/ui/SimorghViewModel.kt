@@ -26,6 +26,7 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
             capabilities = DeviceCapabilities.current(),
             endpoint = secureConnectionStore.load()?.endpoint
                 ?: connectionPreferences.loadEndpoint(),
+            startOnBootEnabled = secureConnectionStore.isStartOnBootEnabled(),
         ),
     )
     val uiState: State<SimorghUiState> = mutableUiState
@@ -46,6 +47,11 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateDeviceToken(token: String) {
         mutableUiState.value = mutableUiState.value.copy(deviceToken = token)
+    }
+
+    fun updateStartOnBoot(enabled: Boolean) {
+        secureConnectionStore.setStartOnBootEnabled(enabled)
+        mutableUiState.value = mutableUiState.value.copy(startOnBootEnabled = enabled)
     }
 
     fun connect() {
