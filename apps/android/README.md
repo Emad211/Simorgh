@@ -27,6 +27,7 @@ The application currently contains:
 - command, cancellation, and result transport with stable replay identities;
 - a verified `open_app` action executor;
 - fresh pre-launch TOCTOU protection;
+- launch-boundary Core-evidence revalidation;
 - stable post-launch samples plus matching Core acknowledgement;
 - a Persian setup surface for background app-launch special access;
 - an installable Compose application boundary.
@@ -107,7 +108,9 @@ The observer:
 - ignores self-snapshots in the inspector;
 - performs no clicks, typing, gestures, or global actions in the current increment.
 
-When the foreground service is connected, external-app snapshots are published from a background executor. The publisher keeps one in-flight state and only the newest pending state, verifies a correlated acknowledgement, retries the exact envelope up to three sends, and pauses without consuming an attempt when the socket is unavailable.
+When the foreground service is connected, snapshots are projected and published from a background executor. External-app trees remain intact; Simorgh's own UI is reduced to package presence so connection fields are never transmitted. The publisher keeps one in-flight state and only the newest pending state, verifies a correlated acknowledgement, retries the exact envelope up to three sends, and pauses without consuming an attempt when the socket is unavailable.
+
+Executable acknowledged evidence is invalidated when the Core connection is lost. After registration on a new connection, the most recent projected state is submitted again even when the visible screen did not change. This prevents actions from using an acknowledgement belonging to a previous Core session.
 
 ## Action transport
 
@@ -131,7 +134,7 @@ Android 10 and newer restrict background Activity starts. A Foreground Service a
 - the Simorgh Activity is currently visible; or
 - **Display over other apps** special access is granted.
 
-The Persian diagnostics screen shows the current state and opens the correct system settings page. Without this access, a background `open_app` command returns a typed `blocked / unsupported_capability` result and performs no launch.
+The Persian diagnostics screen shows the current state and opens the app-specific, general overlay, or general Android settings page as supported by the OEM. Without this access, a background `open_app` command returns a typed `blocked / unsupported_capability` result and performs no launch.
 
 This special access is a launch prerequisite only. A successful result still requires a fresh visible postcondition and a matching Core acknowledgement.
 
@@ -155,16 +158,20 @@ explicit fresh local capture
         ↓
 canonical fingerprint equality
         ↓
+re-read current Core ACK and validate again
+        ↓
 already satisfied? ── yes → success, attempts=0
         ↓ no
 version-aware launch adapter
         ↓
-stable local postconditions
+stable current local postconditions
         ↓
 matching newer Core ACK
         ↓
 typed ActionResult
 ```
+
+If the connection invalidates the acknowledgement between the first check and the launch boundary, the operation returns `blocked / precondition_failed` with `attempts=0`.
 
 Version paths:
 
@@ -173,6 +180,8 @@ Version paths:
 - explicit URI: package-scoped `ACTION_VIEW`.
 
 Android API acceptance is never treated as final success. If the target does not become observably correct before timeout, the result is failed, blocked, or timed out with structured evidence.
+
+The default observation freshness budget is intentionally strict. Issue [#21](https://github.com/Emad211/Simorgh/issues/21) tracks an explicit unchanged-state refresh handshake; the implementation must not weaken freshness by silently increasing `maximum_age_ms`.
 
 See [`docs/ANDROID_OPEN_APP_EXECUTOR.md`](../../docs/ANDROID_OPEN_APP_EXECUTOR.md) for the complete state machine, failure matrix, official Android references, and Galaxy A53 validation protocol.
 
