@@ -160,18 +160,26 @@ class ObservationRefreshBroker:
         try:
             await self._deliver(record=record, session=session)
         except ObservationRefreshDeviceUnavailableError as exc:
-            # A session can be replaced after the compatibility check but before delivery.
-            # Do not leave the newly inserted record active and permanently block the device.
             async with self._lock:
                 current = self._records.get(key)
-                if current is not None and not current.terminal:
-                    self._finish_locked(
-                        key=key,
-                        record=current,
-                        phase=ObservationRefreshPhase.REJECTED,
-                        detail=str(exc),
-                        now_ms=self._now_ms(),
-                    )
+                if current is None:
+                    raise
+                # A replacement session may have redelivered this exact request before the
+                # original create path notices that its session is obsolete. Preserve that
+                # newer ownership (or a result it already completed) instead of rejecting it.
+                replacement_owns_delivery = (
+                    current.last_session_id is not None
+                    and current.last_session_id != session.session_id
+                )
+                if current.terminal or replacement_owns_delivery:
+                    return current
+                self._finish_locked(
+                    key=key,
+                    record=current,
+                    phase=ObservationRefreshPhase.REJECTED,
+                    detail=str(exc),
+                    now_ms=self._now_ms(),
+                )
             raise
         return record
 
@@ -198,7 +206,13 @@ class ObservationRefreshBroker:
                         now_ms=now_ms,
                     )
             return
-        await self._deliver(record=record, session=session)
+
+        try:
+            await self._deliver(record=record, session=session)
+        except ObservationRefreshDeviceUnavailableError:
+            # Another registration superseded this redelivery call. The newest session owns
+            # the next redelivery opportunity; an obsolete session must not fail the gateway.
+            return
 
     async def record_ack(
         self,
