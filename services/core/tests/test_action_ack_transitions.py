@@ -49,7 +49,10 @@ def _register(websocket, device_id: UUID) -> None:
             model="SM-A536B",
             build_fingerprint="samsung/a53/ack-transition-test",
             support_tier="FULL",
-            capabilities=["device.action_transport.v1"],
+            capabilities=[
+                "device.action_transport.v1",
+                "android.open_app.execution.v1",
+            ],
         ),
     )
     websocket.send_text(registration.model_dump_json())
