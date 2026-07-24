@@ -111,7 +111,10 @@ class AndroidNodeSelector(BaseModel):
     )
     bounds: ScreenBoundsPayload | None = None
     required_fields: set[SelectorField] = Field(default_factory=set, max_length=7)
-    required_capabilities: set[NodeCapability] = Field(default_factory=set, max_length=6)
+    required_capabilities: set[NodeCapability] = Field(
+        default_factory=set,
+        max_length=6,
+    )
     minimum_score: int = Field(default=80, ge=1, le=500)
     minimum_margin: int = Field(default=20, ge=0, le=500)
 
@@ -132,12 +135,14 @@ class AndroidNodeSelector(BaseModel):
         }
         if not present_fields:
             raise ValueError("selector requires at least one identity field")
+
         missing_required = self.required_fields - present_fields
         if missing_required:
+            missing = ", ".join(sorted(field.value for field in missing_required))
             raise ValueError(
-                "required_fields reference selector fields without values: "
-                + ", ".join(sorted(field.value for field in missing_required))
+                "required_fields reference selector fields without values: " + missing
             )
+
         if not self.required_fields:
             strongest_available = next(
                 (
@@ -171,7 +176,11 @@ class ObservationPrecondition(BaseModel):
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
-    expected_active_package: str | None = Field(default=None, min_length=1, max_length=512)
+    expected_active_package: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+    )
     maximum_age_ms: int = Field(default=2_000, ge=100, le=30_000)
 
 
@@ -326,7 +335,11 @@ class ObservationReference(BaseModel):
 class SelectorCandidateEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    node_id: str = Field(min_length=24, max_length=24, pattern=r"^[0-9a-f]{24}$")
+    node_id: str = Field(
+        min_length=24,
+        max_length=24,
+        pattern=r"^[0-9a-f]{24}$",
+    )
     path: str = Field(min_length=1, max_length=512)
     score: int = Field(ge=0)
     matched_signals: list[str] = Field(default_factory=list, max_length=32)
@@ -345,7 +358,10 @@ class SelectorResolutionEvidence(BaseModel):
     selected_path: str | None = Field(default=None, max_length=512)
     selected_score: int | None = Field(default=None, ge=0)
     score_margin: int | None = Field(default=None, ge=0)
-    candidates: list[SelectorCandidateEvidence] = Field(default_factory=list, max_length=5)
+    candidates: list[SelectorCandidateEvidence] = Field(
+        default_factory=list,
+        max_length=5,
+    )
 
 
 class PredicateEvidence(BaseModel):
@@ -378,8 +394,14 @@ class AndroidActionResult(BaseModel):
     def validate_result(self) -> AndroidActionResult:
         if self.finished_at_ms < self.started_at_ms:
             raise ValueError("finished_at_ms cannot precede started_at_ms")
-        if self.outcome == ActionOutcome.SUCCEEDED and self.failure_code != ActionFailureCode.NONE:
+        if (
+            self.outcome == ActionOutcome.SUCCEEDED
+            and self.failure_code != ActionFailureCode.NONE
+        ):
             raise ValueError("successful result cannot contain a failure code")
-        if self.outcome != ActionOutcome.SUCCEEDED and self.failure_code == ActionFailureCode.NONE:
+        if (
+            self.outcome != ActionOutcome.SUCCEEDED
+            and self.failure_code == ActionFailureCode.NONE
+        ):
             raise ValueError("non-successful result requires a failure code")
         return self
