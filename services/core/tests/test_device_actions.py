@@ -17,20 +17,28 @@ from simorgh_core.devices.actions import (
     AndroidActionResult,
     AndroidVerificationPolicy,
     ObservationPrecondition,
+    ObservationReference,
     OpenAppOperation,
+    PredicateEvidence,
+    PredicateOutcome,
 )
 from simorgh_core.devices.protocol import (
+    AccessibilitySnapshotPayload,
     DeviceActionCancelAckPayload,
     DeviceActionCommandAckPayload,
     DeviceActionResultAckPayload,
     DeviceHeartbeatPayload,
+    DeviceObservationAckPayload,
+    DeviceObservationPayload,
     DeviceRegisteredPayload,
     DeviceRegistrationPayload,
     ProtocolEnvelope,
+    calculate_accessibility_state_fingerprint,
 )
 
 DEVICE_HEADERS = {"Authorization": "Bearer test-device-token"}
 OPERATOR_HEADERS = {"Authorization": "Bearer test-operator-token"}
+TARGET_PACKAGE = "com.example"
 
 
 @pytest.fixture
@@ -83,9 +91,9 @@ def _command(
         issued_at_ms=now_ms,
         deadline_at_ms=now_ms + 60_000,
         precondition=ObservationPrecondition(maximum_age_ms=2_000),
-        operation=OpenAppOperation(package_name="com.example"),
+        operation=OpenAppOperation(package_name=TARGET_PACKAGE),
         verification=AndroidVerificationPolicy(
-            predicates=[ActivePackageEqualsPredicate(package_name="com.example")],
+            predicates=[ActivePackageEqualsPredicate(package_name=TARGET_PACKAGE)],
         ),
     )
 
@@ -121,6 +129,84 @@ def _send_command_ack(
     _round_trip_heartbeat(websocket, device_id)
 
 
+def _send_target_observation(
+    websocket,
+    *,
+    device_id: UUID,
+    sequence: int = 0,
+) -> tuple[DeviceObservationPayload, DeviceObservationAckPayload]:
+    captured_at_ms = int(time.time() * 1000)
+    snapshot = AccessibilitySnapshotPayload(
+        snapshot_id=uuid4(),
+        captured_at_ms=captured_at_ms,
+        active_package=TARGET_PACKAGE,
+        active_window_id=None,
+        root_node_id=None,
+        windows=[],
+        nodes=[],
+        truncated=False,
+        truncation_reasons=[],
+        max_depth_observed=0,
+    )
+    observation = DeviceObservationPayload(
+        stream_id=uuid4(),
+        sequence=sequence,
+        state_fingerprint=calculate_accessibility_state_fingerprint(snapshot),
+        snapshot=snapshot,
+    )
+    envelope = ProtocolEnvelope.create(
+        message_type="device.observation",
+        device_id=device_id,
+        payload=observation,
+    )
+    websocket.send_text(envelope.model_dump_json())
+    ack_envelope = ProtocolEnvelope.model_validate_json(websocket.receive_text())
+    acknowledgement = DeviceObservationAckPayload.model_validate(ack_envelope.payload)
+    assert ack_envelope.type == "device.observation_ack"
+    assert ack_envelope.correlation_id == envelope.message_id
+    assert acknowledgement.status == "accepted"
+    return observation, acknowledgement
+
+
+def _reference(observation: DeviceObservationPayload) -> ObservationReference:
+    return ObservationReference(
+        stream_id=observation.stream_id,
+        sequence=observation.sequence,
+        snapshot_id=observation.snapshot.snapshot_id,
+        state_fingerprint=observation.state_fingerprint,
+        captured_at_ms=observation.snapshot.captured_at_ms,
+        active_package=observation.snapshot.active_package,
+    )
+
+
+def _verified_success_result(
+    *,
+    command: AndroidActionCommand,
+    observation: DeviceObservationPayload,
+) -> AndroidActionResult:
+    reference = _reference(observation)
+    now_ms = int(time.time() * 1000)
+    return AndroidActionResult(
+        command_id=command.command_id,
+        action_id=command.action_id,
+        outcome=ActionOutcome.SUCCEEDED,
+        failure_code=ActionFailureCode.NONE,
+        started_at_ms=now_ms,
+        finished_at_ms=now_ms,
+        attempts=0,
+        before_observation=reference,
+        after_observation=reference,
+        predicates=[
+            PredicateEvidence(
+                kind="active_package_equals",
+                outcome=PredicateOutcome.SATISFIED,
+                detail=f"active package={TARGET_PACKAGE} expected={TARGET_PACKAGE}",
+            )
+        ],
+        detail="target package was already active",
+    )
+
+
 def _round_trip_heartbeat(websocket, device_id: UUID) -> None:
     heartbeat = ProtocolEnvelope.create(
         message_type="device.heartbeat",
@@ -150,7 +236,9 @@ def test_operator_authentication_is_separate_from_device_token(client: TestClien
     assert device_credential.status_code == 401
 
 
-def test_action_dispatch_ack_result_and_duplicate_result(client: TestClient) -> None:
+def test_action_dispatch_ack_verified_result_and_duplicate_result(
+    client: TestClient,
+) -> None:
     device_id = uuid4()
     command = _command()
 
@@ -179,15 +267,11 @@ def test_action_dispatch_ack_result_and_duplicate_result(client: TestClient) -> 
         assert accepted.status_code == 200
         assert accepted.json()["phase"] == "accepted"
 
-        result = AndroidActionResult(
-            command_id=command.command_id,
-            action_id=command.action_id,
-            outcome=ActionOutcome.SUCCEEDED,
-            failure_code=ActionFailureCode.NONE,
-            started_at_ms=int(time.time() * 1000),
-            finished_at_ms=int(time.time() * 1000),
-            detail="fixture action completed",
+        observation, _ = _send_target_observation(
+            websocket,
+            device_id=device_id,
         )
+        result = _verified_success_result(command=command, observation=observation)
         result_envelope = ProtocolEnvelope.create(
             message_type="device.action_result",
             device_id=device_id,
@@ -216,6 +300,56 @@ def test_action_dispatch_ack_result_and_duplicate_result(client: TestClient) -> 
             duplicate_ack_envelope.payload
         )
         assert duplicate_ack.status == "duplicate"
+
+
+def test_unverifiable_success_is_rejected_without_completing_action(
+    client: TestClient,
+) -> None:
+    device_id = uuid4()
+    command = _command()
+
+    with client.websocket_connect("/v1/devices/ws", headers=DEVICE_HEADERS) as websocket:
+        _register(websocket, device_id)
+        assert _dispatch(client, device_id, command).status_code == 202
+        command_envelope = ProtocolEnvelope.model_validate_json(websocket.receive_text())
+        _send_command_ack(
+            websocket,
+            device_id=device_id,
+            command_envelope=command_envelope,
+            command=command,
+        )
+
+        now_ms = int(time.time() * 1000)
+        forged = AndroidActionResult(
+            command_id=command.command_id,
+            action_id=command.action_id,
+            outcome=ActionOutcome.SUCCEEDED,
+            failure_code=ActionFailureCode.NONE,
+            started_at_ms=now_ms,
+            finished_at_ms=now_ms,
+            attempts=0,
+            detail="claims success without evidence",
+        )
+        result_envelope = ProtocolEnvelope.create(
+            message_type="device.action_result",
+            device_id=device_id,
+            correlation_id=command_envelope.message_id,
+            payload=forged,
+        )
+        websocket.send_text(result_envelope.model_dump_json())
+
+        ack_envelope = ProtocolEnvelope.model_validate_json(websocket.receive_text())
+        acknowledgement = DeviceActionResultAckPayload.model_validate(ack_envelope.payload)
+        assert acknowledgement.status == "rejected"
+        assert "requires before and after" in acknowledgement.detail
+
+        current = client.get(
+            f"/v1/devices/{device_id}/actions/{command.action_id}",
+            headers=OPERATOR_HEADERS,
+        )
+        assert current.status_code == 200
+        assert current.json()["phase"] == "accepted"
+        assert current.json()["result"] is None
 
 
 def test_pending_command_is_redelivered_with_same_message_id_after_reconnect(
