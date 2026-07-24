@@ -6,17 +6,11 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from simorgh_core.devices.protocol import PROTOCOL_VERSION
+from simorgh_core.devices.protocol import PROTOCOL_VERSION, ProtocolEnvelope
 
-OBSERVATION_REFRESH_CAPABILITY: Literal[
-    "android.observation.refresh.v1"
-] = "android.observation.refresh.v1"
-OBSERVATION_REFRESH_REQUEST_TYPE: Literal[
-    "device.observation_refresh"
-] = "device.observation_refresh"
-OBSERVATION_REFRESH_ACK_TYPE: Literal[
-    "device.observation_refresh_ack"
-] = "device.observation_refresh_ack"
+OBSERVATION_REFRESH_CAPABILITY = "android.observation.refresh.v1"
+OBSERVATION_REFRESH_REQUEST_TYPE = "device.observation_refresh"
+OBSERVATION_REFRESH_ACK_TYPE = "device.observation_refresh_ack"
 
 ObservationRefreshAckStatus = Literal[
     "accepted",
@@ -56,22 +50,13 @@ class DeviceObservationRefreshAckPayload(BaseModel):
     detail: str = Field(default="", max_length=1_000)
 
 
-class _ObservationRefreshEnvelopeBase(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
-    message_id: UUID = Field(default_factory=uuid4)
-    sent_at_ms: int = Field(default_factory=lambda: int(time.time() * 1000), ge=0)
-    device_id: UUID
-    correlation_id: UUID | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class DeviceObservationRefreshEnvelope(_ObservationRefreshEnvelopeBase):
-    type: Literal["device.observation_refresh"] = OBSERVATION_REFRESH_REQUEST_TYPE
+class DeviceObservationRefreshEnvelope(ProtocolEnvelope):
+    # ProtocolEnvelope's legacy message union is intentionally not widened in this
+    # increment. Runtime validation below keeps this extension exact.
+    type: Any = OBSERVATION_REFRESH_REQUEST_TYPE
 
     @classmethod
-    def create(
+    def create(  # type: ignore[override]
         cls,
         *,
         device_id: UUID,
@@ -82,13 +67,18 @@ class DeviceObservationRefreshEnvelope(_ObservationRefreshEnvelopeBase):
         if payload.request_id != request_id:
             raise ValueError("refresh payload request_id must equal envelope message_id")
         return cls(
+            protocol_version=PROTOCOL_VERSION,
             message_id=request_id,
+            sent_at_ms=int(time.time() * 1000),
+            type=OBSERVATION_REFRESH_REQUEST_TYPE,
             device_id=device_id,
             payload=payload.model_dump(mode="json"),
         )
 
     @model_validator(mode="after")
     def validate_request_identity(self) -> DeviceObservationRefreshEnvelope:
+        if self.type != OBSERVATION_REFRESH_REQUEST_TYPE:
+            raise ValueError("unexpected observation refresh request type")
         payload = DeviceObservationRefreshPayload.model_validate(self.payload)
         if payload.request_id != self.message_id:
             raise ValueError("refresh request_id must equal envelope message_id")
@@ -97,11 +87,11 @@ class DeviceObservationRefreshEnvelope(_ObservationRefreshEnvelopeBase):
         return self
 
 
-class DeviceObservationRefreshAckEnvelope(_ObservationRefreshEnvelopeBase):
-    type: Literal["device.observation_refresh_ack"] = OBSERVATION_REFRESH_ACK_TYPE
+class DeviceObservationRefreshAckEnvelope(ProtocolEnvelope):
+    type: Any = OBSERVATION_REFRESH_ACK_TYPE
 
     @classmethod
-    def create(
+    def create(  # type: ignore[override]
         cls,
         *,
         device_id: UUID,
@@ -111,6 +101,10 @@ class DeviceObservationRefreshAckEnvelope(_ObservationRefreshEnvelopeBase):
         if payload.request_id != request_envelope_id:
             raise ValueError("refresh ACK request_id must equal correlation_id")
         return cls(
+            protocol_version=PROTOCOL_VERSION,
+            message_id=uuid4(),
+            sent_at_ms=int(time.time() * 1000),
+            type=OBSERVATION_REFRESH_ACK_TYPE,
             device_id=device_id,
             correlation_id=request_envelope_id,
             payload=payload.model_dump(mode="json"),
@@ -118,6 +112,8 @@ class DeviceObservationRefreshAckEnvelope(_ObservationRefreshEnvelopeBase):
 
     @model_validator(mode="after")
     def validate_ack_identity(self) -> DeviceObservationRefreshAckEnvelope:
+        if self.type != OBSERVATION_REFRESH_ACK_TYPE:
+            raise ValueError("unexpected observation refresh ACK type")
         payload = DeviceObservationRefreshAckPayload.model_validate(self.payload)
         if self.correlation_id is None:
             raise ValueError("refresh ACK requires correlation_id")
