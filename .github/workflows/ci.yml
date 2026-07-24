@@ -43,3 +43,44 @@ jobs:
           name: core-test-report
           path: artifacts/junit.xml
           if-no-files-found: ignore
+
+  android-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-37"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Build, lint, and unit test Android app
+        run: >-
+          gradle
+          :apps:android:assembleDebug
+          :apps:android:testDebugUnitTest
+          :apps:android:lintDebug
+          --stacktrace
+
+      - name: Upload debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simorgh-android-debug
+          path: apps/android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
