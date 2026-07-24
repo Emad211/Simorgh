@@ -11,9 +11,12 @@ object AndroidActionContractValidator {
         require(command.issuedAtMs >= 0) { "issued_at_ms cannot be negative" }
         require(command.deadlineAtMs >= 0) { "deadline_at_ms cannot be negative" }
         validatePrecondition(command.precondition)
+        val operation = normalizeOperation(command.operation)
+        val verification = normalizeVerification(command.verification)
+        validateCommandSemantics(operation, verification)
         return command.copy(
-            operation = normalizeOperation(command.operation),
-            verification = normalizeVerification(command.verification),
+            operation = operation,
+            verification = verification,
         )
     }
 
@@ -52,6 +55,47 @@ object AndroidActionContractValidator {
             }
         }
     }
+
+    private fun validateCommandSemantics(
+        operation: AndroidOperation,
+        verification: AndroidVerificationPolicy,
+    ) {
+        if (operation !is OpenAppOperation) {
+            return
+        }
+        val packagePredicates = verification.predicates
+            .filterIsInstance<ActivePackageEqualsPredicate>()
+        require(packagePredicates.isNotEmpty()) {
+            "open_app verification requires active_package_equals for the target package"
+        }
+        require(packagePredicates.all { predicate ->
+            predicate.packageName == operation.packageName
+        }) {
+            "open_app active_package_equals predicates must match operation package_name"
+        }
+
+        val destinationSelectors = verification.predicates.mapNotNull(::selectorForPredicate)
+        require(destinationSelectors.all { selector ->
+            selector.packageName == operation.packageName
+        }) {
+            "open_app node predicates must target operation package_name"
+        }
+        if (operation.uri != null) {
+            require(destinationSelectors.isNotEmpty()) {
+                "open_app with uri requires a target-package node predicate proving the destination"
+            }
+        }
+    }
+
+    private fun selectorForPredicate(predicate: UiPredicate): AndroidNodeSelector? =
+        when (predicate) {
+            is ActivePackageEqualsPredicate -> null
+            is NodeExistsPredicate -> predicate.selector
+            is NodeAbsentPredicate -> predicate.selector
+            is NodeTextEqualsPredicate -> predicate.selector
+            is NodeCheckedEqualsPredicate -> predicate.selector
+            is NodeEnabledEqualsPredicate -> predicate.selector
+        }
 
     private fun normalizeOperation(operation: AndroidOperation): AndroidOperation =
         when (operation) {

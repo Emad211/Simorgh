@@ -10,9 +10,18 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
 
 from simorgh_core.config import Settings, get_settings
-from simorgh_core.devices.action_broker import action_broker
-from simorgh_core.devices.actions import AndroidActionResult
+from simorgh_core.devices.action_broker import (
+    DeviceActionNotFoundError,
+    DeviceActionPhase,
+    action_broker,
+)
+from simorgh_core.devices.action_semantics import (
+    AndroidActionSemanticError,
+    validate_result_semantics,
+)
+from simorgh_core.devices.actions import AndroidActionResult, ObservationReference
 from simorgh_core.devices.protocol import (
+    ActionResultAckStatus,
     DeviceActionCancelAckPayload,
     DeviceActionCommandAckPayload,
     DeviceActionResultAckPayload,
@@ -25,7 +34,11 @@ from simorgh_core.devices.protocol import (
     DeviceRegistrationPayload,
     ProtocolEnvelope,
 )
-from simorgh_core.devices.registry import DeviceSession, registry
+from simorgh_core.devices.registry import (
+    DeviceSession,
+    StoredObservationEvidence,
+    registry,
+)
 
 router = APIRouter(prefix="/v1/devices", tags=["devices"])
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
@@ -130,29 +143,144 @@ async def _handle_action_command_ack(
     )
 
 
+async def _send_action_result_ack(
+    *,
+    session: DeviceSession,
+    result_envelope: ProtocolEnvelope,
+    result: AndroidActionResult,
+    result_status: ActionResultAckStatus,
+    detail: str = "",
+) -> None:
+    acknowledgement = ProtocolEnvelope.create(
+        message_type="device.action_result_ack",
+        device_id=session.device_id,
+        correlation_id=result_envelope.message_id,
+        payload=DeviceActionResultAckPayload(
+            command_id=result.command_id,
+            action_id=result.action_id,
+            status=result_status,
+            received_at_ms=int(time.time() * 1000),
+            detail=detail[:1_000],
+        ),
+    )
+    await session.send_envelope(acknowledgement)
+
+
+async def _reject_action_result(
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+    result: AndroidActionResult,
+    detail: str,
+) -> None:
+    await _send_action_result_ack(
+        session=session,
+        result_envelope=envelope,
+        result=result,
+        result_status="rejected",
+        detail=detail,
+    )
+
+
+async def _evidence_for_reference(
+    *,
+    device_id: UUID,
+    reference: ObservationReference | None,
+) -> StoredObservationEvidence | None:
+    if reference is None:
+        return None
+    return await registry.observation_evidence(
+        device_id=device_id,
+        stream_id=reference.stream_id,
+        sequence=reference.sequence,
+        snapshot_id=reference.snapshot_id,
+        state_fingerprint=reference.state_fingerprint,
+    )
+
+
 async def _handle_action_result(
     *,
     session: DeviceSession,
     envelope: ProtocolEnvelope,
 ) -> None:
     result = AndroidActionResult.model_validate(envelope.payload)
+
+    try:
+        record = await action_broker.get(
+            device_id=session.device_id,
+            action_id=result.action_id,
+        )
+    except DeviceActionNotFoundError:
+        await _send_action_result_ack(
+            session=session,
+            result_envelope=envelope,
+            result=result,
+            result_status="unknown_action",
+            detail="Core has no action record for this result",
+        )
+        return
+
+    if result.command_id != record.command_id:
+        await _reject_action_result(
+            session=session,
+            envelope=envelope,
+            result=result,
+            detail="result command_id does not match the original command",
+        )
+        return
+    if envelope.correlation_id != record.command_envelope.message_id:
+        await _reject_action_result(
+            session=session,
+            envelope=envelope,
+            result=result,
+            detail="result correlation_id does not match the command envelope",
+        )
+        return
+    if record.phase == DeviceActionPhase.REJECTED:
+        await _reject_action_result(
+            session=session,
+            envelope=envelope,
+            result=result,
+            detail="an Android-rejected command cannot later publish a result",
+        )
+        return
+
+    if record.result is None:
+        before_evidence = await _evidence_for_reference(
+            device_id=session.device_id,
+            reference=result.before_observation,
+        )
+        after_evidence = await _evidence_for_reference(
+            device_id=session.device_id,
+            reference=result.after_observation,
+        )
+        try:
+            validate_result_semantics(
+                command=record.command,
+                result=result,
+                before_evidence=before_evidence,
+                after_evidence=after_evidence,
+            )
+        except AndroidActionSemanticError as exc:
+            await _reject_action_result(
+                session=session,
+                envelope=envelope,
+                result=result,
+                detail=str(exc),
+            )
+            return
+
     result_status, _ = await action_broker.record_result(
         session=session,
         envelope=envelope,
         result=result,
     )
-    acknowledgement = ProtocolEnvelope.create(
-        message_type="device.action_result_ack",
-        device_id=session.device_id,
-        correlation_id=envelope.message_id,
-        payload=DeviceActionResultAckPayload(
-            command_id=result.command_id,
-            action_id=result.action_id,
-            status=result_status,
-            received_at_ms=int(time.time() * 1000),
-        ),
+    await _send_action_result_ack(
+        session=session,
+        result_envelope=envelope,
+        result=result,
+        result_status=result_status,
     )
-    await session.send_envelope(acknowledgement)
 
 
 async def _handle_action_cancel_ack(

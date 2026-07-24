@@ -1,7 +1,9 @@
 package ai.simorgh.android.transport
 
+import ai.simorgh.android.accessibility.AccessibilityAcknowledgementBus
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
+import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
 import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.ObservationAckStatus
@@ -13,6 +15,8 @@ class AccessibilityObservationPublisher(
     private val deviceId: String,
     private val sender: (ProtocolEnvelope) -> Boolean,
     private val listener: (String) -> Unit = {},
+    private val acknowledgementListener: (AcknowledgedAccessibilityObservation) -> Unit = {},
+    private val acknowledgementInvalidator: () -> Unit = AccessibilityAcknowledgementBus::reset,
     private val scheduler: ObservationScheduler = ExecutorObservationScheduler(),
     private val minimumSendIntervalMillis: Long = 500,
     private val acknowledgementTimeoutMillis: Long = 10_000,
@@ -26,6 +30,7 @@ class AccessibilityObservationPublisher(
     private var nextSequence = 0L
     private var lastSendAtMillis: Long? = null
     private var lastAcknowledgedFingerprint: String? = null
+    private var latestSnapshot: AccessibilitySnapshot? = null
     private var pending: ObservationDelivery? = null
     private var inFlight: ObservationDelivery? = null
     private var sendTask: ScheduledObservationTask? = null
@@ -42,40 +47,26 @@ class AccessibilityObservationPublisher(
         val fingerprint = AccessibilitySnapshotFingerprint.calculate(snapshot)
 
         synchronized(lock) {
-            if (closed || fingerprint == lastAcknowledgedFingerprint) {
+            if (closed) {
+                return false
+            }
+            latestSnapshot = snapshot
+            if (fingerprint == lastAcknowledgedFingerprint) {
                 return false
             }
             if (fingerprint == inFlight?.fingerprint || fingerprint == pending?.fingerprint) {
                 return false
             }
-
-            val sequence = nextSequence
-            val envelope = DeviceProtocol.observation(
-                deviceId = deviceId,
-                streamId = streamId,
-                sequence = sequence,
-                stateFingerprint = fingerprint,
-                snapshot = snapshot,
-            )
-            if (DeviceProtocol.encodedSizeBytes(envelope) > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
-                listener("observation ${snapshot.snapshotId} exceeds the transport byte limit")
+            if (!enqueueLocked(snapshot, fingerprint)) {
                 return false
             }
-
-            nextSequence += 1
-            pending = ObservationDelivery(
-                envelope = envelope,
-                streamId = streamId,
-                sequence = sequence,
-                snapshotId = snapshot.snapshotId,
-                fingerprint = fingerprint,
-            )
             scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
         }
         return true
     }
 
     fun setConnected(isConnected: Boolean) {
+        var invalidateAcknowledgement = false
         synchronized(lock) {
             if (closed || connected == isConnected) {
                 return
@@ -88,9 +79,22 @@ class AccessibilityObservationPublisher(
 
             if (!connected) {
                 inFlight = inFlight?.copy(awaitingAcknowledgement = false)
-                return
+                invalidateAcknowledgement = true
+            } else {
+                lastAcknowledgedFingerprint = null
+                if (inFlight == null && pending == null) {
+                    latestSnapshot?.let { snapshot ->
+                        enqueueLocked(
+                            snapshot = snapshot,
+                            fingerprint = AccessibilitySnapshotFingerprint.calculate(snapshot),
+                        )
+                    }
+                }
+                scheduleSendLocked(delayMillis = 0)
             }
-            scheduleSendLocked(delayMillis = 0)
+        }
+        if (invalidateAcknowledgement) {
+            acknowledgementInvalidator()
         }
     }
 
@@ -98,12 +102,13 @@ class AccessibilityObservationPublisher(
         acknowledgement: DeviceObservationAckPayload,
         correlationId: String?,
     ): Boolean {
+        var published: AcknowledgedAccessibilityObservation? = null
         synchronized(lock) {
             val active = inFlight ?: return false
             if (
                 acknowledgement.streamId != active.streamId ||
                 acknowledgement.sequence != active.sequence ||
-                acknowledgement.snapshotId != active.snapshotId ||
+                acknowledgement.snapshotId != active.snapshot.snapshotId ||
                 correlationId != active.envelope.messageId
             ) {
                 return false
@@ -114,19 +119,27 @@ class AccessibilityObservationPublisher(
             inFlight = null
             if (acknowledgement.status != ObservationAckStatus.STALE) {
                 lastAcknowledgedFingerprint = active.fingerprint
+                published = AcknowledgedAccessibilityObservation(
+                    streamId = active.streamId,
+                    sequence = active.sequence,
+                    stateFingerprint = active.fingerprint,
+                    snapshot = active.snapshot,
+                    acknowledgedAtMs = acknowledgement.receivedAtMs,
+                )
             }
             listener(
                 "observation ${acknowledgement.snapshotId} " +
                     acknowledgement.status.name.lowercase(),
             )
             scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
-            return true
         }
+        published?.let(acknowledgementListener)
+        return true
     }
 
-    fun pendingSnapshotId(): String? = synchronized(lock) { pending?.snapshotId }
+    fun pendingSnapshotId(): String? = synchronized(lock) { pending?.snapshot?.snapshotId }
 
-    fun inFlightSnapshotId(): String? = synchronized(lock) { inFlight?.snapshotId }
+    fun inFlightSnapshotId(): String? = synchronized(lock) { inFlight?.snapshot?.snapshotId }
 
     override fun close() {
         synchronized(lock) {
@@ -139,10 +152,40 @@ class AccessibilityObservationPublisher(
             acknowledgementTask?.cancel()
             sendTask = null
             acknowledgementTask = null
+            latestSnapshot = null
             pending = null
             inFlight = null
         }
+        acknowledgementInvalidator()
         scheduler.close()
+    }
+
+    private fun enqueueLocked(
+        snapshot: AccessibilitySnapshot,
+        fingerprint: String,
+    ): Boolean {
+        val sequence = nextSequence
+        val envelope = DeviceProtocol.observation(
+            deviceId = deviceId,
+            streamId = streamId,
+            sequence = sequence,
+            stateFingerprint = fingerprint,
+            snapshot = snapshot,
+        )
+        if (DeviceProtocol.encodedSizeBytes(envelope) > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
+            listener("observation ${snapshot.snapshotId} exceeds the transport byte limit")
+            return false
+        }
+
+        nextSequence += 1
+        pending = ObservationDelivery(
+            envelope = envelope,
+            streamId = streamId,
+            sequence = sequence,
+            snapshot = snapshot,
+            fingerprint = fingerprint,
+        )
+        return true
     }
 
     private fun scheduleSendLocked(delayMillis: Long) {
@@ -174,7 +217,9 @@ class AccessibilityObservationPublisher(
             val active = inFlight ?: pending?.also { pending = null } ?: return
             if (active.attempts >= maxAttempts) {
                 inFlight = null
-                listener("observation ${active.snapshotId} failed after $maxAttempts attempts")
+                listener(
+                    "observation ${active.snapshot.snapshotId} failed after $maxAttempts attempts",
+                )
                 scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
                 return
             }
@@ -197,6 +242,7 @@ class AccessibilityObservationPublisher(
         }
 
         val sent = sender(delivery.envelope)
+        var invalidateAcknowledgement = false
         synchronized(lock) {
             if (closed || inFlight?.envelope?.messageId != delivery.envelope.messageId) {
                 return
@@ -207,14 +253,17 @@ class AccessibilityObservationPublisher(
                     attempts = (delivery.attempts - 1).coerceAtLeast(0),
                     awaitingAcknowledgement = false,
                 )
-                listener("observation ${delivery.snapshotId} paused until reconnect")
-                return
+                listener("observation ${delivery.snapshot.snapshotId} paused until reconnect")
+                invalidateAcknowledgement = true
+            } else {
+                acknowledgementTask?.cancel()
+                acknowledgementTask = scheduler.schedule(acknowledgementTimeoutMillis) {
+                    onAcknowledgementTimeout(delivery.envelope.messageId)
+                }
             }
-
-            acknowledgementTask?.cancel()
-            acknowledgementTask = scheduler.schedule(acknowledgementTimeoutMillis) {
-                onAcknowledgementTimeout(delivery.envelope.messageId)
-            }
+        }
+        if (invalidateAcknowledgement) {
+            acknowledgementInvalidator()
         }
     }
 
@@ -226,7 +275,9 @@ class AccessibilityObservationPublisher(
                 return
             }
             inFlight = active.copy(awaitingAcknowledgement = false)
-            listener("observation ${active.snapshotId} acknowledgement timeout")
+            listener(
+                "observation ${active.snapshot.snapshotId} acknowledgement timeout",
+            )
             scheduleSendLocked(delayMillis = minimumSendIntervalMillis)
         }
     }
@@ -241,7 +292,7 @@ class AccessibilityObservationPublisher(
         val envelope: ProtocolEnvelope,
         val streamId: String,
         val sequence: Long,
-        val snapshotId: String,
+        val snapshot: AccessibilitySnapshot,
         val fingerprint: String,
         val attempts: Int = 0,
         val awaitingAcknowledgement: Boolean = false,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from simorgh_core.devices.protocol import (
 )
 
 MAX_RECENT_OBSERVATION_MESSAGES = 256
+MAX_RECENT_OBSERVATION_EVIDENCE = 256
 
 
 class ReplacedDeviceSessionError(ValueError):
@@ -27,7 +29,7 @@ class ObservationStreamConflictError(ValueError):
 
 
 class ObservationSequenceConflictError(ValueError):
-    """Raised when one stream reuses a sequence for different observation content."""
+    """Raised when one stream or message identity is reused with different content."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,47 @@ class ObservationIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationMessageReceipt:
+    identity: ObservationIdentity
+    payload_hash: str
+    first_session_id: UUID
+    first_received_at_ms: int
+    acknowledgement_status: ObservationAckStatus
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: DeviceObservationPayload,
+        *,
+        session_id: UUID,
+        received_at_ms: int,
+        acknowledgement_status: ObservationAckStatus,
+    ) -> ObservationMessageReceipt:
+        return cls(
+            identity=ObservationIdentity.from_payload(payload),
+            payload_hash=cls.hash_payload(payload),
+            first_session_id=session_id,
+            first_received_at_ms=received_at_ms,
+            acknowledgement_status=acknowledgement_status,
+        )
+
+    @staticmethod
+    def hash_payload(payload: DeviceObservationPayload) -> str:
+        canonical = payload.model_dump_json().encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    def matches(self, payload: DeviceObservationPayload) -> bool:
+        return (
+            self.identity == ObservationIdentity.from_payload(payload)
+            and self.payload_hash == self.hash_payload(payload)
+        )
+
+    @property
+    def evidence_eligible(self) -> bool:
+        return self.acknowledgement_status != "stale"
+
+
+@dataclass(frozen=True, slots=True)
 class StoredDeviceObservation:
     message_id: UUID
     session_id: UUID
@@ -59,19 +102,78 @@ class StoredDeviceObservation:
         return ObservationIdentity.from_payload(self.payload)
 
 
+@dataclass(frozen=True, slots=True)
+class StoredObservationEvidence:
+    """Compact proof that Core acknowledged one exact device observation."""
+
+    message_id: UUID
+    session_id: UUID
+    received_at_ms: int
+    stream_id: UUID
+    sequence: int
+    snapshot_id: UUID
+    state_fingerprint: str
+    captured_at_ms: int
+    active_package: str | None
+
+    @property
+    def identity(self) -> ObservationIdentity:
+        return ObservationIdentity(
+            stream_id=self.stream_id,
+            sequence=self.sequence,
+            snapshot_id=self.snapshot_id,
+            state_fingerprint=self.state_fingerprint,
+        )
+
+    @classmethod
+    def from_stored(cls, stored: StoredDeviceObservation) -> StoredObservationEvidence:
+        payload = stored.payload
+        snapshot = payload.snapshot
+        return cls(
+            message_id=stored.message_id,
+            session_id=stored.session_id,
+            received_at_ms=stored.received_at_ms,
+            stream_id=payload.stream_id,
+            sequence=payload.sequence,
+            snapshot_id=snapshot.snapshot_id,
+            state_fingerprint=payload.state_fingerprint,
+            captured_at_ms=snapshot.captured_at_ms,
+            active_package=snapshot.active_package,
+        )
+
+
 @dataclass(slots=True)
 class _DeviceObservationState:
     current_stream_id: UUID | None = None
     highest_sequence: int = -1
     latest_session_id: UUID | None = None
     latest: StoredDeviceObservation | None = None
-    recent_messages: OrderedDict[UUID, ObservationIdentity] = field(default_factory=OrderedDict)
+    recent_messages: OrderedDict[UUID, ObservationMessageReceipt] = field(
+        default_factory=OrderedDict
+    )
+    recent_evidence: OrderedDict[ObservationIdentity, StoredObservationEvidence] = field(
+        default_factory=OrderedDict
+    )
 
-    def remember(self, message_id: UUID, identity: ObservationIdentity) -> None:
-        self.recent_messages[message_id] = identity
+    def remember_message(
+        self,
+        message_id: UUID,
+        receipt: ObservationMessageReceipt,
+    ) -> None:
+        self.recent_messages[message_id] = receipt
         self.recent_messages.move_to_end(message_id)
         while len(self.recent_messages) > MAX_RECENT_OBSERVATION_MESSAGES:
             self.recent_messages.popitem(last=False)
+
+    def remember_evidence(self, evidence: StoredObservationEvidence) -> None:
+        self.recent_evidence[evidence.identity] = evidence
+        self.recent_evidence.move_to_end(evidence.identity)
+        while len(self.recent_evidence) > MAX_RECENT_OBSERVATION_EVIDENCE:
+            self.recent_evidence.popitem(last=False)
+
+    def refresh_evidence(self, evidence: StoredObservationEvidence) -> None:
+        existing = self.recent_evidence.get(evidence.identity)
+        self.remember_evidence(existing or evidence)
 
 
 @dataclass(slots=True)
@@ -144,8 +246,6 @@ class DeviceRegistry:
         observation: DeviceObservationPayload,
         received_at_ms: int,
     ) -> ObservationAckStatus:
-        identity = ObservationIdentity.from_payload(observation)
-
         async with self._lock:
             current = self._sessions.get(session.device_id)
             if current is None or current.session_id != session.session_id:
@@ -162,13 +262,22 @@ class DeviceRegistry:
                 session.device_id,
                 _DeviceObservationState(),
             )
-            previous_identity = state.recent_messages.get(message_id)
-            if previous_identity is not None:
-                if previous_identity != identity:
+            previous_receipt = state.recent_messages.get(message_id)
+            if previous_receipt is not None:
+                if not previous_receipt.matches(observation):
                     raise ObservationSequenceConflictError(
-                        "message_id was reused for different observation content"
+                        "message_id was reused for different observation payload"
                     )
-                state.recent_messages.move_to_end(message_id)
+                state.remember_message(message_id, previous_receipt)
+                if not previous_receipt.evidence_eligible:
+                    return "stale"
+                replay = StoredDeviceObservation(
+                    message_id=message_id,
+                    session_id=previous_receipt.first_session_id,
+                    received_at_ms=previous_receipt.first_received_at_ms,
+                    payload=observation,
+                )
+                state.refresh_evidence(StoredObservationEvidence.from_stored(replay))
                 return "duplicate"
 
             stream_changed = state.current_stream_id != observation.stream_id
@@ -179,15 +288,28 @@ class DeviceRegistry:
 
             if not stream_changed:
                 if observation.sequence < state.highest_sequence:
-                    state.remember(message_id, identity)
+                    stale_receipt = ObservationMessageReceipt.from_payload(
+                        observation,
+                        session_id=session.session_id,
+                        received_at_ms=received_at_ms,
+                        acknowledgement_status="stale",
+                    )
+                    state.remember_message(message_id, stale_receipt)
                     return "stale"
                 if observation.sequence == state.highest_sequence:
                     latest = state.latest
-                    if latest is not None and latest.identity == identity:
-                        state.remember(message_id, identity)
+                    if latest is not None and latest.payload == observation:
+                        duplicate_receipt = ObservationMessageReceipt.from_payload(
+                            observation,
+                            session_id=session.session_id,
+                            received_at_ms=received_at_ms,
+                            acknowledgement_status="duplicate",
+                        )
+                        state.remember_message(message_id, duplicate_receipt)
+                        state.refresh_evidence(StoredObservationEvidence.from_stored(latest))
                         return "duplicate"
                     raise ObservationSequenceConflictError(
-                        "observation sequence was reused for different content"
+                        "observation sequence was reused for different payload"
                     )
 
             latest = state.latest
@@ -197,22 +319,54 @@ class DeviceRegistry:
                 and latest.payload.state_fingerprint == observation.state_fingerprint
                 else "accepted"
             )
-            state.current_stream_id = observation.stream_id
-            state.highest_sequence = observation.sequence
-            state.latest_session_id = session.session_id
-            state.latest = StoredDeviceObservation(
+            stored = StoredDeviceObservation(
                 message_id=message_id,
                 session_id=session.session_id,
                 received_at_ms=received_at_ms,
                 payload=observation,
             )
-            state.remember(message_id, identity)
+            receipt = ObservationMessageReceipt.from_payload(
+                observation,
+                session_id=session.session_id,
+                received_at_ms=received_at_ms,
+                acknowledgement_status=status,
+            )
+            state.current_stream_id = observation.stream_id
+            state.highest_sequence = observation.sequence
+            state.latest_session_id = session.session_id
+            state.latest = stored
+            state.remember_message(message_id, receipt)
+            state.remember_evidence(StoredObservationEvidence.from_stored(stored))
             return status
 
     async def latest_observation(self, device_id: UUID) -> StoredDeviceObservation | None:
         async with self._lock:
             state = self._observation_states.get(device_id)
             return state.latest if state is not None else None
+
+    async def observation_evidence(
+        self,
+        *,
+        device_id: UUID,
+        stream_id: UUID,
+        sequence: int,
+        snapshot_id: UUID,
+        state_fingerprint: str,
+    ) -> StoredObservationEvidence | None:
+        identity = ObservationIdentity(
+            stream_id=stream_id,
+            sequence=sequence,
+            snapshot_id=snapshot_id,
+            state_fingerprint=state_fingerprint,
+        )
+        async with self._lock:
+            state = self._observation_states.get(device_id)
+            if state is None:
+                return None
+            evidence = state.recent_evidence.get(identity)
+            if evidence is not None:
+                state.recent_evidence.move_to_end(identity)
+            return evidence
 
     async def count(self) -> int:
         async with self._lock:

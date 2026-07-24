@@ -42,4 +42,12 @@
     <string name="accessibility_snapshot_truncated">Snapshot به‌دلیل سقف ایمنی کوتاه شده است</string>
     <string name="accessibility_no_snapshot">هنوز Snapshotی ثبت نشده است</string>
     <string name="accessibility_tree_preview">پیش‌نمایش ساختار صفحه</string>
+
+    <string name="background_launch_title">اجازه بازکردن خودکار اپ‌ها</string>
+    <string name="background_launch_legacy_ready">در این نسخه Android دسترسی ویژه لازم نیست</string>
+    <string name="background_launch_legacy_explanation">در Android 7 تا 9 مسیر قدیمی بازکردن Activity استفاده می‌شود. نتیجه همچنان از روی Snapshot تازه و تأیید Core بررسی خواهد شد.</string>
+    <string name="background_launch_granted">اجازه بازکردن اپ از پس‌زمینه فعال است</string>
+    <string name="background_launch_missing">اجازه «نمایش روی سایر برنامه‌ها» فعال نیست</string>
+    <string name="background_launch_explanation">از Android 10 به بعد، سیمرغ برای بازکردن اپ از پس‌زمینه باید روی صفحه باشد یا Special Access «نمایش روی سایر برنامه‌ها» را داشته باشد.</string>
+    <string name="background_launch_open_settings">بازکردن تنظیمات دسترسی ویژه</string>
 </resources>

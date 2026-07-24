@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import ai.simorgh.android.device.SimorghAppVisibility
 import ai.simorgh.android.ui.SimorghApp
 import ai.simorgh.android.ui.SimorghViewModel
 import ai.simorgh.android.ui.theme.SimorghTheme
@@ -33,9 +34,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        SimorghAppVisibility.onActivityStarted()
+    }
+
     override fun onResume() {
         super.onResume()
         viewModel.refreshAccessibilityStatus()
+        viewModel.refreshBackgroundLaunchAccess()
+    }
+
+    override fun onStop() {
+        SimorghAppVisibility.onActivityStopped()
+        super.onStop()
     }
 
     private fun connectWithNotificationPermission() {

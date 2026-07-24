@@ -50,6 +50,7 @@ fun SimorghApp(
         onConnect = onConnectRequested,
         onDisconnect = viewModel::disconnect,
         onOpenAccessibilitySettings = viewModel::openAccessibilitySettings,
+        onOpenBackgroundLaunchSettings = viewModel::openBackgroundLaunchAccessSettings,
     )
 }
 
@@ -62,6 +63,7 @@ private fun SimorghApp(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
+    onOpenBackgroundLaunchSettings: () -> Unit,
 ) {
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -96,6 +98,11 @@ private fun SimorghApp(
                 AccessibilityInspectorCard(
                     state = state,
                     onOpenSettings = onOpenAccessibilitySettings,
+                )
+                BackgroundLaunchAccessCard(
+                    specialAccessRequired = state.backgroundLaunchSpecialAccessRequired,
+                    granted = state.backgroundLaunchAccessGranted,
+                    onOpenSettings = onOpenBackgroundLaunchSettings,
                 )
                 DeviceCard(state.capabilities)
             }

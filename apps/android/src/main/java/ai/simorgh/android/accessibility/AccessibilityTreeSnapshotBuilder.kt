@@ -83,8 +83,8 @@ class AccessibilityTreeSnapshotBuilder(
                     nodes += node
                     if (rootNodeId == null) {
                         rootNodeId = node.nodeId
-                        activePackage = activePackage ?: node.packageName
-                        activeWindowId = activeWindowId ?: node.windowId
+                        activePackage = node.packageName ?: activePackage
+                        activeWindowId = node.windowId
                     }
                     maxDepthObserved = maxOf(maxDepthObserved, pendingNode.depth)
 
