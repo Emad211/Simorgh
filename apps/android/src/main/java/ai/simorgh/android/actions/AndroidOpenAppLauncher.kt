@@ -40,13 +40,6 @@ class AndroidOpenAppLauncher(
     private val packageManager = applicationContext.packageManager
 
     override fun launch(operation: OpenAppOperation): OpenAppLaunchAttempt {
-        if (operation.packageName == applicationContext.packageName) {
-            return OpenAppLaunchAttempt(
-                status = OpenAppLaunchStatus.REJECTED,
-                adapter = "self_package_guard",
-                detail = "Simorgh does not observe its own UI, so self-launch cannot be verified",
-            )
-        }
         if (!launchAllowed()) {
             return OpenAppLaunchAttempt(
                 status = OpenAppLaunchStatus.BACKGROUND_START_BLOCKED,
