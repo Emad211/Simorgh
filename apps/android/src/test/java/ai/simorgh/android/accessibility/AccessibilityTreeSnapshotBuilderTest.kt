@@ -47,6 +47,29 @@ class AccessibilityTreeSnapshotBuilderTest {
     }
 
     @Test
+    fun `live root identity overrides stale event hints`() {
+        val root = FakeNode(
+            windowId = 9,
+            packageName = "com.current.app",
+            className = "android.widget.FrameLayout",
+        )
+
+        val snapshot = AccessibilityTreeSnapshotBuilder().build(
+            root = root,
+            windows = emptyList(),
+            triggeringEventType = 32,
+            activePackageHint = "com.previous.app",
+            activeWindowIdHint = 7,
+            capturedAtMs = 123_456,
+            snapshotId = "root-wins",
+        )
+
+        assertEquals("com.current.app", snapshot.activePackage)
+        assertEquals(9, snapshot.activeWindowId)
+        assertTrue(root.closed)
+    }
+
+    @Test
     fun `password nodes never retain semantic text`() {
         val root = FakeNode(
             className = "android.widget.EditText",
