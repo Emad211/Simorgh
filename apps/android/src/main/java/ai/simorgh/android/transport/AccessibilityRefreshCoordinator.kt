@@ -8,7 +8,6 @@ import ai.simorgh.android.protocol.ObservationRefreshAckStatus
 import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import java.io.Closeable
 
-
 data class ObservationRefreshReceipt(
     val status: ObservationRefreshAckStatus,
     val detail: String,
@@ -46,17 +45,7 @@ class AccessibilityRefreshCoordinator(
     ): ObservationRefreshReceipt {
         val payload = runCatching {
             ObservationRefreshProtocol.validateRequest(
-                envelope = ai.simorgh.android.protocol.ProtocolEnvelope(
-                    messageId = requestEnvelopeId,
-                    type = ObservationRefreshProtocol.TYPE_REFRESH,
-                    sentAtMs = 0,
-                    deviceId = null,
-                    payload = ai.simorgh.android.protocol.DeviceProtocol.json
-                        .encodeToJsonElement(
-                            DeviceObservationRefreshPayload.serializer(),
-                            rawPayload,
-                        ).jsonObject,
-                ),
+                requestEnvelopeId = requestEnvelopeId,
                 payload = rawPayload,
             )
         }.getOrElse { error ->
@@ -87,7 +76,10 @@ class AccessibilityRefreshCoordinator(
                     },
                 )
             }
-            publisher.activeRefreshRequestId()?.let { publisherRequestId ->
+
+            val publisherRequestId = publisher.pendingRefreshRequestId()
+                ?: publisher.inFlightRefreshRequestId()
+            if (publisherRequestId != null) {
                 return ObservationRefreshReceipt(
                     status = if (publisherRequestId == payload.requestId) {
                         ObservationRefreshAckStatus.DUPLICATE
@@ -99,6 +91,12 @@ class AccessibilityRefreshCoordinator(
                     } else {
                         "another refresh observation is queued or in flight"
                     },
+                )
+            }
+            if (publisher.hasRefreshRequest(payload.requestId)) {
+                return ObservationRefreshReceipt(
+                    status = ObservationRefreshAckStatus.DUPLICATE,
+                    detail = "the same refresh observation was already acknowledged",
                 )
             }
             if (!AccessibilityObservationBus.current().serviceConnected) {
