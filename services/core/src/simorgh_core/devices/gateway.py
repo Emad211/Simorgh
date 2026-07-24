@@ -10,9 +10,17 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
 
 from simorgh_core.config import Settings, get_settings
-from simorgh_core.devices.action_broker import action_broker
+from simorgh_core.devices.action_broker import (
+    DeviceActionNotFoundError,
+    action_broker,
+)
+from simorgh_core.devices.action_semantics import (
+    AndroidActionSemanticError,
+    validate_result_semantics,
+)
 from simorgh_core.devices.actions import AndroidActionResult
 from simorgh_core.devices.protocol import (
+    ActionResultAckStatus,
     DeviceActionCancelAckPayload,
     DeviceActionCommandAckPayload,
     DeviceActionResultAckPayload,
@@ -130,29 +138,80 @@ async def _handle_action_command_ack(
     )
 
 
+async def _send_action_result_ack(
+    *,
+    session: DeviceSession,
+    result_envelope: ProtocolEnvelope,
+    result: AndroidActionResult,
+    result_status: ActionResultAckStatus,
+    detail: str = "",
+) -> None:
+    acknowledgement = ProtocolEnvelope.create(
+        message_type="device.action_result_ack",
+        device_id=session.device_id,
+        correlation_id=result_envelope.message_id,
+        payload=DeviceActionResultAckPayload(
+            command_id=result.command_id,
+            action_id=result.action_id,
+            status=result_status,
+            received_at_ms=int(time.time() * 1000),
+            detail=detail[:1_000],
+        ),
+    )
+    await session.send_envelope(acknowledgement)
+
+
 async def _handle_action_result(
     *,
     session: DeviceSession,
     envelope: ProtocolEnvelope,
 ) -> None:
     result = AndroidActionResult.model_validate(envelope.payload)
+
+    try:
+        record = await action_broker.get(
+            device_id=session.device_id,
+            action_id=result.action_id,
+        )
+    except DeviceActionNotFoundError:
+        await _send_action_result_ack(
+            session=session,
+            result_envelope=envelope,
+            result=result,
+            result_status="unknown_action",
+            detail="Core has no action record for this result",
+        )
+        return
+
+    if record.result is None:
+        latest = await registry.latest_observation(session.device_id)
+        try:
+            validate_result_semantics(
+                command=record.command,
+                result=result,
+                latest_observation=latest.payload if latest is not None else None,
+            )
+        except AndroidActionSemanticError as exc:
+            await _send_action_result_ack(
+                session=session,
+                result_envelope=envelope,
+                result=result,
+                result_status="rejected",
+                detail=str(exc),
+            )
+            return
+
     result_status, _ = await action_broker.record_result(
         session=session,
         envelope=envelope,
         result=result,
     )
-    acknowledgement = ProtocolEnvelope.create(
-        message_type="device.action_result_ack",
-        device_id=session.device_id,
-        correlation_id=envelope.message_id,
-        payload=DeviceActionResultAckPayload(
-            command_id=result.command_id,
-            action_id=result.action_id,
-            status=result_status,
-            received_at_ms=int(time.time() * 1000),
-        ),
+    await _send_action_result_ack(
+        session=session,
+        result_envelope=envelope,
+        result=result,
+        result_status=result_status,
     )
-    await session.send_envelope(acknowledgement)
 
 
 async def _handle_action_cancel_ack(
