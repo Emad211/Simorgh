@@ -18,7 +18,7 @@ Documentation changes are part of the implementation. A state-changing capabilit
 
 ## Android action execution
 
-- [`ANDROID_ACTION_TRANSPORT.md`](ANDROID_ACTION_TRANSPORT.md) — typed command delivery, encrypted Android ledger, replay, cancellation, and result acknowledgement.
+- [`ANDROID_ACTION_TRANSPORT.md`](ANDROID_ACTION_TRANSPORT.md) — capability-gated typed command delivery, encrypted Android ledger, replay, cancellation, and result acknowledgement.
 - [`ANDROID_ACTION_EXECUTOR.md`](ANDROID_ACTION_EXECUTOR.md) — operation contracts, deterministic selectors, predicates, and evidence.
 - [`ANDROID_OPEN_APP_EXECUTOR.md`](ANDROID_OPEN_APP_EXECUTOR.md) — verified front-door and deep-link application launching.
 
@@ -29,7 +29,13 @@ open_app(package_name)
 open_app(package_name, uri)
 ```
 
-Click, text entry, scrolling, arbitrary gestures, global actions, screenshot transport, and visual grounding remain separate reviewed increments.
+Core dispatches it only when the current Android Session advertises:
+
+```text
+android.open_app.execution.v1
+```
+
+Click, text entry, scrolling, arbitrary gestures, global actions, screenshot transport, and visual grounding remain separate reviewed increments. Their schema types are not execution permission and Core rejects them until they receive their own versioned capability mapping.
 
 ## Architecture Decision Records
 
@@ -38,7 +44,8 @@ ADRs live under [`adr/`](adr/). Relevant device/runtime decisions include:
 - ADR 0006 — idempotent Android action delivery;
 - ADR 0007 — verified Android `open_app` execution;
 - ADR 0008 — minimal Simorgh self-state observation;
-- ADR 0009 — explicit observation refresh handshake.
+- ADR 0009 — explicit observation refresh handshake;
+- ADR 0010 — enforced Android action capability negotiation.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
