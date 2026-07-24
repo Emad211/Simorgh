@@ -3,6 +3,12 @@ package ai.simorgh.android.accessibility
 import java.io.Closeable
 import java.util.concurrent.CopyOnWriteArraySet
 
+data class AcknowledgedSnapshotReference(
+    val snapshotId: String,
+    val capturedAtMs: Long,
+    val activePackage: String? = null,
+)
+
 data class AcknowledgedAccessibilityObservation(
     val streamId: String,
     val sequence: Long,
@@ -12,6 +18,13 @@ data class AcknowledgedAccessibilityObservation(
     val activePackage: String? = null,
     val acknowledgedAtMs: Long,
 ) {
+    val snapshot: AcknowledgedSnapshotReference
+        get() = AcknowledgedSnapshotReference(
+            snapshotId = snapshotId,
+            capturedAtMs = capturedAtMs,
+            activePackage = activePackage,
+        )
+
     constructor(
         streamId: String,
         sequence: Long,
