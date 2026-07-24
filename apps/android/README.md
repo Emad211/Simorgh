@@ -12,6 +12,10 @@ The application currently contains:
 - an authenticated WebSocket connection to Simorgh Core;
 - mandatory device registration and heartbeat;
 - bounded reconnect and outbound queuing;
+- a sticky foreground service independent of the Activity lifecycle;
+- an ongoing status notification with an explicit Stop action;
+- Android Keystore-backed encryption for the private device token;
+- optional restoration after device boot;
 - an installable Compose application boundary.
 
 Accessibility observation, command delivery, execution, and screen capture are implemented in subsequent work items so each boundary can be tested independently.
@@ -73,7 +77,14 @@ For a physical phone such as Samsung Galaxy A53, use the development computer's 
 ws://192.168.1.20:8080/v1/devices/ws
 ```
 
-Enter the same `SIMORGH_DEVICE_TOKEN` in the app. The development token remains only in memory and is not persisted. See [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the complete setup and protocol.
+Enter the same `SIMORGH_DEVICE_TOKEN` in the app and start the foreground service. The token is encrypted with an Android Keystore-backed AES-GCM key; the AvalAI key remains exclusively on Core.
+
+The optional start-on-boot switch is separate from ordinary sticky-service recovery. Stopping the service explicitly disables recovery until the user starts it again.
+
+See:
+
+- [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the protocol;
+- [`docs/ANDROID_ALWAYS_ON.md`](../../docs/ANDROID_ALWAYS_ON.md) for lifecycle, Samsung One UI setup, and validation scenarios.
 
 ## Package
 
@@ -89,3 +100,4 @@ ai.simorgh.android
 - State-changing device actions require pre/post observations and verification.
 - New Android APIs must be guarded by SDK checks and have a documented fallback.
 - Production transport must use `wss://`; local `ws://` is debug-only.
+- A permanent connection must remain user-visible and immediately stoppable.
