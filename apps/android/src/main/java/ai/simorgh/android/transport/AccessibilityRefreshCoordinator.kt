@@ -8,6 +8,7 @@ import ai.simorgh.android.protocol.ObservationRefreshAckStatus
 import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import java.io.Closeable
 
+
 data class ObservationRefreshReceipt(
     val status: ObservationRefreshAckStatus,
     val detail: String,
@@ -30,7 +31,7 @@ class AccessibilityRefreshCoordinator(
     private var active: ActiveRefresh? = null
     private val observationSubscription = AccessibilityObservationBus.subscribe { state ->
         if (!state.serviceConnected) {
-            failActive(
+            failWaitingRefresh(
                 status = ObservationRefreshAckStatus.OBSERVER_UNAVAILABLE,
                 detail = "Accessibility observer disconnected during refresh",
             )
@@ -63,34 +64,22 @@ class AccessibilityRefreshCoordinator(
                 )
             }
             active?.let { current ->
-                return ObservationRefreshReceipt(
-                    status = if (current.requestId == payload.requestId) {
-                        ObservationRefreshAckStatus.DUPLICATE
-                    } else {
-                        ObservationRefreshAckStatus.BUSY
-                    },
-                    detail = if (current.requestId == payload.requestId) {
-                        "the same refresh request already owns capture"
-                    } else {
-                        "another refresh request owns capture"
-                    },
+                return ownershipReceipt(
+                    existingRequestId = current.requestId,
+                    incomingRequestId = payload.requestId,
+                    sameDetail = "the same refresh request already owns capture or submission",
+                    otherDetail = "another refresh request owns capture or submission",
                 )
             }
 
             val publisherRequestId = publisher.pendingRefreshRequestId()
                 ?: publisher.inFlightRefreshRequestId()
             if (publisherRequestId != null) {
-                return ObservationRefreshReceipt(
-                    status = if (publisherRequestId == payload.requestId) {
-                        ObservationRefreshAckStatus.DUPLICATE
-                    } else {
-                        ObservationRefreshAckStatus.BUSY
-                    },
-                    detail = if (publisherRequestId == payload.requestId) {
-                        "the same refresh observation is queued or in flight"
-                    } else {
-                        "another refresh observation is queued or in flight"
-                    },
+                return ownershipReceipt(
+                    existingRequestId = publisherRequestId,
+                    incomingRequestId = payload.requestId,
+                    sameDetail = "the same refresh observation is queued or in flight",
+                    otherDetail = "another refresh observation is queued or in flight",
                 )
             }
             if (publisher.hasRefreshRequest(payload.requestId)) {
@@ -99,33 +88,27 @@ class AccessibilityRefreshCoordinator(
                     detail = "the same refresh observation was already acknowledged",
                 )
             }
-            if (!AccessibilityObservationBus.current().serviceConnected) {
+
+            val observerState = AccessibilityObservationBus.current()
+            if (!observerState.serviceConnected) {
                 return ObservationRefreshReceipt(
                     status = ObservationRefreshAckStatus.OBSERVER_UNAVAILABLE,
                     detail = "Accessibility observer is not connected",
                 )
             }
 
-            val baselineSnapshotId = AccessibilityObservationBus.current()
-                .latestSnapshot
-                ?.snapshotId
             val timeoutTask = scheduler.schedule(payload.timeoutMs) {
                 onTimeout(payload.requestId)
             }
             active = ActiveRefresh(
                 requestId = payload.requestId,
-                baselineSnapshotId = baselineSnapshotId,
+                baselineSnapshotId = observerState.latestSnapshot?.snapshotId,
                 timeoutTask = timeoutTask,
             )
         }
 
         if (!captureRequester()) {
-            val removed = removeActive(payload.requestId)
-            removed?.timeoutTask?.cancel()
-            return ObservationRefreshReceipt(
-                status = ObservationRefreshAckStatus.OBSERVER_UNAVAILABLE,
-                detail = "Accessibility capture requester is unavailable",
-            )
+            return captureRequesterUnavailable(payload.requestId)
         }
         return ObservationRefreshReceipt(
             status = ObservationRefreshAckStatus.ACCEPTED,
@@ -149,18 +132,36 @@ class AccessibilityRefreshCoordinator(
     }
 
     private fun onSnapshot(snapshot: AccessibilitySnapshot) {
-        val current: ActiveRefresh
-        synchronized(lock) {
-            current = active ?: return
-            if (snapshot.snapshotId == current.baselineSnapshotId) {
+        val current = synchronized(lock) {
+            val candidate = active ?: return
+            if (
+                candidate.phase != CapturePhase.WAITING ||
+                snapshot.snapshotId == candidate.baselineSnapshotId
+            ) {
                 return
             }
-            active = null
+            candidate.phase = CapturePhase.SUBMITTING
+            candidate.timeoutTask.cancel()
+            candidate
         }
-        current.timeoutTask.cancel()
 
-        val projected = snapshotProjector(snapshot)
-        when (publisher.submitRefresh(projected, current.requestId)) {
+        val projected = runCatching { snapshotProjector(snapshot) }.getOrElse { error ->
+            if (finishSubmitting(current.requestId)) {
+                terminalAcknowledgementEmitter(
+                    current.requestId,
+                    ObservationRefreshAckStatus.REJECTED,
+                    error.message.orEmpty().ifBlank { "snapshot projection failed" },
+                )
+            }
+            return
+        }
+        val submission = publisher.submitRefresh(projected, current.requestId)
+        val stillOwned = finishSubmitting(current.requestId)
+        if (!stillOwned) {
+            return
+        }
+
+        when (submission) {
             RefreshObservationSubmissionStatus.ACCEPTED,
             RefreshObservationSubmissionStatus.DUPLICATE,
             -> Unit
@@ -185,8 +186,43 @@ class AccessibilityRefreshCoordinator(
         }
     }
 
+    private fun captureRequesterUnavailable(requestId: String): ObservationRefreshReceipt {
+        val removed: ActiveRefresh?
+        val progressed: Boolean
+        val isClosed: Boolean
+        synchronized(lock) {
+            isClosed = closed
+            val current = active
+            progressed = current == null ||
+                current.requestId != requestId ||
+                current.phase == CapturePhase.SUBMITTING
+            removed = if (!progressed) {
+                active = null
+                current
+            } else {
+                null
+            }
+        }
+        removed?.timeoutTask?.cancel()
+
+        return when {
+            isClosed -> ObservationRefreshReceipt(
+                status = ObservationRefreshAckStatus.REJECTED,
+                detail = "refresh coordinator closed while capture was requested",
+            )
+            progressed -> ObservationRefreshReceipt(
+                status = ObservationRefreshAckStatus.DUPLICATE,
+                detail = "refresh capture already progressed before requester failure",
+            )
+            else -> ObservationRefreshReceipt(
+                status = ObservationRefreshAckStatus.OBSERVER_UNAVAILABLE,
+                detail = "Accessibility capture requester is unavailable",
+            )
+        }
+    }
+
     private fun onTimeout(requestId: String) {
-        val removed = removeActive(requestId) ?: return
+        val removed = removeWaiting(requestId) ?: return
         removed.timeoutTask.cancel()
         terminalAcknowledgementEmitter(
             requestId,
@@ -195,31 +231,69 @@ class AccessibilityRefreshCoordinator(
         )
     }
 
-    private fun failActive(
+    private fun failWaitingRefresh(
         status: ObservationRefreshAckStatus,
         detail: String,
     ) {
-        val removed: ActiveRefresh
-        synchronized(lock) {
-            removed = active ?: return
+        val removed = synchronized(lock) {
+            val current = active ?: return
+            if (current.phase != CapturePhase.WAITING) {
+                return
+            }
             active = null
+            current
         }
         removed.timeoutTask.cancel()
         terminalAcknowledgementEmitter(removed.requestId, status, detail)
     }
 
-    private fun removeActive(requestId: String): ActiveRefresh? = synchronized(lock) {
+    private fun removeWaiting(requestId: String): ActiveRefresh? = synchronized(lock) {
         val current = active ?: return@synchronized null
-        if (current.requestId != requestId) {
+        if (
+            current.requestId != requestId ||
+            current.phase != CapturePhase.WAITING
+        ) {
             return@synchronized null
         }
         active = null
         current
     }
 
+    private fun finishSubmitting(requestId: String): Boolean = synchronized(lock) {
+        val current = active ?: return@synchronized false
+        if (
+            current.requestId != requestId ||
+            current.phase != CapturePhase.SUBMITTING
+        ) {
+            return@synchronized false
+        }
+        active = null
+        !closed
+    }
+
+    private fun ownershipReceipt(
+        existingRequestId: String,
+        incomingRequestId: String,
+        sameDetail: String,
+        otherDetail: String,
+    ): ObservationRefreshReceipt = ObservationRefreshReceipt(
+        status = if (existingRequestId == incomingRequestId) {
+            ObservationRefreshAckStatus.DUPLICATE
+        } else {
+            ObservationRefreshAckStatus.BUSY
+        },
+        detail = if (existingRequestId == incomingRequestId) sameDetail else otherDetail,
+    )
+
+    private enum class CapturePhase {
+        WAITING,
+        SUBMITTING,
+    }
+
     private data class ActiveRefresh(
         val requestId: String,
         val baselineSnapshotId: String?,
         val timeoutTask: ScheduledObservationTask,
+        var phase: CapturePhase = CapturePhase.WAITING,
     )
 }
