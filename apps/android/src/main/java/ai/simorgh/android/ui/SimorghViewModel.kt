@@ -31,7 +31,10 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
                 ?: connectionPreferences.loadEndpoint(),
             startOnBootEnabled = secureConnectionStore.isStartOnBootEnabled(),
             accessibilityEnabled = AccessibilityServiceStatus.isEnabled(application),
-            backgroundLaunchAccessGranted = BackgroundLaunchAccess.isGranted(application),
+            backgroundLaunchSpecialAccessRequired =
+                BackgroundLaunchAccess.requiresSpecialAccess(),
+            backgroundLaunchAccessGranted =
+                BackgroundLaunchAccess.isConfiguredForBackground(application),
         ),
     )
     val uiState: State<SimorghUiState> = mutableUiState
@@ -88,7 +91,10 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
 
     fun refreshBackgroundLaunchAccess() {
         mutableUiState.value = mutableUiState.value.copy(
-            backgroundLaunchAccessGranted = BackgroundLaunchAccess.isGranted(getApplication()),
+            backgroundLaunchSpecialAccessRequired =
+                BackgroundLaunchAccess.requiresSpecialAccess(),
+            backgroundLaunchAccessGranted =
+                BackgroundLaunchAccess.isConfiguredForBackground(getApplication()),
         )
     }
 
