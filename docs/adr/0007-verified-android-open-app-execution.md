@@ -8,12 +8,14 @@
 Simorgh's first real Android side effect is opening an application. A fire-and-forget implementation is unreliable because:
 
 1. Android background Activity-launch policy varies by platform generation;
-2. individually valid fields can form a semantically unsafe command;
-3. the UI can change after Core observes it but before the phone executes the command;
-4. a Core connection can be invalidated between a local capture and the launch call;
-5. Simorgh can lose foreground visibility between an initial guard and the actual Android call;
-6. Android accepting a launch API does not prove that the requested application became visible;
-7. a process restart after an uncertain side effect must not repeat the launch.
+2. package visibility is filtered on Android 11+;
+3. individually valid fields can form a semantically unsafe command;
+4. the UI can change after Core observes it but before the phone executes the command;
+5. a Core connection can be invalidated between a local capture and the launch call;
+6. Simorgh can lose foreground visibility between an initial guard and the actual Android call;
+7. Android accepting a launch API does not prove that the requested application became visible;
+8. a newer observation can arrive at Core before the valid action result that references an earlier acknowledged state;
+9. a process restart after an uncertain side effect must not repeat the launch.
 
 The executor must work from Android 7/API 24 through current Android releases, including Samsung One UI, without treating API acceptance as success or repeating a launch when the desired state already exists.
 
@@ -32,6 +34,16 @@ The rule is enforced:
 
 Additional predicates are allowed. A node predicate alone can never prove that the requested application is active.
 
+### Narrow package visibility
+
+Simorgh will not request `QUERY_ALL_PACKAGES` for this vertical slice.
+
+The API 24–32 front-door adapter uses `getLaunchIntentForPackage`, whose search order is `ACTION_MAIN/CATEGORY_INFO` followed by `ACTION_MAIN/CATEGORY_LAUNCHER`. The manifest therefore declares only those two signatures in `<queries>`.
+
+The API 33+ adapter uses `getLaunchIntentSenderForPackage`, which is not restricted by ordinary package visibility. Explicit URI launches are attempted directly and map `ActivityNotFoundException` to `target_not_found`.
+
+This provides the visibility required for launchable front doors without exposing unrelated installed packages.
+
 ### Versioned launch eligibility
 
 The runtime policy is explicit and JVM-testable:
@@ -41,7 +53,7 @@ The runtime policy is explicit and JVM-testable:
 
 A Foreground Service alone is not launch authorization on restricted platform versions. When the modern prerequisite is absent, the result is `blocked / unsupported_capability / attempts=0`.
 
-Eligibility is checked once before target resolution and again immediately before `startActivity` or `startIntentSender`.
+Eligibility is checked before target resolution and again immediately before `startActivity` or `startIntentSender`.
 
 ### Versioned launch adapter
 
@@ -87,7 +99,7 @@ The complete verification policy is evaluated against the fresh pre-launch snaps
 
 Because target-package proof is mandatory, this state also proves the requested package is already active.
 
-### Success verification
+### Android success verification
 
 After launch acceptance, Android requires:
 
@@ -96,22 +108,40 @@ After launch acceptance, Android requires:
 - the newest locally captured state still being that satisfying state;
 - a newer Core acknowledgement for that fingerprint.
 
-The final local-state check and acknowledgement selection occur under the evidence monitor to close arrival-order races.
+The final local-state check and acknowledgement selection occur under the evidence monitor to close arrival-order races. Only then does Android produce `succeeded`.
 
-Only then is the result `succeeded`.
+### Android evidence history
 
-### Evidence history
-
-The process retains bounded histories:
+The Android process retains bounded histories:
 
 - 32 complete projected local snapshots;
 - 64 compact acknowledgement references.
 
 Compact acknowledgements contain stream, sequence, fingerprint, snapshot ID, capture time, active package, and acknowledgement time. They do not duplicate full UI trees.
 
+### Core result verification and evidence history
+
+A device result remains a claim until Core checks it against the original command and observations Core actually acknowledged.
+
+For successful `open_app`, Core requires:
+
+- command and action identity match;
+- attempt count is zero or one;
+- before and after references exist;
+- both references resolve to exact acknowledged Core evidence;
+- target package and predicate evidence match the command;
+- zero-attempt success uses identical before and after evidence;
+- one-attempt success uses a newer after reference and non-reversed acknowledgement order.
+
+Core keeps up to 256 compact acknowledged observation records per device, keyed by stream, sequence, snapshot ID, and state fingerprint. A newer observation does not invalidate an earlier exact proof while it remains in the bounded history.
+
+If a reference is unknown, conflicting, or evicted, Core returns `device.action_result_ack(status=rejected)` and does not record terminal success. Android retains that result in its encrypted ledger and fails closed.
+
+The history is deliberately bounded and process-local. Durable Core action/result recovery remains issue #22.
+
 ### Reconnect evidence sessions
 
-Acknowledged evidence is invalidated on disconnect and on detected send failure. Subscribers remain installed. Publication and invalidation callbacks are serialized.
+Acknowledged Android execution evidence is invalidated on disconnect and on detected send failure. Subscribers remain installed. Publication and invalidation callbacks are serialized.
 
 After a new registered connection, fingerprint deduplication is reset and the latest projected state is resubmitted even when the visible UI did not change.
 
@@ -138,11 +168,13 @@ The encrypted write-ahead ledger from ADR 0006 is committed before handler owner
 ### Positive
 
 - A successful result proves the requested package and every additional postcondition.
+- Core independently verifies device success claims.
+- A valid result survives a newer observation arriving before the result message.
 - Semantically unsafe commands never enter the execution channel.
+- Package visibility is limited to launchable front-door signatures.
 - Android-version differences are explicit and testable.
 - Android 7–9 are not blocked by an unnecessary overlay requirement.
 - Android 13–16 sender modes are selected deliberately rather than by one deprecated blanket mode.
-- Modern background launch restrictions become typed and diagnosable.
 - Eligibility is rechecked at the actual side-effect boundary.
 - Stale plans and invalidated Core sessions cannot cross the launch boundary.
 - Already-satisfied requests avoid needless task switching.
@@ -155,13 +187,18 @@ The encrypted write-ahead ledger from ADR 0006 is committed before handler owner
 - A launch can time out even when the target briefly appeared but no matching Core acknowledgement arrived.
 - Private always-on mode on Android 10+ normally needs user-granted overlay access when Simorgh is not visible.
 - OEM and lock-screen behavior still require physical validation.
-- Short histories consume more memory than a latest-only design.
+- Bounded histories consume more memory than latest-only state.
+- An evicted evidence reference fails closed even if the device result was otherwise genuine.
 - Execution is intentionally slower than direct `startActivity` because it captures and verifies evidence.
 - Some deep links that intentionally hand off to another package cannot satisfy the mandatory target-package predicate.
 - Wall-clock skew remains a known limitation tracked in issue #23.
 - Core action-journal durability remains a separate requirement tracked in issue #22.
 
 ## Rejected alternatives
+
+### Request `QUERY_ALL_PACKAGES`
+
+Rejected because the current operation needs only launchable front doors. Targeted `<queries>` signatures and the API 33 IntentSender path provide the required visibility with a smaller information surface.
 
 ### Let arbitrary predicates define `open_app` success
 
@@ -175,11 +212,15 @@ Rejected because launch APIs are asynchronous and platform/OEM behavior may supp
 
 Rejected because it can reset navigation state, interrupt the user, or create unnecessary task transitions.
 
-### Use only the last snapshot received by Core
+### Use only the last snapshot received by Core for planning
 
 Rejected because the UI may change between observation and execution.
 
-### Validate Core evidence only once
+### Validate a result only against Core's latest observation
+
+Rejected because message ordering can place a valid action result behind a newer observation. Exact bounded acknowledged history distinguishes that benign race from fabricated evidence.
+
+### Validate Core evidence only once on Android
 
 Rejected because the connection can be invalidated after fresh capture but before the Activity-start call.
 
@@ -210,10 +251,6 @@ Rejected because Android separates long-running visible services from background
 ### Exclude every Simorgh self-snapshot
 
 Rejected because transitions into Simorgh would become unverifiable. A package-only projection provides sufficient evidence without exposing internal UI.
-
-### Depend solely on package queries
-
-Rejected on API 33+ because `getLaunchIntentSenderForPackage` provides a front-door launch token not restricted by ordinary package visibility. The older path remains necessary for API 24–32.
 
 ## Follow-up
 
