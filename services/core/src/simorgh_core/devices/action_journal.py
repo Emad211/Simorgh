@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 import threading
 from collections import OrderedDict
@@ -54,7 +55,7 @@ class ActionJournalSchemaError(ActionJournalError):
 
 
 class ActionJournalConflictError(ActionJournalError):
-    """Raised when durable command/action ownership conflicts with an existing row."""
+    """Raised when durable command/action/envelope identity conflicts with existing state."""
 
 
 class ActionJournalEntryV1(BaseModel):
@@ -147,9 +148,10 @@ class ActionJournalEntryV1(BaseModel):
             raise ValueError("cancel_envelope device_id does not match journal device_id")
         if envelope.correlation_id != self.command_envelope.message_id:
             raise ValueError("cancel_envelope must correlate to command_envelope")
-        command_id = envelope.payload.get("command_id")
-        action_id = envelope.payload.get("action_id")
-        if command_id != str(self.command_id) or action_id != str(self.action_id):
+        if (
+            envelope.payload.get("command_id") != str(self.command_id)
+            or envelope.payload.get("action_id") != str(self.action_id)
+        ):
             raise ValueError("cancel_envelope payload identity does not match command")
 
         if acknowledgement is not None:
@@ -159,19 +161,19 @@ class ActionJournalEntryV1(BaseModel):
                 raise ValueError("cancel_ack action_id does not match command")
 
     def _validate_result(self) -> None:
-        result_fields = (
+        identity_fields = (
             self.result_envelope_id,
             self.result_correlation_id,
             self.result_payload_sha256,
         )
         if self.result is None:
-            if any(value is not None for value in result_fields):
+            if any(value is not None for value in identity_fields):
                 raise ValueError("result envelope identity requires result payload")
             if self.result_ack_status is not None or self.result_ack_sent_at_ms is not None:
                 raise ValueError("result ACK state requires result payload")
             return
 
-        if any(value is None for value in result_fields):
+        if any(value is None for value in identity_fields):
             raise ValueError("result requires envelope id, correlation id, and payload hash")
         if self.result.command_id != self.command_id:
             raise ValueError("result command_id does not match command")
@@ -278,20 +280,31 @@ class InMemoryActionJournal:
         self._require_open()
         validated = ActionJournalEntryV1.model_validate(entry.model_dump(mode="json"))
         key = (validated.device_id, validated.action_id)
-        command_owner = next(
-            (
-                candidate
-                for candidate in self._entries.values()
-                if candidate.device_id == validated.device_id
-                and candidate.command_id == validated.command_id
+        for candidate in self._entries.values():
+            if candidate.device_id == validated.device_id:
+                if (
+                    candidate.command_id == validated.command_id
+                    and candidate.action_id != validated.action_id
+                ):
+                    raise ActionJournalConflictError(
+                        "command_id already belongs to another durable action"
+                    )
+                if (
+                    candidate.command_envelope.message_id
+                    == validated.command_envelope.message_id
+                    and candidate.action_id != validated.action_id
+                ):
+                    raise ActionJournalConflictError(
+                        "command envelope message_id already belongs to another durable action"
+                    )
+            if (
+                candidate.result_envelope_id is not None
+                and candidate.result_envelope_id == validated.result_envelope_id
                 and candidate.action_id != validated.action_id
-            ),
-            None,
-        )
-        if command_owner is not None:
-            raise ActionJournalConflictError(
-                "command_id already belongs to another action in durable journal"
-            )
+            ):
+                raise ActionJournalConflictError(
+                    "result envelope message_id already belongs to another durable action"
+                )
         self._entries[key] = validated
         self._entries.move_to_end(key)
         self._prune_terminal()
@@ -308,9 +321,15 @@ class InMemoryActionJournal:
         self._closed = True
 
     def _prune_terminal(self) -> None:
-        terminal_keys = [key for key, entry in self._entries.items() if entry.terminal]
-        overflow = len(terminal_keys) - self._max_terminal_records
-        for key in terminal_keys[: max(overflow, 0)]:
+        terminals = sorted(
+            (
+                (entry.updated_at_ms, str(entry.device_id), str(entry.action_id), key)
+                for key, entry in self._entries.items()
+                if entry.terminal
+            )
+        )
+        overflow = len(terminals) - self._max_terminal_records
+        for _, _, _, key in terminals[: max(overflow, 0)]:
             self._entries.pop(key, None)
 
     def _require_open(self) -> None:
@@ -336,20 +355,29 @@ class SQLiteActionJournal:
 
         if self._path != ":memory:":
             Path(self._path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
+        connection: sqlite3.Connection | None = None
         try:
-            self._connection = sqlite3.connect(
+            connection = sqlite3.connect(
                 self._path,
                 isolation_level=None,
                 check_same_thread=False,
             )
-            self._connection.row_factory = sqlite3.Row
+            connection.row_factory = sqlite3.Row
+            self._connection = connection
             self._connection.execute("PRAGMA foreign_keys = ON")
             self._connection.execute("PRAGMA busy_timeout = 5000")
-            self._connection.execute("PRAGMA synchronous = FULL")
             if self._path != ":memory:":
                 self._connection.execute("PRAGMA journal_mode = WAL")
+            self._connection.execute("PRAGMA synchronous = FULL")
             self._initialize_schema()
+        except ActionJournalError:
+            if connection is not None:
+                connection.close()
+            raise
         except sqlite3.DatabaseError as exc:
+            if connection is not None:
+                connection.close()
             raise ActionJournalCorruptionError(
                 f"could not initialize action journal at {self._path}: {exc}"
             ) from exc
@@ -369,6 +397,8 @@ class SQLiteActionJournal:
                         device_id,
                         action_id,
                         command_id,
+                        command_message_id,
+                        result_message_id,
                         phase,
                         terminal,
                         updated_at_ms,
@@ -382,11 +412,7 @@ class SQLiteActionJournal:
                 raise ActionJournalCorruptionError(
                     f"could not read action journal rows: {exc}"
                 ) from exc
-
-            entries: list[ActionJournalEntryV1] = []
-            for row in rows:
-                entries.append(self._decode_row(row))
-            return entries
+            return [self._decode_row(row) for row in rows]
 
     def upsert(self, entry: ActionJournalEntryV1) -> None:
         with self._lock:
@@ -402,15 +428,19 @@ class SQLiteActionJournal:
                             device_id,
                             action_id,
                             command_id,
+                            command_message_id,
+                            result_message_id,
                             phase,
                             terminal,
                             created_at_ms,
                             updated_at_ms,
                             payload_json,
                             payload_sha256
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(device_id, action_id) DO UPDATE SET
                             command_id = excluded.command_id,
+                            command_message_id = excluded.command_message_id,
+                            result_message_id = excluded.result_message_id,
                             phase = excluded.phase,
                             terminal = excluded.terminal,
                             created_at_ms = excluded.created_at_ms,
@@ -422,6 +452,12 @@ class SQLiteActionJournal:
                             str(validated.device_id),
                             str(validated.action_id),
                             str(validated.command_id),
+                            str(validated.command_envelope.message_id),
+                            (
+                                str(validated.result_envelope_id)
+                                if validated.result_envelope_id is not None
+                                else None
+                            ),
                             validated.phase,
                             int(validated.terminal),
                             validated.created_at_ms,
@@ -433,7 +469,7 @@ class SQLiteActionJournal:
                     self._prune_terminal_locked()
             except sqlite3.IntegrityError as exc:
                 raise ActionJournalConflictError(
-                    "durable action or command identity conflicts with an existing journal row"
+                    "durable action, command, or envelope identity conflicts with an existing row"
                 ) from exc
             except sqlite3.DatabaseError as exc:
                 raise ActionJournalCorruptionError(
@@ -501,6 +537,8 @@ class SQLiteActionJournal:
                     device_id TEXT NOT NULL,
                     action_id TEXT NOT NULL,
                     command_id TEXT NOT NULL,
+                    command_message_id TEXT NOT NULL UNIQUE,
+                    result_message_id TEXT UNIQUE,
                     phase TEXT NOT NULL,
                     terminal INTEGER NOT NULL CHECK (terminal IN (0, 1)),
                     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
@@ -523,14 +561,13 @@ class SQLiteActionJournal:
         payload_json = str(row["payload_json"])
         expected_hash = str(row["payload_sha256"])
         actual_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-        if not hashlib.compare_digest(expected_hash, actual_hash):
+        if not secrets.compare_digest(expected_hash, actual_hash):
             raise ActionJournalCorruptionError(
                 "action journal payload hash mismatch for "
                 f"{row['device_id']}/{row['action_id']}"
             )
         try:
-            decoded = json.loads(payload_json)
-            entry = ActionJournalEntryV1.model_validate(decoded)
+            entry = ActionJournalEntryV1.model_validate(json.loads(payload_json))
         except (json.JSONDecodeError, ValueError) as exc:
             raise ActionJournalCorruptionError(
                 "action journal payload failed model validation for "
@@ -541,6 +578,8 @@ class SQLiteActionJournal:
             str(entry.device_id),
             str(entry.action_id),
             str(entry.command_id),
+            str(entry.command_envelope.message_id),
+            str(entry.result_envelope_id) if entry.result_envelope_id is not None else None,
             entry.phase,
             int(entry.terminal),
             entry.updated_at_ms,
@@ -549,6 +588,8 @@ class SQLiteActionJournal:
             str(row["device_id"]),
             str(row["action_id"]),
             str(row["command_id"]),
+            str(row["command_message_id"]),
+            str(row["result_message_id"]) if row["result_message_id"] is not None else None,
             str(row["phase"]),
             int(row["terminal"]),
             int(row["updated_at_ms"]),
@@ -593,11 +634,11 @@ class SQLiteActionJournal:
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             yield
-        except Exception:
-            self._connection.execute("ROLLBACK")
-            raise
-        else:
             self._connection.execute("COMMIT")
+        except BaseException:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
 
     def _require_open(self) -> None:
         if self._closed:
