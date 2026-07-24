@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
-
 from simorgh_core.devices.actions import (
     ActionOutcome,
     ActivePackageEqualsPredicate,
@@ -14,7 +12,9 @@ from simorgh_core.devices.actions import (
     NodeTextEqualsPredicate,
     ObservationReference,
     OpenAppOperation,
+    PredicateEvidence,
     PredicateOutcome,
+    UiPredicate,
 )
 from simorgh_core.devices.registry import StoredObservationEvidence
 
@@ -121,25 +121,21 @@ def validate_result_semantics(
             "successful open_app after observation must show the target package"
         )
 
-    expected_kinds = Counter(predicate.kind for predicate in command.verification.predicates)
-    actual_kinds = Counter(evidence.kind for evidence in result.predicates)
-    if actual_kinds != expected_kinds:
+    expected_predicates = command.verification.predicates
+    if len(result.predicates) != len(expected_predicates):
         raise AndroidActionSemanticError(
             "successful open_app predicate evidence does not match the verification policy"
         )
-    if any(
-        evidence.outcome != PredicateOutcome.SATISFIED
-        for evidence in result.predicates
-    ):
-        raise AndroidActionSemanticError(
-            "successful open_app requires every predicate outcome to be satisfied"
-        )
-
-    package_evidence_count = actual_kinds["active_package_equals"]
-    if package_evidence_count < 1:
-        raise AndroidActionSemanticError(
-            "successful open_app result lacks satisfied target-package evidence"
-        )
+    for predicate, evidence in zip(expected_predicates, result.predicates, strict=True):
+        if evidence.kind != predicate.kind:
+            raise AndroidActionSemanticError(
+                "successful open_app predicate evidence order does not match the policy"
+            )
+        if evidence.outcome != PredicateOutcome.SATISFIED:
+            raise AndroidActionSemanticError(
+                "successful open_app requires every predicate outcome to be satisfied"
+            )
+        _validate_satisfied_predicate_evidence(predicate=predicate, evidence=evidence)
 
     if result.attempts == 0:
         if before != after:
@@ -165,6 +161,41 @@ def validate_result_semantics(
             "one-attempt open_app after observation was acknowledged before before observation"
         )
     return result
+
+
+def _validate_satisfied_predicate_evidence(
+    *,
+    predicate: UiPredicate,
+    evidence: PredicateEvidence,
+) -> None:
+    resolution = evidence.resolution
+    if isinstance(predicate, ActivePackageEqualsPredicate):
+        if resolution is not None:
+            raise AndroidActionSemanticError(
+                "active_package_equals evidence must not contain selector resolution"
+            )
+        return
+
+    if resolution is None:
+        raise AndroidActionSemanticError(
+            f"successful {predicate.kind} evidence requires selector resolution"
+        )
+
+    if isinstance(predicate, NodeAbsentPredicate):
+        if resolution.outcome != "not_found" or resolution.selected_node_id is not None:
+            raise AndroidActionSemanticError(
+                "successful node_absent evidence requires not_found resolution"
+            )
+        return
+
+    if resolution.outcome != "resolved":
+        raise AndroidActionSemanticError(
+            f"successful {predicate.kind} evidence requires resolved selector outcome"
+        )
+    if resolution.selected_node_id is None or resolution.selected_path is None:
+        raise AndroidActionSemanticError(
+            f"successful {predicate.kind} evidence requires selected node identity"
+        )
 
 
 def _validate_before_reference(
