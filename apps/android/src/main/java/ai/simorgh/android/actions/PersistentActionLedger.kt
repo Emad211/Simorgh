@@ -110,7 +110,10 @@ interface ActionLedger {
 }
 
 class PersistentActionLedger(context: Context) : ActionLedger {
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val preferences = context.applicationContext.getSharedPreferences(
+        PREFERENCES_NAME,
+        Context.MODE_PRIVATE,
+    )
 
     override fun load(): ActionLedgerLoadResult {
         val encodedIv = preferences.getString(KEY_IV, null)
@@ -152,7 +155,9 @@ class PersistentActionLedger(context: Context) : ActionLedger {
     }
 
     override fun clear() {
-        preferences.edit().clear().commit()
+        check(preferences.edit().clear().commit()) {
+            "failed to clear encrypted action ledger"
+        }
     }
 
     private fun getOrCreateKey(): SecretKey {
@@ -177,7 +182,6 @@ class PersistentActionLedger(context: Context) : ActionLedger {
     }
 
     private companion object {
-        const val ACTION_LEDGER_SCHEMA_VERSION = "1.0"
         const val PREFERENCES_NAME = "simorgh_action_ledger"
         const val KEY_IV = "ledger_iv"
         const val KEY_CIPHERTEXT = "ledger_ciphertext"
