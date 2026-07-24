@@ -48,6 +48,23 @@ class UiPostconditionEvaluatorTest {
     }
 
     @Test
+    fun `verification can resolve a visible disabled node`() {
+        val policy = AndroidVerificationPolicy(
+            predicates = listOf(
+                NodeEnabledEqualsPredicate(selector(), expectedEnabled = false),
+            ),
+        )
+
+        val evaluation = UiPostconditionEvaluator.evaluate(
+            snapshot(node(enabled = false)),
+            policy,
+        )
+
+        assertEquals(PredicateOutcome.SATISFIED, evaluation.outcome)
+        assertEquals(PredicateOutcome.SATISFIED, evaluation.evidence.single().outcome)
+    }
+
+    @Test
     fun `ambiguous selector makes verification indeterminate`() {
         val selector = AndroidNodeSelector(
             packageName = PACKAGE_NAME,
@@ -128,6 +145,7 @@ class UiPostconditionEvaluatorTest {
         path: String = "0",
         text: String = "گزینه",
         checked: Boolean = false,
+        enabled: Boolean = true,
     ): AccessibilityNodeSnapshot = AccessibilityNodeSnapshot(
         nodeId = id,
         path = path,
@@ -147,7 +165,7 @@ class UiPostconditionEvaluatorTest {
         focused = false,
         editable = false,
         scrollable = false,
-        enabled = true,
+        enabled = enabled,
         selected = false,
         checkable = true,
         checked = checked,
