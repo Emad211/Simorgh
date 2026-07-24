@@ -64,8 +64,8 @@ class DeviceActionCancelRequest(BaseModel):
 
 
 def _require_operator(
-    authorization: AuthorizationHeader,
     settings: SettingsDependency,
+    authorization: AuthorizationHeader = None,
 ) -> None:
     configured = settings.simorgh_operator_token
     if configured is None or not configured.get_secret_value():
