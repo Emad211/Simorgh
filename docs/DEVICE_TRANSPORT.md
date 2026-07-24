@@ -1,6 +1,6 @@
 # Android device transport
 
-Status: implemented foundation
+Status: registration, liveness, and read-only observation implemented
 
 The Android application connects to Simorgh Core through an authenticated, versioned WebSocket endpoint:
 
@@ -20,6 +20,8 @@ Android foreground service       Simorgh Core
    |<-- device.registered -------------|
    |--- heartbeat -------------------->|
    |<-- heartbeat_ack -----------------|
+   |--- device.observation ----------->|
+   |<-- device.observation_ack --------|
 ```
 
 The first application message must be `device.register`. Core rejects an unregistered connection, an invalid device identifier, an unsupported protocol envelope, or an invalid bearer token.
@@ -48,13 +50,16 @@ The Android client implements:
 - WebSocket-level pings;
 - application heartbeat negotiated by Core;
 - bounded exponential reconnect delay from 1 to 30 seconds;
-- a bounded outbound queue of 100 messages;
+- a bounded generic outbound queue of 100 messages;
 - connection generations that discard callbacks from obsolete sockets;
 - replacement of an older live connection when the same device reconnects;
 - sticky foreground-service recovery after ordinary process eviction;
-- optional restoration after device boot.
+- optional restoration after device boot;
+- ordered latest-wins Accessibility observations with explicit acknowledgements.
 
 A connection is marked `CONNECTED` only after Core returns `device.registered`.
+
+Observation messages intentionally bypass the generic reconnect queue. Their publisher owns coalescing, rate limiting, timeout, retry, and acknowledgement so a stale screen cannot be delivered after a newer one. See [`OBSERVATION_TRANSPORT.md`](OBSERVATION_TRANSPORT.md).
 
 ## Local development
 
@@ -92,6 +97,7 @@ ws://192.168.1.20:8080/v1/devices/ws
 ```
 
 5. Enter the value of `SIMORGH_DEVICE_TOKEN` in the app and start the service.
+6. Enable the Simorgh Accessibility observer to begin read-only UI snapshots.
 
 The debug manifest permits cleartext `ws://` for local development. The production manifest disables cleartext traffic and requires `wss://`.
 
@@ -111,4 +117,4 @@ See [`ANDROID_ALWAYS_ON.md`](ANDROID_ALWAYS_ON.md) for Android-version behavior,
 
 ## Current scope and next step
 
-This transport increment supports registration and heartbeat. Command delivery, acknowledgement, cancellation, replay protection, persistent queues, and action results will be added as versioned message types before Android execution is enabled.
+The device channel now supports registration, heartbeat, and ordered read-only Accessibility observations. Durable command delivery, cancellation, action results, and post-condition evidence will be added as versioned message types before Android execution is enabled.
