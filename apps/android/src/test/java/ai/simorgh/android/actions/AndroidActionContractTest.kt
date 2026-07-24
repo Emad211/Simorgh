@@ -9,38 +9,40 @@ import org.junit.Test
 class AndroidActionContractTest {
     @Test
     fun `typed click command survives strict JSON round trip`() {
-        val command = AndroidActionCommand(
-            commandId = COMMAND_ID,
-            actionId = ACTION_ID,
-            issuedAtMs = 1_000,
-            deadlineAtMs = 11_000,
-            precondition = ObservationPrecondition(
-                expectedStreamId = STREAM_ID,
-                minimumSequence = 7,
-                expectedStateFingerprint = "a".repeat(64),
-                expectedActivePackage = PACKAGE_NAME,
-                maximumAgeMs = 2_000,
-            ),
-            operation = ClickNodeOperation(
-                selectors = listOf(selector()),
-                allowGestureFallback = true,
-            ),
-            verification = AndroidVerificationPolicy(
-                predicates = listOf(
-                    ActivePackageEqualsPredicate(PACKAGE_NAME),
-                    NodeExistsPredicate(selector()),
+        val command = AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 11_000,
+                precondition = ObservationPrecondition(
+                    expectedStreamId = STREAM_ID,
+                    minimumSequence = 7,
+                    expectedStateFingerprint = "a".repeat(64),
+                    expectedActivePackage = PACKAGE_NAME,
+                    maximumAgeMs = 2_000,
                 ),
-                timeoutMs = 5_000,
-                stableSamples = 2,
+                operation = ClickNodeOperation(
+                    selectors = listOf(selector()),
+                    allowGestureFallback = true,
+                ),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(
+                        ActivePackageEqualsPredicate(PACKAGE_NAME),
+                        NodeExistsPredicate(selector()),
+                    ),
+                    timeoutMs = 5_000,
+                    stableSamples = 2,
+                ),
             ),
-        ).validated()
+        )
 
         val encoded = AndroidActionJson.codec.encodeToString(command)
         val decoded = AndroidActionJson.codec.decodeFromString<AndroidActionCommand>(encoded)
 
         assertTrue("\"kind\":\"click_node\"" in encoded)
         assertTrue("\"kind\":\"node_exists\"" in encoded)
-        assertEquals(command, decoded)
+        assertEquals(command, AndroidActionContractValidator.validate(decoded))
         assertTrue(decoded.operation is ClickNodeOperation)
     }
 
@@ -62,51 +64,115 @@ class AndroidActionContractTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `command lifetime cannot exceed two minutes`() {
-        AndroidActionCommand(
-            commandId = COMMAND_ID,
-            actionId = ACTION_ID,
-            issuedAtMs = 1_000,
-            deadlineAtMs = 121_001,
-            precondition = ObservationPrecondition(),
-            operation = OpenAppOperation(packageName = PACKAGE_NAME),
-            verification = AndroidVerificationPolicy(
-                predicates = listOf(ActivePackageEqualsPredicate(PACKAGE_NAME)),
+        AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 121_001,
+                precondition = ObservationPrecondition(),
+                operation = OpenAppOperation(packageName = PACKAGE_NAME),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(ActivePackageEqualsPredicate(PACKAGE_NAME)),
+                ),
             ),
-        ).validated()
+        )
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `node action requires at least one selector`() {
-        AndroidActionCommand(
-            commandId = COMMAND_ID,
-            actionId = ACTION_ID,
-            issuedAtMs = 1_000,
-            deadlineAtMs = 10_000,
-            precondition = ObservationPrecondition(),
-            operation = ClickNodeOperation(selectors = emptyList()),
-            verification = AndroidVerificationPolicy(
-                predicates = listOf(ActivePackageEqualsPredicate(PACKAGE_NAME)),
+        AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 10_000,
+                precondition = ObservationPrecondition(),
+                operation = ClickNodeOperation(selectors = emptyList()),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(ActivePackageEqualsPredicate(PACKAGE_NAME)),
+                ),
             ),
-        ).validated()
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `command rejects a malformed expected observation stream id`() {
+        AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 10_000,
+                precondition = ObservationPrecondition(expectedStreamId = "not-a-uuid"),
+                operation = OpenAppOperation(packageName = PACKAGE_NAME),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(ActivePackageEqualsPredicate(PACKAGE_NAME)),
+                ),
+            ),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `verification selector must satisfy the same bounds as an action selector`() {
+        AndroidActionContractValidator.validate(
+            AndroidActionCommand(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                issuedAtMs = 1_000,
+                deadlineAtMs = 10_000,
+                precondition = ObservationPrecondition(),
+                operation = OpenAppOperation(packageName = PACKAGE_NAME),
+                verification = AndroidVerificationPolicy(
+                    predicates = listOf(
+                        NodeExistsPredicate(
+                            AndroidNodeSelector(
+                                packageName = PACKAGE_NAME,
+                                viewId = "x".repeat(513),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
     }
 
     @Test
-    fun `failed action result requires a typed failure code`() {
-        val result = AndroidActionResult(
-            commandId = COMMAND_ID,
-            actionId = ACTION_ID,
-            outcome = ActionOutcome.BLOCKED,
-            failureCode = ActionFailureCode.TARGET_AMBIGUOUS,
-            startedAtMs = 1_000,
-            finishedAtMs = 1_020,
-            detail = "two candidates had equal scores",
+    fun `failed action result requires and preserves a typed failure code`() {
+        val result = AndroidActionContractValidator.validate(
+            AndroidActionResult(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                outcome = ActionOutcome.BLOCKED,
+                failureCode = ActionFailureCode.TARGET_AMBIGUOUS,
+                startedAtMs = 1_000,
+                finishedAtMs = 1_020,
+                detail = "two candidates had equal scores",
+            ),
         )
 
         val encoded = AndroidActionJson.codec.encodeToString(result)
         val decoded = AndroidActionJson.codec.decodeFromString<AndroidActionResult>(encoded)
 
-        assertEquals(ActionFailureCode.TARGET_AMBIGUOUS, decoded.failureCode)
+        assertEquals(
+            ActionFailureCode.TARGET_AMBIGUOUS,
+            AndroidActionContractValidator.validate(decoded).failureCode,
+        )
         assertEquals(ActionOutcome.BLOCKED, decoded.outcome)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `successful result cannot carry a failure code`() {
+        AndroidActionContractValidator.validate(
+            AndroidActionResult(
+                commandId = COMMAND_ID,
+                actionId = ACTION_ID,
+                outcome = ActionOutcome.SUCCEEDED,
+                failureCode = ActionFailureCode.INTERNAL_ERROR,
+                startedAtMs = 1_000,
+                finishedAtMs = 1_020,
+            ),
+        )
     }
 
     private fun selector(): AndroidNodeSelector = AndroidNodeSelector(
