@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import time
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from simorgh_core.devices.protocol import PROTOCOL_VERSION, ProtocolEnvelope
+from simorgh_core.devices.protocol import PROTOCOL_VERSION
 
 OBSERVATION_REFRESH_CAPABILITY: Literal[
     "android.observation.refresh.v1"
@@ -56,13 +56,22 @@ class DeviceObservationRefreshAckPayload(BaseModel):
     detail: str = Field(default="", max_length=1_000)
 
 
-class DeviceObservationRefreshEnvelope(ProtocolEnvelope):
-    type: Literal["device.observation_refresh"] = (  # type: ignore[assignment]
-        OBSERVATION_REFRESH_REQUEST_TYPE
-    )
+class _ObservationRefreshEnvelopeBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    message_id: UUID = Field(default_factory=uuid4)
+    sent_at_ms: int = Field(default_factory=lambda: int(time.time() * 1000), ge=0)
+    device_id: UUID
+    correlation_id: UUID | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeviceObservationRefreshEnvelope(_ObservationRefreshEnvelopeBase):
+    type: Literal["device.observation_refresh"] = OBSERVATION_REFRESH_REQUEST_TYPE
 
     @classmethod
-    def create(  # type: ignore[override]
+    def create(
         cls,
         *,
         device_id: UUID,
@@ -73,9 +82,7 @@ class DeviceObservationRefreshEnvelope(ProtocolEnvelope):
         if payload.request_id != request_id:
             raise ValueError("refresh payload request_id must equal envelope message_id")
         return cls(
-            protocol_version=PROTOCOL_VERSION,
             message_id=request_id,
-            sent_at_ms=int(time.time() * 1000),
             device_id=device_id,
             payload=payload.model_dump(mode="json"),
         )
@@ -90,13 +97,11 @@ class DeviceObservationRefreshEnvelope(ProtocolEnvelope):
         return self
 
 
-class DeviceObservationRefreshAckEnvelope(ProtocolEnvelope):
-    type: Literal["device.observation_refresh_ack"] = (  # type: ignore[assignment]
-        OBSERVATION_REFRESH_ACK_TYPE
-    )
+class DeviceObservationRefreshAckEnvelope(_ObservationRefreshEnvelopeBase):
+    type: Literal["device.observation_refresh_ack"] = OBSERVATION_REFRESH_ACK_TYPE
 
     @classmethod
-    def create(  # type: ignore[override]
+    def create(
         cls,
         *,
         device_id: UUID,
@@ -106,9 +111,6 @@ class DeviceObservationRefreshAckEnvelope(ProtocolEnvelope):
         if payload.request_id != request_envelope_id:
             raise ValueError("refresh ACK request_id must equal correlation_id")
         return cls(
-            protocol_version=PROTOCOL_VERSION,
-            message_id=uuid4(),
-            sent_at_ms=int(time.time() * 1000),
             device_id=device_id,
             correlation_id=request_envelope_id,
             payload=payload.model_dump(mode="json"),
