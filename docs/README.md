@@ -1,29 +1,20 @@
 # Simorgh engineering documentation
 
-This directory is the source of truth for product scope, runtime contracts, architecture decisions, operational behavior, validation protocols, and known limitations.
+This directory is the source of truth for runtime contracts, architecture decisions, operational behavior, validation protocols, and known limitations.
 
 Documentation changes are part of the implementation. A state-changing capability is not complete until its contract, failure semantics, verification model, and test/physical-validation boundary are documented.
 
-## Product and architecture
+## Android compatibility and lifecycle
 
-- [`PRODUCT_SCOPE.md`](PRODUCT_SCOPE.md) — product boundary and staged scope.
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — system-level components and data flow.
-- [`THREAT_MODEL.md`](THREAT_MODEL.md) — trust boundaries and primary threats.
-- [`ROADMAP.md`](ROADMAP.md) — staged engineering roadmap.
-- [`ANDROID_COMPATIBILITY.md`](ANDROID_COMPATIBILITY.md) or [`android-compatibility.md`](android-compatibility.md) — runtime Android support model, depending on repository casing.
+- [`android-compatibility.md`](android-compatibility.md) — installation baseline, runtime capability negotiation, and Android-version support tiers.
+- [`ANDROID_ALWAYS_ON.md`](ANDROID_ALWAYS_ON.md) — persistent service lifecycle and Samsung/One UI setup.
+- [`ANDROID_ACCESSIBILITY_OBSERVER.md`](ANDROID_ACCESSIBILITY_OBSERVER.md) — bounded Accessibility observation, node lifetime, and redaction.
 
-## Model gateway
-
-- [`AVALAI_INTEGRATION.md`](AVALAI_INTEGRATION.md) — AvalAI provider boundary and configuration.
-- Provider credentials belong only on Simorgh Core. They never belong in the Android application or Accessibility transport.
-
-## Android device transport
+## Device and observation transport
 
 - [`DEVICE_TRANSPORT.md`](DEVICE_TRANSPORT.md) — authenticated device WebSocket, registration, heartbeat, reconnect, and Session ownership.
 - [`OBSERVATION_TRANSPORT.md`](OBSERVATION_TRANSPORT.md) — Accessibility snapshot schema, canonical fingerprint, ordering, deduplication, retry, and acknowledgement.
 - [`OBSERVATION_REFRESH.md`](OBSERVATION_REFRESH.md) — explicit fresh-observation handshake for unchanged screens.
-- [`ANDROID_ALWAYS_ON.md`](ANDROID_ALWAYS_ON.md) — persistent service lifecycle and Samsung/One UI setup.
-- [`ANDROID_ACCESSIBILITY_OBSERVER.md`](ANDROID_ACCESSIBILITY_OBSERVER.md) — bounded Accessibility observation and redaction.
 
 ## Android action execution
 
@@ -50,6 +41,14 @@ ADRs live under [`adr/`](adr/). Relevant device/runtime decisions include:
 - ADR 0009 — explicit observation refresh handshake.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
+
+## Credential boundaries
+
+- AvalAI and other model-provider credentials belong only on Simorgh Core.
+- `SIMORGH_DEVICE_TOKEN` authenticates the private Android WebSocket.
+- `SIMORGH_OPERATOR_TOKEN` authenticates trusted action and refresh APIs.
+- Provider, operator, and device credentials are not interchangeable.
+- Accessibility snapshots and refresh messages never carry model-provider credentials.
 
 ## Validation rules
 
