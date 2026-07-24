@@ -14,10 +14,15 @@ import android.os.IBinder
 import android.os.Looper
 import ai.simorgh.android.MainActivity
 import ai.simorgh.android.R
+import ai.simorgh.android.accessibility.AccessibilityAcknowledgementBus
 import ai.simorgh.android.accessibility.AccessibilityObservationBus
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
+import ai.simorgh.android.actions.AccessibilityActionEvidenceSource
 import ai.simorgh.android.actions.AndroidActionCommand
+import ai.simorgh.android.actions.AndroidActionHandlerRegistry
 import ai.simorgh.android.actions.AndroidActionRouter
+import ai.simorgh.android.actions.AndroidOpenAppLauncher
+import ai.simorgh.android.actions.OpenAppActionExecutor
 import ai.simorgh.android.actions.PersistentActionLedger
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.device.DeviceIdentityStore
@@ -51,6 +56,8 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     private lateinit var observationPublisher: AccessibilityObservationPublisher
     private lateinit var actionResultPublisher: ActionResultPublisher
     private lateinit var actionRouter: AndroidActionRouter
+    private lateinit var openAppExecutor: OpenAppActionExecutor
+    private lateinit var actionHandlerInstallation: Closeable
     private lateinit var observationSubscription: Closeable
     private lateinit var notificationManager: NotificationManager
     private lateinit var deviceId: String
@@ -76,12 +83,18 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             deviceId = deviceId,
             sender = connectionClient::send,
             listener = ::onProtocolEvent,
+            acknowledgementListener = AccessibilityAcknowledgementBus::publish,
         )
         actionResultPublisher = ActionResultPublisher(
             deviceId = deviceId,
             sender = connectionClient::send,
             listener = ::onProtocolEvent,
         )
+        openAppExecutor = OpenAppActionExecutor(
+            launcher = AndroidOpenAppLauncher(this),
+            evidenceSource = AccessibilityActionEvidenceSource(),
+        )
+        actionHandlerInstallation = AndroidActionHandlerRegistry.install(openAppExecutor)
         actionRouter = AndroidActionRouter(
             ledger = PersistentActionLedger(this),
             resultEmitter = { delivery ->
@@ -139,6 +152,8 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        actionHandlerInstallation.close()
+        openAppExecutor.close()
         observationSubscription.close()
         latestObservation.set(null)
         observationExecutor.shutdownNow()
