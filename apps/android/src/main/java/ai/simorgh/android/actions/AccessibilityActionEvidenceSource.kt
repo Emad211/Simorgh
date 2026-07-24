@@ -7,6 +7,7 @@ import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
 import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
 import java.io.Closeable
+import java.util.ArrayDeque
 import java.util.concurrent.TimeUnit
 
 interface OpenAppEvidenceSource : Closeable {
@@ -49,43 +50,49 @@ class AccessibilityActionEvidenceSource(
     private val pollIntervalMillis: Long = DEFAULT_POLL_INTERVAL_MILLIS,
 ) : OpenAppEvidenceSource {
     private val monitor = Object()
+    private val localHistory = ArrayDeque<AccessibilitySnapshot>()
+    private val acknowledgementHistory = ArrayDeque<AcknowledgedAccessibilityObservation>()
 
     @Volatile
     private var closed = false
 
-    private var latestLocalSnapshot: AccessibilitySnapshot? =
-        AccessibilityObservationBus.current().latestSnapshot
-    private var latestAcknowledgedObservation: AcknowledgedAccessibilityObservation? =
-        AccessibilityAcknowledgementBus.latest()
-
-    private val localSubscription = AccessibilityObservationBus.subscribe { state ->
-        synchronized(monitor) {
-            latestLocalSnapshot = state.latestSnapshot
-            monitor.notifyAll()
-        }
-    }
-    private val acknowledgementSubscription = AccessibilityAcknowledgementBus.subscribe { value ->
-        synchronized(monitor) {
-            latestAcknowledgedObservation = value
-            monitor.notifyAll()
-        }
-    }
+    private val localSubscription: Closeable
+    private val acknowledgementSubscription: Closeable
 
     init {
         require(pollIntervalMillis in 25..1_000) {
             "poll interval must be in 25..1000 milliseconds"
         }
+        AccessibilityObservationBus.current().latestSnapshot?.let { snapshot ->
+            appendLocalLocked(snapshot)
+        }
+        AccessibilityAcknowledgementBus.latest()?.let { observation ->
+            appendAcknowledgedLocked(observation)
+        }
+        localSubscription = AccessibilityObservationBus.subscribe { state ->
+            val snapshot = state.latestSnapshot ?: return@subscribe
+            synchronized(monitor) {
+                appendLocalLocked(snapshot)
+                monitor.notifyAll()
+            }
+        }
+        acknowledgementSubscription = AccessibilityAcknowledgementBus.subscribe { value ->
+            synchronized(monitor) {
+                appendAcknowledgedLocked(value)
+                monitor.notifyAll()
+            }
+        }
     }
 
     override fun latestAcknowledged(): AcknowledgedAccessibilityObservation? =
-        synchronized(monitor) { latestAcknowledgedObservation }
+        synchronized(monitor) { acknowledgementHistory.peekLast() }
 
     override fun requestFreshLocalSnapshot(
         timeoutMillis: Long,
         cancelled: () -> Boolean,
     ): AccessibilitySnapshot? {
         require(timeoutMillis > 0)
-        val baselineId = synchronized(monitor) { latestLocalSnapshot?.snapshotId }
+        val baselineId = synchronized(monitor) { localHistory.peekLast()?.snapshotId }
         val requestedAtMs = wallClockMillis()
         if (!captureRequester()) {
             return null
@@ -94,12 +101,11 @@ class AccessibilityActionEvidenceSource(
 
         while (!closed && !cancelled()) {
             synchronized(monitor) {
-                val candidate = latestLocalSnapshot
-                if (
-                    candidate != null &&
-                    candidate.snapshotId != baselineId &&
-                    candidate.capturedAtMs >= requestedAtMs
-                ) {
+                val candidate = localHistory.lastOrNull { snapshot ->
+                    snapshot.snapshotId != baselineId &&
+                        snapshot.capturedAtMs >= requestedAtMs
+                }
+                if (candidate != null) {
                     return candidate
                 }
                 val remainingMillis = remainingMillis(deadlineNanos)
@@ -121,8 +127,8 @@ class AccessibilityActionEvidenceSource(
     ): PostActionEvidenceResult {
         require(timeoutMillis > 0)
         val deadlineNanos = deadlineAfter(timeoutMillis)
+        val processedSnapshotIds = HashSet<String>()
         var lastCaptureRequestAtNanos = Long.MIN_VALUE
-        var lastProcessedSnapshotId: String? = null
         var stableFingerprint: String? = null
         var stableSamples = 0
         var latestEvaluation: VerificationEvaluation? = null
@@ -139,21 +145,22 @@ class AccessibilityActionEvidenceSource(
                 lastCaptureRequestAtNanos = nowNanos
             }
 
-            val local: AccessibilitySnapshot?
-            val acknowledged: AcknowledgedAccessibilityObservation?
+            val localSnapshots: List<AccessibilitySnapshot>
+            val acknowledgements: List<AcknowledgedAccessibilityObservation>
             synchronized(monitor) {
-                local = latestLocalSnapshot
-                acknowledged = latestAcknowledgedObservation
+                localSnapshots = localHistory.toList()
+                acknowledgements = acknowledgementHistory.toList()
             }
 
-            if (
-                local != null &&
-                local.snapshotId != lastProcessedSnapshotId &&
-                local.snapshotId != before.snapshot.snapshotId &&
-                local.capturedAtMs >= launchedAtMs
-            ) {
+            localSnapshots.forEach { local ->
+                if (
+                    !processedSnapshotIds.add(local.snapshotId) ||
+                    local.snapshotId == before.snapshot.snapshotId ||
+                    local.capturedAtMs < launchedAtMs
+                ) {
+                    return@forEach
+                }
                 observedPostLaunchSnapshot = true
-                lastProcessedSnapshotId = local.snapshotId
                 val evaluation = UiPostconditionEvaluator.evaluate(local, policy)
                 latestEvaluation = evaluation
                 if (evaluation.outcome == PredicateOutcome.SATISFIED) {
@@ -170,7 +177,7 @@ class AccessibilityActionEvidenceSource(
                 }
             }
 
-            val qualifyingAcknowledgement = acknowledged?.takeIf { evidence ->
+            val qualifyingAcknowledgement = acknowledgements.lastOrNull { evidence ->
                 evidence.snapshot.capturedAtMs >= launchedAtMs &&
                     evidence.snapshot.snapshotId != before.snapshot.snapshotId &&
                     (
@@ -255,6 +262,31 @@ class AccessibilityActionEvidenceSource(
         }
     }
 
+    private fun appendLocalLocked(snapshot: AccessibilitySnapshot) {
+        if (localHistory.peekLast()?.snapshotId == snapshot.snapshotId) {
+            return
+        }
+        localHistory.addLast(snapshot)
+        while (localHistory.size > MAX_HISTORY_ENTRIES) {
+            localHistory.removeFirst()
+        }
+    }
+
+    private fun appendAcknowledgedLocked(observation: AcknowledgedAccessibilityObservation) {
+        val previous = acknowledgementHistory.peekLast()
+        if (
+            previous?.streamId == observation.streamId &&
+            previous.sequence == observation.sequence &&
+            previous.snapshot.snapshotId == observation.snapshot.snapshotId
+        ) {
+            return
+        }
+        acknowledgementHistory.addLast(observation)
+        while (acknowledgementHistory.size > MAX_HISTORY_ENTRIES) {
+            acknowledgementHistory.removeFirst()
+        }
+    }
+
     private fun deadlineAfter(timeoutMillis: Long): Long {
         val timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
         val now = monotonicNanos()
@@ -271,5 +303,6 @@ class AccessibilityActionEvidenceSource(
 
     private companion object {
         const val DEFAULT_POLL_INTERVAL_MILLIS = 200L
+        const val MAX_HISTORY_ENTRIES = 64
     }
 }
