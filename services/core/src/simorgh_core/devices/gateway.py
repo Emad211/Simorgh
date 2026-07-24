@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_broker import (
     DeviceActionNotFoundError,
+    DeviceActionPhase,
     action_broker,
 )
 from simorgh_core.devices.action_semantics import (
@@ -161,6 +162,22 @@ async def _send_action_result_ack(
     await session.send_envelope(acknowledgement)
 
 
+async def _reject_action_result(
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+    result: AndroidActionResult,
+    detail: str,
+) -> None:
+    await _send_action_result_ack(
+        session=session,
+        result_envelope=envelope,
+        result=result,
+        result_status="rejected",
+        detail=detail,
+    )
+
+
 async def _handle_action_result(
     *,
     session: DeviceSession,
@@ -183,6 +200,31 @@ async def _handle_action_result(
         )
         return
 
+    if result.command_id != record.command_id:
+        await _reject_action_result(
+            session=session,
+            envelope=envelope,
+            result=result,
+            detail="result command_id does not match the original command",
+        )
+        return
+    if envelope.correlation_id != record.command_envelope.message_id:
+        await _reject_action_result(
+            session=session,
+            envelope=envelope,
+            result=result,
+            detail="result correlation_id does not match the command envelope",
+        )
+        return
+    if record.phase == DeviceActionPhase.REJECTED:
+        await _reject_action_result(
+            session=session,
+            envelope=envelope,
+            result=result,
+            detail="an Android-rejected command cannot later publish a result",
+        )
+        return
+
     if record.result is None:
         latest = await registry.latest_observation(session.device_id)
         try:
@@ -192,11 +234,10 @@ async def _handle_action_result(
                 latest_observation=latest.payload if latest is not None else None,
             )
         except AndroidActionSemanticError as exc:
-            await _send_action_result_ack(
+            await _reject_action_result(
                 session=session,
-                result_envelope=envelope,
+                envelope=envelope,
                 result=result,
-                result_status="rejected",
                 detail=str(exc),
             )
             return
