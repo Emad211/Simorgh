@@ -4,62 +4,111 @@ Status: first live Android side-effect vertical slice
 
 ## Purpose
 
-`open_app` launches one installed Android application's front-door activity or one explicit package-scoped URI, then proves the declared visible postconditions from fresh Accessibility evidence.
+`open_app` opens one installed Android application's front-door activity or one explicit package-scoped URI, then proves the declared visible postconditions from fresh Accessibility evidence.
 
-It is intentionally narrower than a general mobile agent. The executor accepts only the typed `OpenAppOperation`; click, text entry, scroll, gestures, and global actions remain rejected until their own implementations and evidence are reviewed.
+The implementation is intentionally narrow. Only `OpenAppOperation` owns a side-effect path in this increment. Click, text entry, scrolling, arbitrary gestures, and global Accessibility actions remain rejected until each receives an independent implementation, threat analysis, test fixture, and physical-device validation.
+
+## Non-negotiable invariants
+
+1. Raw natural language never reaches Android execution code.
+2. Android validates the typed command again after transport decoding.
+3. At most one non-terminal device action exists.
+4. No side effect runs from an observation that Core has not acknowledged.
+5. A fresh local capture must still match the acknowledged pre-action state.
+6. An Android API returning normally is not sufficient evidence of success.
+7. Success requires a newer, stable visible state and a matching newer Core acknowledgement.
+8. An uncertain action after process death is never blindly replayed.
+9. Every result carries typed outcome, failure code, attempts, evidence references, and predicate evidence.
+
+## End-to-end flow
+
+```text
+Core REST operator request
+        |
+        v
+typed AndroidActionCommand
+        |
+        v
+device.action_command over authenticated WebSocket
+        |
+        v
+encrypted write-ahead ledger commit
+        |
+        v
+latest Core-acknowledged observation
+        |
+        v
+fresh local capture + canonical fingerprint comparison
+        |
+        +---- mismatch --------------------------> BLOCKED
+        |
+        v
+postconditions already satisfied?
+        |
+        +---- yes -------------------------------> SUCCEEDED, attempts=0
+        |
+        v
+Android launch adapter
+        |
+        v
+new local Accessibility samples
+        |
+        v
+stable typed postconditions
+        |
+        v
+matching newer Core acknowledgement
+        |
+        v
+typed action result + durable result delivery
+```
 
 ## Success definition
 
-Android accepting `startActivity` or `startIntentSender` is not success. The operation succeeds only when:
+The operation succeeds only when all applicable conditions hold:
 
-1. the command is valid and unexpired;
-2. a recent Accessibility observation acknowledged by Core satisfies the command precondition;
-3. a newly captured local snapshot has the same canonical state fingerprint, preventing a time-of-check/time-of-use race;
-4. Android accepts the launch request, unless the desired state already exists;
-5. one or more newer local snapshots satisfy every typed postcondition;
-6. a newer observation with the same state fingerprint is acknowledged by Core;
-7. the final typed result contains before/after evidence and predicate outcomes.
+1. the command is schema-valid and unexpired;
+2. a recent Core-acknowledged observation satisfies every declared precondition;
+3. a newly requested local capture has the same canonical state fingerprint;
+4. the desired postcondition is not already satisfied, or Android accepts one launch request;
+5. `stable_samples` newer local snapshots satisfy every predicate with one stable fingerprint;
+6. the latest locally observed post-launch snapshot still has that fingerprint;
+7. a newer observation with the same fingerprint is acknowledged by Core;
+8. the final result records before/after references and predicate outcomes.
 
-```text
-Core-ACKed observation
-        |
-        v
-fresh local capture ---- fingerprint differs ----> BLOCKED
-        |
-        v
-postconditions already true? ---- yes ----> SUCCEEDED, attempts=0
-        |
-        no
-        v
-launch adapter request
-        |
-        v
-stable local postcondition samples
-        |
-        v
-matching newer Core ACK
-        |
-        v
-SUCCEEDED
+Holding the final evidence check under the evidence monitor prevents a newly captured failing snapshot from being present but unprocessed when success is returned.
+
+## Typed operation
+
+```json
+{
+  "kind": "open_app",
+  "package_name": "com.example.app",
+  "uri": "example://optional/path"
+}
 ```
+
+Rules:
+
+- `package_name` is mandatory;
+- `uri` is optional;
+- an explicit URI remains package-scoped with `Intent.setPackage`;
+- all other operation discriminators are rejected by the installed handler;
+- only one launch attempt is permitted per command.
 
 ## Android background activity launch constraint
 
-Starting an application is an Activity launch. A Foreground Service does not by itself permit arbitrary background Activity starts. Android's Activity Security documentation states that background launches are allowed when the app has a visible window or the user has granted `SYSTEM_ALERT_WINDOW`, among other system-specific exceptions.
+Opening another application is an Activity start. A foreground service does not itself grant unrestricted background Activity launches.
 
-Official reference:
-
-- <https://developer.android.com/guide/components/activities/secure-bal>
-
-Simorgh therefore performs an explicit local guard:
+Simorgh permits a launch request only when at least one locally verifiable condition holds:
 
 ```text
-Simorgh Activity visible
+Simorgh Activity is visible
         OR
 Settings.canDrawOverlays(context) == true
 ```
 
-If neither condition is true, the command returns:
+If neither condition holds, no launch API is called:
 
 ```text
 outcome = blocked
@@ -67,11 +116,22 @@ failure_code = unsupported_capability
 attempts = 0
 ```
 
-No launch request is issued. The Android UI contains a Persian setup card that opens the system **Display over other apps** special-access screen.
+The private Android UI contains a Persian setup card for **Display over other apps**. The settings launcher tries, in order:
 
-This is a technical runtime prerequisite for the private always-on operator. It does not replace postcondition verification: OEMs can still suppress or alter a launch, so the visible result is always observed.
+1. the app-specific overlay screen;
+2. the general overlay-permission screen;
+3. the general Android settings screen.
 
-## Manifest and package discovery
+Expected OEM `ActivityNotFoundException` and `SecurityException` failures fall through to the next candidate rather than crashing the UI.
+
+Official references:
+
+- <https://developer.android.com/guide/components/activities/secure-bal>
+- <https://developer.android.com/reference/android/provider/Settings#canDrawOverlays(android.content.Context)>
+
+The permission does not prove the launch became visible. OEM and lock-screen behavior are still verified from Accessibility evidence.
+
+## Manifest capabilities
 
 The private operator declares:
 
@@ -80,49 +140,50 @@ The private operator declares:
 <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 ```
 
-`QUERY_ALL_PACKAGES` is used because this private app is designed to discover and open arbitrary installed applications. The executable does not enumerate or upload installed packages in this increment; the permission supports deterministic front-door resolution on older Android releases.
+`QUERY_ALL_PACKAGES` supports deterministic discovery of arbitrary installed front-door activities on older Android versions. This private increment does not enumerate or upload the installed-application inventory.
 
-## Launch adapters
+## Launch adapters by Android version
 
 ### Android 7–12 / API 24–32
-
-The executor uses:
 
 ```kotlin
 PackageManager.getLaunchIntentForPackage(packageName)
 ```
 
-The returned explicit front-door Intent receives:
+The returned explicit Intent receives:
 
-- `FLAG_ACTIVITY_NEW_TASK`;
-- `FLAG_ACTIVITY_RESET_TASK_IF_NEEDED`.
+```text
+FLAG_ACTIVITY_NEW_TASK
+FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+```
 
-A null result is `target_not_found`.
+A null result maps to:
+
+```text
+failure_code = target_not_found
+attempts = 0
+```
 
 ### Android 13+ / API 33+
 
-The executor uses:
-
 ```kotlin
 PackageManager.getLaunchIntentSenderForPackage(packageName)
+Context.startIntentSender(..., ActivityOptions)
 ```
 
-Android documents this API as not restricted by package visibility. Simorgh launches it through:
+This front-door lookup is not restricted by ordinary package visibility. The implementation maps both of the documented missing-target paths to `target_not_found`:
 
-```kotlin
-Context.startIntentSender(..., activityOptions)
-```
+- `PackageManager.NameNotFoundException` while obtaining the sender;
+- `IntentSender.SendIntentException` while invoking it.
+
+Android 13 receives the legacy sender-side background launch opt-in. Android 14+ receives `MODE_BACKGROUND_ACTIVITY_START_ALLOWED`. These options express the sender opt-in only; they do not bypass Android policy.
 
 Official references:
 
 - <https://developer.android.com/reference/android/content/pm/PackageManager#getLaunchIntentSenderForPackage(java.lang.String)>
 - <https://developer.android.com/reference/android/content/Context#startIntentSender(android.content.IntentSender,android.content.Intent,int,int,int,android.os.Bundle)>
 
-For Android 13, the legacy sender-side background-launch opt-in is supplied through `ActivityOptions`. For Android 14+, the explicit `MODE_BACKGROUND_ACTIVITY_START_ALLOWED` mode is supplied. These options do not bypass platform policy; they express the required sender opt-in when an allowed BAL exception exists.
-
 ### Explicit package-scoped URI
-
-When `operation.uri` is present, Simorgh creates:
 
 ```kotlin
 Intent(Intent.ACTION_VIEW, uri)
@@ -130,37 +191,50 @@ Intent(Intent.ACTION_VIEW, uri)
     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 ```
 
-Rules:
+A URI requires a non-empty scheme. `ActivityNotFoundException` maps to `target_not_found`; `SecurityException` maps to `action_rejected`. A normal return still requires visible postcondition evidence.
 
-- URI must contain a non-empty scheme;
-- resolution remains restricted to the requested package;
-- `ActivityNotFoundException` is `target_not_found`;
-- `SecurityException` is `action_rejected`;
-- success still requires the command's UI postconditions.
+## Observation identity and root precedence
 
-## Self-launch guard
+Accessibility events provide package and window hints, but an explicit capture can occur before the newest event metadata arrives. When `rootInActiveWindow` exists, its package and window ID are therefore the source of truth. Event hints are fallback values only when the root is unavailable.
 
-Simorgh filters its own package from observation transport and the local inspector. It therefore refuses `open_app` targeting `ai.simorgh.android` because the result would not be independently observable through the current evidence pipeline.
+This prevents a fresh target-app tree from being mislabeled with the package name from the preceding screen.
+
+## Minimal self-state projection
+
+Simorgh must be able to prove both transitions:
+
+- from Simorgh into another application;
+- from another application back into Simorgh.
+
+Sending the complete internal Simorgh UI would expose connection fields and could create an observation/status feedback loop. Completely excluding self-snapshots, however, makes the transition into Simorgh unverifiable.
+
+The device transport therefore projects a self-snapshot to package presence only:
 
 ```text
-outcome = failed
-failure_code = action_rejected
-adapter = self_package_guard
+active_package = ai.simorgh.android
+active_window_id = null
+root_node_id = null
+windows = []
+nodes = []
 ```
 
-A future self-navigation mechanism must use an explicit internal contract rather than pretending it is an external app operation.
+The projection preserves capture identity and time but removes internal UI content. Different Simorgh screens produce the same canonical state fingerprint. The same projection function is used by transport and local TOCTOU evidence so the two states remain comparable.
+
+See ADR 0008: [`adr/0008-minimal-simorgh-self-state-observation.md`](adr/0008-minimal-simorgh-self-state-observation.md).
 
 ## Precondition evidence
 
-The executor requires a non-stale `AcknowledgedAccessibilityObservation` containing:
+An `AcknowledgedAccessibilityObservation` stores compact immutable evidence:
 
-- observation stream ID;
+- stream ID;
 - sequence;
 - canonical state fingerprint;
-- immutable snapshot;
+- snapshot ID;
+- capture timestamp;
+- active package;
 - Core acknowledgement timestamp.
 
-The command can bind to:
+The command may bind to:
 
 - exact stream ID;
 - minimum sequence;
@@ -168,168 +242,204 @@ The command can bind to:
 - expected active package;
 - maximum observation age.
 
-Failure of any declared condition returns `precondition_failed` with `attempts=0`.
+Any mismatch blocks before a launch attempt.
 
 ## Explicit fresh capture and TOCTOU protection
 
-The system Accessibility service exposes a process-local capture request boundary. The executor requests a snapshot after the command is accepted and requires:
+After command acceptance, the executor requests an immediate capture from the system Accessibility service. The new snapshot must have:
 
-- a new snapshot ID;
-- `captured_at_ms` at or after the request time;
-- canonical fingerprint equal to the last Core-acknowledged fingerprint.
+- a different snapshot ID from the local baseline;
+- a capture timestamp at or after the request;
+- the same canonical fingerprint as the last Core-acknowledged state.
 
-A different fingerprint means the screen changed between planning and execution. The executor blocks rather than launching from stale context.
+The capture budget is:
 
-The command's pre-launch capture budget is the smaller of:
+```text
+min(2,000 ms, remaining command deadline)
+```
 
-- 2,000 ms;
-- remaining command deadline.
+A mismatch means the UI changed between planning and execution:
+
+```text
+outcome = blocked
+failure_code = precondition_failed
+attempts = 0
+```
 
 ## Idempotent already-satisfied behavior
 
-After the fresh snapshot passes the fingerprint guard, the executor evaluates the complete verification policy before launching.
+After the fresh fingerprint guard, the complete verification policy is evaluated before launching.
 
-If every predicate is already satisfied:
+If the desired state already exists:
 
 ```text
 outcome = succeeded
 failure_code = none
 attempts = 0
-before_observation = latest Core-ACKed observation
-after_observation = same Core-ACKed observation
+before_observation = latest Core-acknowledged observation
+after_observation = same observation
 ```
 
-This is valid because the fresh local snapshot has the same canonical fingerprint as the acknowledged observation. It prevents unnecessary task switching when the requested app or deep-link destination is already in the declared desired state.
+This avoids unnecessary task switching and makes replay of an already-achieved goal harmless.
 
 ## Post-action evidence
 
-`AccessibilityActionEvidenceSource` keeps bounded process-local histories of:
+The evidence source maintains bounded process-local history:
 
-- the latest 64 local Accessibility snapshots;
-- the latest 64 Core-acknowledged observations.
+- latest 32 projected local snapshots;
+- latest 64 compact Core acknowledgements.
 
-The history prevents a fast acknowledgement from being lost between polling iterations.
-
-After Android accepts the launch, the evidence source:
+After Android accepts a launch, it:
 
 1. requests fresh captures periodically;
 2. ignores the pre-action snapshot;
-3. ignores snapshots captured before launch;
-4. evaluates the typed verification policy;
-5. requires `stable_samples` consecutive satisfying snapshots with the same canonical fingerprint;
-6. requires a newer Core acknowledgement with that fingerprint.
+3. ignores captures older than launch acceptance;
+4. evaluates all typed predicates;
+5. requires consecutive stable samples with the same canonical fingerprint;
+6. re-checks that the newest locally captured state is still that successful state;
+7. requires a newer Core acknowledgement with the same fingerprint.
 
-Only this combined evidence can produce `succeeded`.
+The bounded history prevents a fast ACK from being lost between polling iterations without retaining many complete UI trees.
+
+## Evidence-session behavior across reconnect
+
+Core currently keeps live observation state in process memory. After a Core restart or a new registered WebSocket session, relying on an ACK from the previous connection would be unsafe.
+
+The Android publisher therefore:
+
+- invalidates executable acknowledged evidence when the connection is lost;
+- also invalidates it immediately when an outbound send detects transport failure;
+- clears fingerprint deduplication for a newly registered connection;
+- automatically re-enqueues the most recent projected snapshot;
+- preserves an in-flight envelope exactly when its ACK may merely have been lost.
+
+This ensures a connected Core receives usable current state even when the visible screen did not change during the restart.
 
 ## Result mapping
 
 | Condition | Outcome | Failure code | Attempts |
 |---|---|---|---:|
 | Desired state already exists | `succeeded` | `none` | 0 |
-| Launch and verified state | `succeeded` | `none` | 1 |
-| Stale/mismatched precondition | `blocked` | `precondition_failed` | 0 |
+| Launch and verified visible state | `succeeded` | `none` | 1 |
+| Expired command | `blocked` | `expired` | 0 |
+| Stale or mismatched precondition | `blocked` | `precondition_failed` | 0 |
 | Fresh pre-capture unavailable | `blocked` | `observation_timeout` | 0 |
-| Background launch access absent | `blocked` | `unsupported_capability` | 0 |
-| Package/front door not found | `failed` | `target_not_found` | 0 |
+| Background launch prerequisite absent | `blocked` | `unsupported_capability` | 0 |
+| Package or front door missing | `failed` | `target_not_found` | 0 |
 | URI invalid | `blocked` | `invalid_command` | 0 |
 | Android rejects request | `failed` | `action_rejected` | 0 |
 | Predicates false after launch | `failed` | `postcondition_failed` | 1 |
 | Predicate resolution ambiguous | `blocked` | `postcondition_failed` | 1 |
-| No newer observation/ACK | `timed_out` | `observation_timeout` | 1 |
+| No newer stable observation or ACK | `timed_out` | `observation_timeout` | 1 |
 | Cancellation before launch | `cancelled` | `cancelled` | 0 |
 | Cancellation after launch acceptance | `cancelled` | `cancelled` | 1 |
 | Unexpected exception after launch acceptance | `blocked` | `internal_error` | 1 |
 
-The `attempts` field counts accepted side-effect attempts. Adapter rejection before an Activity start is not counted as an executed side effect.
+`attempts` counts accepted side-effect requests. A guard, lookup, or validation rejection before Activity-start acceptance does not increment it.
 
 ## Cancellation semantics
 
 Cancellation is cooperative:
 
 - before launch, it returns a zero-attempt cancelled result;
-- while waiting for post-action evidence, it stops waiting and returns cancelled;
-- after Android accepted the launch, it cannot roll back the target app transition;
-- the result explicitly records `attempts=1` when cancellation arrived after acceptance.
+- while waiting for fresh evidence, it stops waiting;
+- after Android accepts the launch, it cannot roll the target transition back;
+- the result records `attempts=1` when cancellation arrives after acceptance.
 
-## Concurrency
+## Crash and replay semantics
 
-- one active device action is enforced by Core and the Android encrypted ledger;
-- `OpenAppActionExecutor` has its own atomic single-flight guard;
-- execution and evidence waiting run on a dedicated single-thread executor;
-- Accessibility callbacks only publish snapshots and never block on network or planning;
-- result completion is invoked exactly once through the guarded handler registry.
+The action command is committed to the encrypted Android write-ahead ledger before handler submission. If the process dies while execution is uncertain, the command is not run again. Recovery emits a conservative blocked result through the stable result-delivery channel.
 
-## Failure containment
+The result publisher preserves message ID, correlation ID, payload, and original send timestamp across retries and reconstruction.
 
-- raw natural language never reaches the launcher;
-- unknown operation kinds are rejected by the handler;
-- self-launch is rejected;
-- no launch occurs from a stale or unacknowledged state;
-- no successful result is produced from an Android API return alone;
-- process death after an uncertain side effect is handled by the encrypted transport ledger and is never blindly replayed;
-- unknown or malformed protocol messages fail closed in the WebSocket layer.
+See:
 
-## Test strategy
+- [`ANDROID_ACTION_TRANSPORT.md`](ANDROID_ACTION_TRANSPORT.md)
+- ADR 0006: [`adr/0006-idempotent-android-action-delivery.md`](adr/0006-idempotent-android-action-delivery.md)
+- ADR 0007: [`adr/0007-verified-android-open-app-execution.md`](adr/0007-verified-android-open-app-execution.md)
 
-### Pure JVM state-machine tests
+## Concurrency boundaries
 
-- successful launch requires fresh precondition and newer Core-ACKed postcondition;
-- stale observation blocks before launch;
-- TOCTOU fingerprint mismatch blocks before launch;
-- already-satisfied desired state skips launch with `attempts=0`;
-- missing background-launch access maps to `unsupported_capability`;
-- missing target maps to `target_not_found`;
-- accepted launch without post evidence times out;
-- non-`open_app` operation is rejected;
-- fresh capture waits for a new snapshot;
-- stable samples require a matching newer Core ACK;
-- stale observation acknowledgements never become executable evidence;
-- accepted acknowledgements publish the exact immutable snapshot.
+- Core enforces one non-terminal action per device.
+- Android's encrypted ledger enforces one recoverable action.
+- `OpenAppActionExecutor` has an atomic single-flight guard.
+- Execution and evidence waiting run on a dedicated single-thread executor.
+- Accessibility callbacks publish immutable snapshots and never perform network planning.
+- WebSocket writes are serialized.
+- Result completion is delivered exactly once to the action router.
 
-### CI Android compatibility
+## Automated evidence
 
-The production lane builds and lints against stable API 36 with `minSdk=24`. SDK guards cover API 33 and API 34 launch additions; the API 24 path contains no unguarded newer calls.
+The JVM and Core test suite covers:
 
-### Galaxy A53 physical protocol
+- successful verified launch;
+- stale precondition rejection;
+- TOCTOU fingerprint mismatch;
+- already-satisfied zero-attempt success;
+- missing background launch capability;
+- missing target package;
+- missing post-launch evidence;
+- non-`open_app` rejection;
+- cancellation before and after launch acceptance;
+- explicit capture requiring a newer snapshot;
+- stable samples plus matching newer ACK;
+- a newer failing snapshot preventing success from an older ACK;
+- stale ACK exclusion;
+- compact self-state projection;
+- live root identity overriding stale event hints;
+- observation invalidation and state resubmission after reconnect;
+- complete Core-to-Android command contract round trip.
 
-Record all of the following before declaring physical validation complete:
+CI builds the debug APK, runs Android JVM tests, and runs Android lint against stable API 36 with `minSdk=24`.
 
-1. exact model number, Android version, One UI version, and security patch;
-2. Simorgh APK commit SHA;
-3. target application package and version;
-4. Accessibility observer connected state;
-5. overlay special-access state;
-6. before observation stream, sequence, snapshot ID, fingerprint, and active package;
-7. command, action, and command-envelope IDs;
-8. selected launch adapter;
-9. Android launch return or exception;
-10. first post-launch local snapshot;
-11. stable sample count;
-12. matching Core acknowledgement;
-13. typed result and result ACK;
-14. foreground and background launch variants;
-15. lock-screen behavior;
-16. battery-optimized and unrestricted battery modes;
-17. reconnect during postcondition waiting;
-18. forced process death after launch acceptance to verify no replay.
+## Galaxy A53 physical validation protocol
 
-Suggested deterministic targets:
+Physical validation is not complete until the following are recorded:
 
-- Android Settings (`com.android.settings`);
+1. exact model number;
+2. Android version;
+3. One UI version;
+4. security patch date;
+5. APK commit SHA;
+6. target package and app version;
+7. Accessibility connected state;
+8. overlay special-access state;
+9. before stream, sequence, snapshot ID, fingerprint, and active package;
+10. command ID, action ID, and command-envelope ID;
+11. selected launch adapter;
+12. Android return or exception;
+13. first post-launch local snapshot;
+14. stable sample count;
+15. matching Core acknowledgement;
+16. typed result and result ACK;
+17. foreground launch;
+18. background launch;
+19. lock-screen behavior;
+20. battery-optimized mode;
+21. unrestricted battery mode;
+22. reconnect during verification;
+23. Core restart while the screen is unchanged;
+24. forced process death after launch acceptance.
+
+Initial deterministic targets:
+
+- Android Settings: `com.android.settings`;
 - Calculator, if installed;
-- a dedicated Simorgh fixture app with a stable package and front-door activity.
+- Simorgh itself, using the package-only self projection;
+- a dedicated fixture app with a stable front-door Activity.
 
-Social-media apps are not first evidence targets because onboarding dialogs, account state, OEM permissions, and remote experiments make their launch UI less deterministic.
+Social applications are not the first validation targets because onboarding dialogs, account state, remote experiments, and OEM permission prompts make their initial UI less deterministic.
 
 ## Current boundary
 
-This increment enables only `open_app`. It does not enumerate app content, click controls, type text, scroll, dispatch arbitrary gestures, or invoke global actions.
+This increment enables only `open_app`. It does not enumerate app content, click controls, type text, scroll, dispatch arbitrary gestures, or invoke global Accessibility actions.
 
-The next side-effect increment should implement semantic `click_node` only after:
+The next side-effect increment is semantic `click_node`, contingent on:
 
-- live node reacquisition from a fresh tree;
+- reacquiring a live node from a fresh tree;
 - deterministic selector resolution;
-- `ACTION_CLICK` capability verification;
-- optional coordinate fallback policy;
+- package, visibility, enabled-state, and action-capability checks;
+- ancestor-click policy;
+- optional coordinate fallback as a separately controlled mode;
 - newer post-action evidence;
-- deterministic fixture-app and Galaxy A53 validation.
+- fixture-app tests and Galaxy A53 validation.
