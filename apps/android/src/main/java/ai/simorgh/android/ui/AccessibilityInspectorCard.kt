@@ -115,14 +115,15 @@ private fun InspectorStatusRow(label: String, value: String) {
 
 private fun nodePreview(node: AccessibilityNodeSnapshot): String {
     val className = node.className?.substringAfterLast('.') ?: "Node"
-    val semanticLabel = when {
+    val semanticLabel: String = when {
         node.password -> "<password>"
         !node.text.isNullOrBlank() -> node.text
         !node.contentDescription.isNullOrBlank() -> node.contentDescription
         !node.viewId.isNullOrBlank() -> node.viewId
         else -> ""
     }
-    return "[${node.path}] $className${semanticLabel?.let { " — $it" }.orEmpty()}"
+    val suffix = if (semanticLabel.isBlank()) "" else " — $semanticLabel"
+    return "[${node.path}] $className$suffix"
 }
 
 private const val MAX_PREVIEW_NODES = 30
