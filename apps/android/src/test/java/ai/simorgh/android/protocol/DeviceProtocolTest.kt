@@ -89,7 +89,7 @@ class DeviceProtocolTest {
         val snapshot = snapshot(text = "گزینه")
 
         assertEquals(
-            "e07a9dd17c96624ccc470add7a60a94f8a05191b05bd99147e20f1a906981859",
+            "dc012d2ab21c3ad4308036eeddbe2522be4ab900f2b54eb24771341d2c79a056",
             AccessibilitySnapshotFingerprint.calculate(snapshot),
         )
     }
