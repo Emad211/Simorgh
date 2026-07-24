@@ -132,6 +132,44 @@ class OpenAppActionExecutorTest {
     }
 
     @Test
+    fun `Core evidence invalidated after fresh capture blocks at the launch boundary`() {
+        val beforeSnapshot = snapshot(
+            id = BEFORE_SNAPSHOT_ID,
+            capturedAtMs = 9_500,
+            activePackage = SOURCE_PACKAGE,
+        )
+        val before = acknowledged(sequence = 3, snapshot = beforeSnapshot)
+        val fresh = beforeSnapshot.copy(
+            snapshotId = FRESH_BEFORE_SNAPSHOT_ID,
+            capturedAtMs = NOW_MS,
+        )
+        val latestCalls = AtomicInteger(0)
+        val evidence = FakeEvidenceSource(
+            latestProvider = {
+                if (latestCalls.getAndIncrement() == 0) before else null
+            },
+            fresh = fresh,
+        )
+        val launchCount = AtomicInteger(0)
+
+        val result = execute(
+            command = command(),
+            launcher = OpenAppLauncher {
+                launchCount.incrementAndGet()
+                acceptedLaunch()
+            },
+            evidence = evidence,
+        )
+
+        assertEquals(ActionOutcome.BLOCKED, result.outcome)
+        assertEquals(ActionFailureCode.PRECONDITION_FAILED, result.failureCode)
+        assertEquals(0, result.attempts)
+        assertEquals(0, launchCount.get())
+        assertEquals(2, evidence.latestRequestCount)
+        assertTrue(result.detail.contains("invalidated"))
+    }
+
+    @Test
     fun `background launch guard becomes unsupported capability rather than false success`() {
         val before = freshBeforeEvidence()
         val evidence = FakeEvidenceSource(
@@ -343,17 +381,23 @@ class OpenAppActionExecutorTest {
 
     private class FakeEvidenceSource(
         private val latest: AcknowledgedAccessibilityObservation? = null,
+        private val latestProvider: (() -> AcknowledgedAccessibilityObservation?)? = null,
         private val fresh: AccessibilitySnapshot? = null,
         private val postResult: PostActionEvidenceResult = PostActionEvidenceResult(
             status = PostActionEvidenceStatus.OBSERVATION_TIMEOUT,
         ),
     ) : OpenAppEvidenceSource {
+        var latestRequestCount: Int = 0
+            private set
         var freshRequestCount: Int = 0
             private set
         var postWaitCount: Int = 0
             private set
 
-        override fun latestAcknowledged(): AcknowledgedAccessibilityObservation? = latest
+        override fun latestAcknowledged(): AcknowledgedAccessibilityObservation? {
+            latestRequestCount += 1
+            return latestProvider?.invoke() ?: latest
+        }
 
         override fun requestFreshLocalSnapshot(
             timeoutMillis: Long,
