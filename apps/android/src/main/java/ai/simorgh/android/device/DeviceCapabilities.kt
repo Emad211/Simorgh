@@ -21,9 +21,10 @@ data class DeviceCapabilities(
             val capabilities = buildSet {
                 add("device.identity")
                 add("device.network_state")
+                add("device.action_transport.v1")
+                add("android.action.contract.v1")
                 add("android.launcher_surface")
                 add("android.accessibility.observe.platform")
-                add("android.accessibility.node_action.platform")
 
                 if (compatibility.canDispatchGestures) {
                     add("android.accessibility.gesture.platform")
