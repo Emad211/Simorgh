@@ -27,4 +27,9 @@ object AccessibilityObservationBus {
         listener(currentState)
         return Closeable { listeners.remove(listener) }
     }
+
+    internal fun clearForTest() {
+        currentState = AccessibilityObserverState(serviceConnected = false)
+        listeners.clear()
+    }
 }
