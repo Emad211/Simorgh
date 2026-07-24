@@ -27,6 +27,8 @@ SettingsDependency = Annotated[Settings, Depends(get_settings)]
 
 REGISTRATION_TIMEOUT_SECONDS = 15
 HEARTBEAT_INTERVAL_SECONDS = 25
+MAX_REGISTRATION_CHARACTERS = 64_000
+MAX_DEVICE_MESSAGE_CHARACTERS = 2_000_000
 
 
 def _is_authorized(websocket: WebSocket, settings: Settings) -> bool:
@@ -118,6 +120,13 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
             )
             return
 
+        if len(raw_registration) > MAX_REGISTRATION_CHARACTERS:
+            await websocket.close(
+                code=status.WS_1009_MESSAGE_TOO_BIG,
+                reason="registration message too large",
+            )
+            return
+
         try:
             registration_envelope = ProtocolEnvelope.model_validate_json(raw_registration)
             if registration_envelope.type != "device.register":
@@ -164,6 +173,16 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
 
         while True:
             raw_message = await websocket.receive_text()
+            if len(raw_message) > MAX_DEVICE_MESSAGE_CHARACTERS:
+                await _send_error(
+                    websocket,
+                    device_id=session.device_id,
+                    correlation_id=None,
+                    code="message_too_large",
+                    message="device message exceeded the configured size limit",
+                )
+                continue
+
             envelope: ProtocolEnvelope | None = None
             try:
                 envelope = ProtocolEnvelope.model_validate_json(raw_message)
