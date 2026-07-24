@@ -21,7 +21,7 @@ import java.util.PriorityQueue
 
 class AccessibilityObservationPublisherTest {
     @Test
-    fun `latest snapshot replaces older pending state`() {
+    fun `latest snapshot replaces older pending state without consuming a sequence`() {
         val scheduler = ManualObservationScheduler()
         val sent = mutableListOf<ProtocolEnvelope>()
         val publisher = publisher(scheduler, sent)
@@ -38,7 +38,7 @@ class AccessibilityObservationPublisherTest {
         assertEquals(1, sent.size)
         assertEquals(latestSnapshot.snapshotId, publisher.inFlightSnapshotId())
         val payload = observationPayload(sent.single())
-        assertEquals(1, payload.sequence)
+        assertEquals(0, payload.sequence)
         assertEquals(STREAM_ID, payload.streamId)
         publisher.close()
     }
@@ -131,7 +131,7 @@ class AccessibilityObservationPublisherTest {
     }
 
     @Test
-    fun `minimum interval delays the next accepted state`() {
+    fun `minimum interval delays the next accepted state without a sequence gap`() {
         val scheduler = ManualObservationScheduler()
         val sent = mutableListOf<ProtocolEnvelope>()
         val publisher = publisher(scheduler, sent, minimumIntervalMillis = 500)
@@ -149,6 +149,7 @@ class AccessibilityObservationPublisherTest {
         assertEquals(1, sent.size)
         scheduler.advanceBy(1)
         assertEquals(2, sent.size)
+        assertEquals(listOf(0L, 1L), sent.map(::observationPayload).map { it.sequence })
         publisher.close()
     }
 
