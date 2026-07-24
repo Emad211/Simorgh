@@ -71,7 +71,11 @@ def _register(websocket, device_id: UUID) -> DeviceRegisteredPayload:
     return DeviceRegisteredPayload.model_validate(registered_envelope.payload)
 
 
-def _command(*, action_id: UUID | None = None, command_id: UUID | None = None) -> AndroidActionCommand:
+def _command(
+    *,
+    action_id: UUID | None = None,
+    command_id: UUID | None = None,
+) -> AndroidActionCommand:
     now_ms = int(time.time() * 1000)
     return AndroidActionCommand(
         command_id=command_id or uuid4(),
@@ -293,7 +297,6 @@ def test_cancel_uses_a_stable_typed_message(client: TestClient) -> None:
         assert cancel_envelope.type == "device.action_cancel"
         assert cancel_envelope.correlation_id == command_envelope.message_id
 
-        cancellation = cancel_envelope.payload
         cancel_ack_envelope = ProtocolEnvelope.create(
             message_type="device.action_cancel_ack",
             device_id=device_id,
