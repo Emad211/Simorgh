@@ -166,32 +166,64 @@ class AndroidOpenAppLauncher(
         )
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    @Suppress("DEPRECATION")
     private fun backgroundActivityOptions(): android.os.Bundle =
         ActivityOptions.makeBasic().apply {
-            when (
-                BackgroundLaunchPolicy.intentSenderGrant(
-                    sdkInt = Build.VERSION.SDK_INT,
-                    appVisible = SimorghAppVisibility.isVisible(),
-                )
-            ) {
-                IntentSenderBackgroundGrant.LEGACY_BOOLEAN ->
-                    setPendingIntentBackgroundActivityLaunchAllowed(true)
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA ->
+                    applyAndroid16BackgroundGrant()
 
-                IntentSenderBackgroundGrant.ALLOWED ->
-                    setPendingIntentBackgroundActivityStartMode(
-                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
-                    )
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
+                    applyAndroid14BackgroundGrant()
 
-                IntentSenderBackgroundGrant.ALLOW_IF_VISIBLE ->
-                    setPendingIntentBackgroundActivityStartMode(
-                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE,
-                    )
-
-                IntentSenderBackgroundGrant.ALLOW_ALWAYS ->
-                    setPendingIntentBackgroundActivityStartMode(
-                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS,
-                    )
+                else -> applyAndroid13BackgroundGrant()
             }
         }.toBundle()
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    @Suppress("DEPRECATION")
+    private fun ActivityOptions.applyAndroid13BackgroundGrant() {
+        check(
+            BackgroundLaunchPolicy.intentSenderGrant(
+                sdkInt = Build.VERSION.SDK_INT,
+                appVisible = SimorghAppVisibility.isVisible(),
+            ) == IntentSenderBackgroundGrant.LEGACY_BOOLEAN,
+        )
+        setPendingIntentBackgroundActivityLaunchAllowed(true)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @Suppress("DEPRECATION")
+    private fun ActivityOptions.applyAndroid14BackgroundGrant() {
+        check(
+            BackgroundLaunchPolicy.intentSenderGrant(
+                sdkInt = Build.VERSION.SDK_INT,
+                appVisible = SimorghAppVisibility.isVisible(),
+            ) == IntentSenderBackgroundGrant.ALLOWED,
+        )
+        setPendingIntentBackgroundActivityStartMode(
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+        )
+    }
+
+    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
+    private fun ActivityOptions.applyAndroid16BackgroundGrant() {
+        when (
+            BackgroundLaunchPolicy.intentSenderGrant(
+                sdkInt = Build.VERSION.SDK_INT,
+                appVisible = SimorghAppVisibility.isVisible(),
+            )
+        ) {
+            IntentSenderBackgroundGrant.ALLOW_IF_VISIBLE ->
+                setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE,
+                )
+
+            IntentSenderBackgroundGrant.ALLOW_ALWAYS ->
+                setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS,
+                )
+
+            else -> error("unexpected Android 16 background grant mode")
+        }
+    }
 }
