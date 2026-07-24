@@ -9,6 +9,9 @@ from simorgh_core import __version__
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_api import router as device_action_router
 from simorgh_core.devices.gateway import router as device_router
+from simorgh_core.devices.observation_refresh_api import (
+    router as observation_refresh_router,
+)
 from simorgh_core.providers.avalai import AvalAIProvider, MissingAvalAICredentialsError
 
 app = FastAPI(
@@ -18,6 +21,7 @@ app = FastAPI(
 )
 app.include_router(device_router)
 app.include_router(device_action_router)
+app.include_router(observation_refresh_router)
 
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
 

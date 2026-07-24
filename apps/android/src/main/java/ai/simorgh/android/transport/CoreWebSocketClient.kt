@@ -6,8 +6,10 @@ import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.protocol.DeviceActionCancelPayload
 import ai.simorgh.android.protocol.DeviceActionResultAckPayload
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
+import ai.simorgh.android.protocol.DeviceObservationRefreshPayload
 import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.DeviceRegistrationPayload
+import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import ai.simorgh.android.protocol.ProtocolEnvelope
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,6 +32,11 @@ interface CoreConnectionListener {
     fun onObservationAcknowledged(
         acknowledgement: DeviceObservationAckPayload,
         correlationId: String?,
+    ) = Unit
+
+    fun onObservationRefreshRequest(
+        requestEnvelopeId: String,
+        payload: DeviceObservationRefreshPayload,
     ) = Unit
 
     fun onActionCommand(
@@ -261,6 +268,24 @@ class CoreWebSocketClient(
                     acknowledgement = acknowledgement,
                     correlationId = envelope.correlationId,
                 )
+            }
+
+            ObservationRefreshProtocol.TYPE_REFRESH -> {
+                val payload = runCatching {
+                    ObservationRefreshProtocol.decodeRequest(envelope)
+                }.getOrElse { error ->
+                    listener.onProtocolEvent(
+                        "درخواست تازه‌سازی Observation نامعتبر است: ${error.message.orEmpty()}",
+                    )
+                    webSocket.cancel()
+                    return
+                }
+                invokeListenerOrCancel(webSocket, "observation refresh") {
+                    listener.onObservationRefreshRequest(
+                        requestEnvelopeId = envelope.messageId,
+                        payload = payload,
+                    )
+                }
             }
 
             DeviceProtocol.TYPE_ACTION_COMMAND -> {

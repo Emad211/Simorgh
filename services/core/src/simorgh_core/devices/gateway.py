@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import time
 from typing import Annotated
@@ -20,6 +21,12 @@ from simorgh_core.devices.action_semantics import (
     validate_result_semantics,
 )
 from simorgh_core.devices.actions import AndroidActionResult, ObservationReference
+from simorgh_core.devices.observation_refresh_broker import observation_refresh_broker
+from simorgh_core.devices.observation_refresh_protocol import (
+    OBSERVATION_REFRESH_ACK_TYPE,
+    DeviceObservationRefreshAckEnvelope,
+    DeviceObservationRefreshAckPayload,
+)
 from simorgh_core.devices.protocol import (
     ActionResultAckStatus,
     DeviceActionCancelAckPayload,
@@ -61,6 +68,15 @@ def _is_authorized(websocket: WebSocket, settings: Settings) -> bool:
 
 def _encoded_size(raw_message: str) -> int:
     return len(raw_message.encode("utf-8"))
+
+
+def _decode_device_envelope(raw_message: str) -> ProtocolEnvelope:
+    decoded = json.loads(raw_message)
+    if not isinstance(decoded, dict):
+        raise ValueError("device message must be a JSON object")
+    if decoded.get("type") == OBSERVATION_REFRESH_ACK_TYPE:
+        return DeviceObservationRefreshAckEnvelope.model_validate(decoded)
+    return ProtocolEnvelope.model_validate(decoded)
 
 
 async def _send_error(
@@ -115,6 +131,16 @@ async def _handle_observation(
         observation=observation,
         received_at_ms=received_at_ms,
     )
+
+    candidate = None
+    if envelope.correlation_id is not None:
+        candidate = await observation_refresh_broker.prepare_observation_completion(
+            session=session,
+            refresh_request_id=envelope.correlation_id,
+            observation=observation,
+            observation_status=observation_status,
+        )
+
     acknowledgement = ProtocolEnvelope.create(
         message_type="device.observation_ack",
         device_id=session.device_id,
@@ -128,6 +154,25 @@ async def _handle_observation(
         ),
     )
     await session.send_envelope(acknowledgement)
+
+    if candidate is not None:
+        await observation_refresh_broker.complete_observation(
+            device_id=session.device_id,
+            candidate=candidate,
+        )
+
+
+async def _handle_observation_refresh_ack(
+    *,
+    session: DeviceSession,
+    envelope: DeviceObservationRefreshAckEnvelope,
+) -> None:
+    acknowledgement = DeviceObservationRefreshAckPayload.model_validate(envelope.payload)
+    await observation_refresh_broker.record_ack(
+        session=session,
+        envelope=envelope,
+        acknowledgement=acknowledgement,
+    )
 
 
 async def _handle_action_command_ack(
@@ -368,6 +413,7 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
             ),
         )
         await session.send_envelope(registered)
+        await observation_refresh_broker.redeliver(session)
         await action_broker.redeliver(session)
 
         while True:
@@ -396,7 +442,7 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
 
             envelope: ProtocolEnvelope | None = None
             try:
-                envelope = ProtocolEnvelope.model_validate_json(raw_message)
+                envelope = _decode_device_envelope(raw_message)
                 if envelope.device_id != session.device_id:
                     raise ValueError("message device_id does not match registered device")
 
@@ -404,6 +450,13 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
                     await _handle_heartbeat(session=session, envelope=envelope)
                 elif envelope.type == "device.observation":
                     await _handle_observation(session=session, envelope=envelope)
+                elif envelope.type == OBSERVATION_REFRESH_ACK_TYPE:
+                    if not isinstance(envelope, DeviceObservationRefreshAckEnvelope):
+                        raise ValueError("refresh ACK did not use typed envelope")
+                    await _handle_observation_refresh_ack(
+                        session=session,
+                        envelope=envelope,
+                    )
                 elif envelope.type == "device.action_command_ack":
                     await _handle_action_command_ack(session=session, envelope=envelope)
                 elif envelope.type == "device.action_result":
