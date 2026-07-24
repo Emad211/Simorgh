@@ -7,6 +7,11 @@ from simorgh_core.devices.actions import (
     ActivePackageEqualsPredicate,
     AndroidActionCommand,
     AndroidActionResult,
+    NodeAbsentPredicate,
+    NodeCheckedEqualsPredicate,
+    NodeEnabledEqualsPredicate,
+    NodeExistsPredicate,
+    NodeTextEqualsPredicate,
     ObservationReference,
     OpenAppOperation,
     PredicateOutcome,
@@ -40,6 +45,32 @@ def validate_dispatch_semantics(command: AndroidActionCommand) -> AndroidActionC
     ):
         raise AndroidActionSemanticError(
             "open_app active_package_equals predicates must match operation package_name"
+        )
+
+    destination_predicates = [
+        predicate
+        for predicate in command.verification.predicates
+        if isinstance(
+            predicate,
+            (
+                NodeExistsPredicate,
+                NodeAbsentPredicate,
+                NodeTextEqualsPredicate,
+                NodeCheckedEqualsPredicate,
+                NodeEnabledEqualsPredicate,
+            ),
+        )
+    ]
+    if any(
+        predicate.selector.package_name != operation.package_name
+        for predicate in destination_predicates
+    ):
+        raise AndroidActionSemanticError(
+            "open_app node predicates must target operation package_name"
+        )
+    if operation.uri is not None and not destination_predicates:
+        raise AndroidActionSemanticError(
+            "open_app with uri requires a target-package node predicate proving the destination"
         )
     return command
 
