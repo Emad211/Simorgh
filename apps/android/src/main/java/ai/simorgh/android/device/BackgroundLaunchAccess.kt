@@ -9,18 +9,24 @@ import android.provider.Settings
 
 object BackgroundLaunchAccess {
     fun requiresSpecialAccess(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        BackgroundLaunchPolicy.requiresSpecialAccess(Build.VERSION.SDK_INT)
 
     fun isOverlayGranted(context: Context): Boolean =
         Settings.canDrawOverlays(context)
 
     fun isConfiguredForBackground(context: Context): Boolean =
-        !requiresSpecialAccess() || isOverlayGranted(context)
+        BackgroundLaunchPolicy.canLaunch(
+            sdkInt = Build.VERSION.SDK_INT,
+            appVisible = false,
+            overlayGranted = isOverlayGranted(context),
+        )
 
     fun canLaunchNow(context: Context): Boolean =
-        !requiresSpecialAccess() ||
-            SimorghAppVisibility.isVisible() ||
-            isOverlayGranted(context)
+        BackgroundLaunchPolicy.canLaunch(
+            sdkInt = Build.VERSION.SDK_INT,
+            appVisible = SimorghAppVisibility.isVisible(),
+            overlayGranted = isOverlayGranted(context),
+        )
 
     fun openSettings(context: Context) {
         if (!requiresSpecialAccess()) {
