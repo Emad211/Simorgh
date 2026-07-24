@@ -5,14 +5,18 @@ import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
 import ai.simorgh.android.accessibility.ScreenBounds
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
+import ai.simorgh.android.protocol.DeviceObservationPayload
+import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.ObservationAckStatus
 import ai.simorgh.android.protocol.ProtocolEnvelope
+import kotlinx.serialization.json.decodeFromJsonElement
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.security.MessageDigest
 import java.util.PriorityQueue
 
 class AccessibilityObservationPublisherTest {
@@ -21,8 +25,8 @@ class AccessibilityObservationPublisherTest {
         val scheduler = ManualObservationScheduler()
         val sent = mutableListOf<ProtocolEnvelope>()
         val publisher = publisher(scheduler, sent)
-        val oldSnapshot = snapshot(id = "11111111-1111-1111-1111-111111111111", text = "قدیمی")
-        val latestSnapshot = snapshot(id = "22222222-2222-2222-2222-222222222222", text = "جدید")
+        val oldSnapshot = snapshot(id = SNAPSHOT_ONE, text = "قدیمی")
+        val latestSnapshot = snapshot(id = SNAPSHOT_TWO, text = "جدید")
 
         assertTrue(publisher.submit(oldSnapshot))
         assertTrue(publisher.submit(latestSnapshot))
@@ -33,6 +37,9 @@ class AccessibilityObservationPublisherTest {
 
         assertEquals(1, sent.size)
         assertEquals(latestSnapshot.snapshotId, publisher.inFlightSnapshotId())
+        val payload = observationPayload(sent.single())
+        assertEquals(1, payload.sequence)
+        assertEquals(STREAM_ID, payload.streamId)
         publisher.close()
     }
 
@@ -41,9 +48,9 @@ class AccessibilityObservationPublisherTest {
         val scheduler = ManualObservationScheduler()
         val sent = mutableListOf<ProtocolEnvelope>()
         val publisher = publisher(scheduler, sent)
-        val first = snapshot(id = "11111111-1111-1111-1111-111111111111", text = "سلام")
+        val first = snapshot(id = SNAPSHOT_ONE, text = "سلام")
         val sameState = first.copy(
-            snapshotId = "22222222-2222-2222-2222-222222222222",
+            snapshotId = SNAPSHOT_TWO,
             capturedAtMs = first.capturedAtMs + 1_000,
         )
 
@@ -52,16 +59,7 @@ class AccessibilityObservationPublisherTest {
         scheduler.runCurrent()
         val envelope = sent.single()
 
-        assertTrue(
-            publisher.acknowledge(
-                acknowledgement = DeviceObservationAckPayload(
-                    snapshotId = first.snapshotId,
-                    status = ObservationAckStatus.ACCEPTED,
-                    receivedAtMs = 10,
-                ),
-                correlationId = envelope.messageId,
-            ),
-        )
+        assertTrue(publisher.acknowledge(ackFor(envelope), envelope.messageId))
         assertFalse(publisher.submit(sameState))
         assertNull(publisher.pendingSnapshotId())
         publisher.close()
@@ -80,8 +78,9 @@ class AccessibilityObservationPublisherTest {
             minimumSendIntervalMillis = 0,
             acknowledgementTimeoutMillis = 100,
             maxAttempts = 3,
+            streamId = STREAM_ID,
         )
-        val snapshot = snapshot(id = "11111111-1111-1111-1111-111111111111", text = "retry")
+        val snapshot = snapshot(id = SNAPSHOT_ONE, text = "retry")
 
         publisher.setConnected(true)
         publisher.submit(snapshot)
@@ -92,8 +91,42 @@ class AccessibilityObservationPublisherTest {
 
         assertEquals(3, sent.size)
         assertEquals(1, sent.map(ProtocolEnvelope::messageId).distinct().size)
+        assertEquals(1, sent.map(::observationPayload).map { it.sequence }.distinct().size)
         assertNull(publisher.inFlightSnapshotId())
         assertTrue(events.last().contains("failed after 3 attempts"))
+        publisher.close()
+    }
+
+    @Test
+    fun `transport race does not consume an acknowledgement attempt`() {
+        val scheduler = ManualObservationScheduler()
+        val sent = mutableListOf<ProtocolEnvelope>()
+        var transportReady = false
+        val publisher = AccessibilityObservationPublisher(
+            deviceId = DEVICE_ID,
+            sender = { envelope ->
+                if (transportReady) {
+                    sent += envelope
+                }
+                transportReady
+            },
+            scheduler = scheduler,
+            minimumSendIntervalMillis = 0,
+            acknowledgementTimeoutMillis = 100,
+            maxAttempts = 1,
+            streamId = STREAM_ID,
+        )
+
+        publisher.setConnected(true)
+        publisher.submit(snapshot(id = SNAPSHOT_ONE, text = "race"))
+        scheduler.runCurrent()
+        assertTrue(sent.isEmpty())
+        assertEquals(SNAPSHOT_ONE, publisher.inFlightSnapshotId())
+
+        transportReady = true
+        publisher.setConnected(true)
+        scheduler.runCurrent()
+        assertEquals(1, sent.size)
         publisher.close()
     }
 
@@ -102,21 +135,14 @@ class AccessibilityObservationPublisherTest {
         val scheduler = ManualObservationScheduler()
         val sent = mutableListOf<ProtocolEnvelope>()
         val publisher = publisher(scheduler, sent, minimumIntervalMillis = 500)
-        val first = snapshot(id = "11111111-1111-1111-1111-111111111111", text = "اول")
-        val second = snapshot(id = "22222222-2222-2222-2222-222222222222", text = "دوم")
+        val first = snapshot(id = SNAPSHOT_ONE, text = "اول")
+        val second = snapshot(id = SNAPSHOT_TWO, text = "دوم")
 
         publisher.setConnected(true)
         publisher.submit(first)
         scheduler.runCurrent()
         val firstEnvelope = sent.single()
-        publisher.acknowledge(
-            acknowledgement = DeviceObservationAckPayload(
-                snapshotId = first.snapshotId,
-                status = ObservationAckStatus.ACCEPTED,
-                receivedAtMs = 1,
-            ),
-            correlationId = firstEnvelope.messageId,
-        )
+        publisher.acknowledge(ackFor(firstEnvelope), firstEnvelope.messageId)
         publisher.submit(second)
 
         scheduler.advanceBy(499)
@@ -127,10 +153,33 @@ class AccessibilityObservationPublisherTest {
     }
 
     @Test
+    fun `acknowledgement must match stream sequence snapshot and message`() {
+        val scheduler = ManualObservationScheduler()
+        val sent = mutableListOf<ProtocolEnvelope>()
+        val publisher = publisher(scheduler, sent)
+
+        publisher.setConnected(true)
+        publisher.submit(snapshot(id = SNAPSHOT_ONE, text = "match"))
+        scheduler.runCurrent()
+        val envelope = sent.single()
+        val correct = ackFor(envelope)
+
+        assertFalse(
+            publisher.acknowledge(
+                correct.copy(sequence = correct.sequence + 1),
+                envelope.messageId,
+            ),
+        )
+        assertFalse(publisher.acknowledge(correct, "wrong-message-id"))
+        assertTrue(publisher.acknowledge(correct, envelope.messageId))
+        publisher.close()
+    }
+
+    @Test
     fun `fingerprint ignores capture identity but includes checked state`() {
-        val first = snapshot(id = "11111111-1111-1111-1111-111111111111", text = "گزینه")
+        val first = snapshot(id = SNAPSHOT_ONE, text = "گزینه")
         val sameState = first.copy(
-            snapshotId = "22222222-2222-2222-2222-222222222222",
+            snapshotId = SNAPSHOT_TWO,
             capturedAtMs = 99_999,
         )
         val changed = sameState.copy(
@@ -158,7 +207,25 @@ class AccessibilityObservationPublisherTest {
         minimumSendIntervalMillis = minimumIntervalMillis,
         acknowledgementTimeoutMillis = 10_000,
         maxAttempts = 3,
+        streamId = STREAM_ID,
     )
+
+    private fun ackFor(
+        envelope: ProtocolEnvelope,
+        status: ObservationAckStatus = ObservationAckStatus.ACCEPTED,
+    ): DeviceObservationAckPayload {
+        val payload = observationPayload(envelope)
+        return DeviceObservationAckPayload(
+            streamId = payload.streamId,
+            sequence = payload.sequence,
+            snapshotId = payload.snapshot.snapshotId,
+            status = status,
+            receivedAtMs = 10,
+        )
+    }
+
+    private fun observationPayload(envelope: ProtocolEnvelope): DeviceObservationPayload =
+        DeviceProtocol.json.decodeFromJsonElement(envelope.payload)
 
     private fun snapshot(id: String, text: String): AccessibilitySnapshot = AccessibilitySnapshot(
         snapshotId = id,
@@ -166,11 +233,11 @@ class AccessibilityObservationPublisherTest {
         triggeringEventType = 32,
         activePackage = "com.example",
         activeWindowId = 1,
-        rootNodeId = "root",
+        rootNodeId = ROOT_ID,
         windows = emptyList(),
         nodes = listOf(
             AccessibilityNodeSnapshot(
-                nodeId = "root",
+                nodeId = ROOT_ID,
                 path = "0",
                 depth = 0,
                 windowId = 1,
@@ -178,7 +245,7 @@ class AccessibilityObservationPublisherTest {
                 className = "android.widget.CheckBox",
                 text = text,
                 bounds = ScreenBounds(0, 0, 100, 100),
-                semanticFingerprint = "semantic-$text",
+                semanticFingerprint = shortHash(text),
                 childCount = 0,
                 inputType = 0,
                 clickable = true,
@@ -202,6 +269,11 @@ class AccessibilityObservationPublisherTest {
         truncationReasons = emptyList(),
         maxDepthObserved = 0,
     )
+
+    private fun shortHash(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .take(12)
+        .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xFF) }
 
     private class ManualObservationScheduler : ObservationScheduler {
         private val tasks = PriorityQueue<ScheduledTask>(
@@ -260,5 +332,9 @@ class AccessibilityObservationPublisherTest {
 
     private companion object {
         const val DEVICE_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        const val STREAM_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        const val SNAPSHOT_ONE = "11111111-1111-1111-1111-111111111111"
+        const val SNAPSHOT_TWO = "22222222-2222-2222-2222-222222222222"
+        const val ROOT_ID = "111111111111111111111111"
     }
 }
