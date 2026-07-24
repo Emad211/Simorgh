@@ -4,14 +4,17 @@ Native Android surface and future device operator for Simorgh.
 
 ## Current scope
 
-This first shell intentionally contains only:
+The application currently contains:
 
 - a Persian RTL diagnostics screen;
 - versioned device-protocol metadata;
 - Android and device capability reporting;
-- a buildable Compose application boundary.
+- an authenticated WebSocket connection to Simorgh Core;
+- mandatory device registration and heartbeat;
+- bounded reconnect and outbound queuing;
+- an installable Compose application boundary.
 
-Transport, accessibility observation, execution, and screen capture are implemented in subsequent work items so each boundary can be tested independently.
+Accessibility observation, command delivery, execution, and screen capture are implemented in subsequent work items so each boundary can be tested independently.
 
 ## Supported Android versions
 
@@ -44,6 +47,34 @@ The generated debug APK is located under:
 apps/android/build/outputs/apk/debug/
 ```
 
+## Connect to Simorgh Core
+
+Start Core with a private device token:
+
+```dotenv
+SIMORGH_DEVICE_TOKEN=<long-random-token>
+SIMORGH_HOST=0.0.0.0
+SIMORGH_PORT=8080
+```
+
+```bash
+uvicorn simorgh_core.app:app --host 0.0.0.0 --port 8080 --reload
+```
+
+For the emulator, use:
+
+```text
+ws://10.0.2.2:8080/v1/devices/ws
+```
+
+For a physical phone such as Samsung Galaxy A53, use the development computer's trusted LAN address:
+
+```text
+ws://192.168.1.20:8080/v1/devices/ws
+```
+
+Enter the same `SIMORGH_DEVICE_TOKEN` in the app. The development token remains only in memory and is not persisted. See [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the complete setup and protocol.
+
 ## Package
 
 ```text
@@ -57,3 +88,4 @@ ai.simorgh.android
 - Device capabilities are explicitly advertised rather than assumed by the server.
 - State-changing device actions require pre/post observations and verification.
 - New Android APIs must be guarded by SDK checks and have a documented fallback.
+- Production transport must use `wss://`; local `ws://` is debug-only.
