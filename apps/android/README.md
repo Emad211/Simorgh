@@ -19,6 +19,8 @@ The application currently contains:
 - a protected AccessibilityService that observes active app/window structure;
 - bounded immutable snapshots with password-field redaction;
 - a local Accessibility inspector for OEM and app diagnostics;
+- ordered, rate-limited, latest-wins snapshot delivery to Core;
+- reconnect-safe observation acknowledgements and retries;
 - an installable Compose application boundary.
 
 Command delivery, screenshot transport, selector resolution, and action execution are implemented in subsequent work items so each boundary can be tested independently.
@@ -96,9 +98,12 @@ The observer:
 - ignores self-snapshots in the inspector;
 - performs no clicks, typing, gestures, or global actions in this increment.
 
+When the foreground service is connected, external-app snapshots are published from a background executor. The publisher keeps one in-flight state and only the newest pending state, verifies a correlated acknowledgement, retries the exact envelope up to three sends, and pauses without consuming an attempt when the socket is unavailable.
+
 See:
 
-- [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the protocol;
+- [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the device channel;
+- [`docs/OBSERVATION_TRANSPORT.md`](../../docs/OBSERVATION_TRANSPORT.md) for ordering, fingerprinting, retry, and validation;
 - [`docs/ANDROID_ALWAYS_ON.md`](../../docs/ANDROID_ALWAYS_ON.md) for lifecycle and Samsung setup;
 - [`docs/ANDROID_ACCESSIBILITY_OBSERVER.md`](../../docs/ANDROID_ACCESSIBILITY_OBSERVER.md) for the snapshot schema and validation plan.
 
@@ -118,3 +123,4 @@ ai.simorgh.android
 - Production transport must use `wss://`; local `ws://` is debug-only.
 - A permanent connection must remain user-visible and immediately stoppable.
 - Accessibility nodes are short-lived input data, never durable action handles.
+- Observation messages bypass the generic reconnect queue and use their own idempotent delivery state machine.
