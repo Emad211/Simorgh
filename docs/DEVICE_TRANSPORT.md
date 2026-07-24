@@ -14,15 +14,17 @@ The AvalAI API key remains exclusively on Simorgh Core. Android receives only a 
 ## Connection lifecycle
 
 ```text
-Android                 Simorgh Core
-   |--- WebSocket ---------->|
-   |--- device.register ---->|
-   |<-- device.registered ---|
-   |--- heartbeat ---------->|
-   |<-- heartbeat_ack -------|
+Android foreground service       Simorgh Core
+   |--- WebSocket -------------------->|
+   |--- device.register -------------->|
+   |<-- device.registered -------------|
+   |--- heartbeat -------------------->|
+   |<-- heartbeat_ack -----------------|
 ```
 
 The first application message must be `device.register`. Core rejects an unregistered connection, an invalid device identifier, an unsupported protocol envelope, or an invalid bearer token.
+
+The WebSocket is owned by `SimorghConnectionService`, not the Activity. Closing the Android UI therefore does not intentionally terminate the device session.
 
 ## Protocol envelope
 
@@ -48,7 +50,9 @@ The Android client implements:
 - bounded exponential reconnect delay from 1 to 30 seconds;
 - a bounded outbound queue of 100 messages;
 - connection generations that discard callbacks from obsolete sockets;
-- replacement of an older live connection when the same device reconnects.
+- replacement of an older live connection when the same device reconnects;
+- sticky foreground-service recovery after ordinary process eviction;
+- optional restoration after device boot.
 
 A connection is marked `CONNECTED` only after Core returns `device.registered`.
 
@@ -87,15 +91,23 @@ ws://10.0.2.2:8080/v1/devices/ws
 ws://192.168.1.20:8080/v1/devices/ws
 ```
 
-5. Enter the value of `SIMORGH_DEVICE_TOKEN` in the app and connect.
+5. Enter the value of `SIMORGH_DEVICE_TOKEN` in the app and start the service.
 
 The debug manifest permits cleartext `ws://` for local development. The production manifest disables cleartext traffic and requires `wss://`.
 
 ## Secret handling
 
-The current development UI keeps the device token only in process memory. It is not written to SharedPreferences. A later pairing increment will issue device-specific credentials stored with Android Keystore.
+The device token is encrypted with an AES-GCM key generated and retained by Android Keystore. SharedPreferences contain only ciphertext, its IV, the endpoint, and service preferences. The AES key is non-exportable through the application API.
 
-The endpoint is not considered a secret and is persisted for convenience.
+The endpoint is not considered a secret and is also persisted for convenience. The AvalAI API key is never sent to or stored on Android.
+
+This is a transport credential foundation, not the final pairing system. A later increment will replace the shared development token with device-specific, revocable credentials.
+
+## Foreground service behavior
+
+The connection service is user-visible and has an ongoing notification with a Stop action. Android 14 and newer use the declared `specialUse` foreground-service type. Starting after device boot is controlled by an explicit switch and is independent of sticky process recovery.
+
+See [`ANDROID_ALWAYS_ON.md`](ANDROID_ALWAYS_ON.md) for Android-version behavior, Samsung setup, and physical-device validation scenarios.
 
 ## Current scope and next step
 
