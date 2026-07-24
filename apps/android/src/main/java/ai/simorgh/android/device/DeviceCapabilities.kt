@@ -2,6 +2,7 @@ package ai.simorgh.android.device
 
 import android.os.Build
 import ai.simorgh.android.BuildConfig
+import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import ai.simorgh.android.protocol.ProtocolVersion
 
 data class DeviceCapabilities(
@@ -24,6 +25,7 @@ data class DeviceCapabilities(
                 add("device.action_transport.v1")
                 add("android.action.contract.v1")
                 add("android.open_app.execution.v1")
+                add(ObservationRefreshProtocol.CAPABILITY)
                 if (BackgroundLaunchAccess.requiresSpecialAccess()) {
                     add("android.open_app.background_launch.requires_visible_or_overlay_access")
                 } else {
