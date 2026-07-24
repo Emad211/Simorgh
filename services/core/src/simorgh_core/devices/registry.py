@@ -216,7 +216,6 @@ class DeviceRegistry:
         received_at_ms: int,
     ) -> ObservationAckStatus:
         receipt = ObservationMessageReceipt.from_payload(observation)
-        identity = receipt.identity
 
         async with self._lock:
             current = self._sessions.get(session.device_id)
