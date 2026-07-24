@@ -119,16 +119,14 @@ class AndroidOpenAppLauncher(
 
     private fun launchWithIntentSender(packageName: String): OpenAppLaunchAttempt {
         val sender = packageManager.getLaunchIntentSenderForPackage(packageName)
-        val options = backgroundActivityOptions()
         return try {
-            sender.sendIntent(
-                applicationContext,
+            applicationContext.startIntentSender(
+                sender,
+                null,
                 0,
-                null,
-                null,
-                null,
-                null,
-                options,
+                0,
+                0,
+                backgroundActivityOptions(),
             )
             OpenAppLaunchAttempt(
                 status = OpenAppLaunchStatus.ACCEPTED,
@@ -161,8 +159,9 @@ class AndroidOpenAppLauncher(
         }
         return ActivityOptions.makeBasic().apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                pendingIntentBackgroundActivityStartMode =
-                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+                )
             } else {
                 setPendingIntentBackgroundActivityLaunchAllowed(true)
             }
