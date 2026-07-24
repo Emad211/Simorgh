@@ -24,7 +24,11 @@ data class DeviceCapabilities(
                 add("device.action_transport.v1")
                 add("android.action.contract.v1")
                 add("android.open_app.execution.v1")
-                add("android.open_app.background_launch.requires_visible_or_overlay_access")
+                if (BackgroundLaunchAccess.requiresSpecialAccess()) {
+                    add("android.open_app.background_launch.requires_visible_or_overlay_access")
+                } else {
+                    add("android.open_app.background_launch.legacy_allowed")
+                }
                 add("android.launcher_surface")
                 add("android.accessibility.observe.platform")
 
