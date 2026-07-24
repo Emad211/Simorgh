@@ -100,6 +100,7 @@ private fun SimorghApp(
                     onOpenSettings = onOpenAccessibilitySettings,
                 )
                 BackgroundLaunchAccessCard(
+                    specialAccessRequired = state.backgroundLaunchSpecialAccessRequired,
                     granted = state.backgroundLaunchAccessGranted,
                     onOpenSettings = onOpenBackgroundLaunchSettings,
                 )
