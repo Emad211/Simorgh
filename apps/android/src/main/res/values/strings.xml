@@ -42,4 +42,10 @@
     <string name="accessibility_snapshot_truncated">Snapshot به‌دلیل سقف ایمنی کوتاه شده است</string>
     <string name="accessibility_no_snapshot">هنوز Snapshotی ثبت نشده است</string>
     <string name="accessibility_tree_preview">پیش‌نمایش ساختار صفحه</string>
+
+    <string name="background_launch_title">اجازه بازکردن خودکار اپ‌ها</string>
+    <string name="background_launch_granted">اجازه بازکردن اپ از پس‌زمینه فعال است</string>
+    <string name="background_launch_missing">اجازه «نمایش روی سایر برنامه‌ها» فعال نیست</string>
+    <string name="background_launch_explanation">Androidهای جدید اجازه نمی‌دهند یک سرویس پس‌زمینه ناگهان اپ دیگری را باز کند. برای دستیار خصوصی سیمرغ، این Special Access مسیر قابل‌اعتماد اجرای open_app است.</string>
+    <string name="background_launch_open_settings">بازکردن تنظیمات دسترسی ویژه</string>
 </resources>
