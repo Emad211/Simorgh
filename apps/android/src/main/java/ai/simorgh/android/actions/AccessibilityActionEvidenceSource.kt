@@ -79,7 +79,11 @@ class AccessibilityActionEvidenceSource(
         }
         acknowledgementSubscription = AccessibilityAcknowledgementBus.subscribe { value ->
             synchronized(monitor) {
-                appendAcknowledgedLocked(value)
+                if (value == null) {
+                    acknowledgementHistory.clear()
+                } else {
+                    appendAcknowledgedLocked(value)
+                }
                 monitor.notifyAll()
             }
         }
