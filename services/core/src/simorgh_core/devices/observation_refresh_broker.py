@@ -145,6 +145,7 @@ class ObservationRefreshBroker:
             updated_at_ms=now_ms,
             deadline_at_ms=now_ms + timeout_ms,
         )
+        key = (device_id, request_id)
 
         async with self._lock:
             self._expire_locked(now_ms)
@@ -153,10 +154,25 @@ class ObservationRefreshBroker:
                 raise ObservationRefreshBusyError(
                     f"device already has active observation refresh {active.request_id}"
                 )
-            self._records[(device_id, request_id)] = record
+            self._records[key] = record
 
         assert session is not None
-        await self._deliver(record=record, session=session)
+        try:
+            await self._deliver(record=record, session=session)
+        except ObservationRefreshDeviceUnavailableError as exc:
+            # A session can be replaced after the compatibility check but before delivery.
+            # Do not leave the newly inserted record active and permanently block the device.
+            async with self._lock:
+                current = self._records.get(key)
+                if current is not None and not current.terminal:
+                    self._finish_locked(
+                        key=key,
+                        record=current,
+                        phase=ObservationRefreshPhase.REJECTED,
+                        detail=str(exc),
+                        now_ms=self._now_ms(),
+                    )
+            raise
         return record
 
     async def redeliver(self, session: DeviceSession) -> None:
@@ -182,7 +198,6 @@ class ObservationRefreshBroker:
                         now_ms=now_ms,
                     )
             return
-
         await self._deliver(record=record, session=session)
 
     async def record_ack(
@@ -211,19 +226,14 @@ class ObservationRefreshBroker:
                     "refresh acknowledgement request_id does not match request"
                 )
 
-            previous = record.acknowledgement
+            # Core's terminal phase is authoritative. Android's relative capture timer can
+            # legitimately emit a later terminal ACK after Core's absolute record deadline.
+            # The identity and delivery owner were verified above; ignore the late status
+            # without mutating final state or turning a benign race into protocol failure.
             if record.terminal:
-                if previous is None:
-                    return record
-                if self._ack_statuses_equivalent(
-                    previous.status,
-                    acknowledgement.status,
-                ):
-                    return record
-                raise ObservationRefreshConflictError(
-                    "terminal refresh acknowledgement changed after completion"
-                )
+                return record
 
+            previous = record.acknowledgement
             if previous is not None:
                 if previous.status not in _ACCEPTED_ACK_STATUSES:
                     raise ObservationRefreshConflictError(
@@ -255,6 +265,7 @@ class ObservationRefreshBroker:
             if acknowledgement.status in _ACCEPTED_ACK_STATUSES:
                 record.phase = ObservationRefreshPhase.ACCEPTED
                 return record
+
             terminal_phase = (
                 ObservationRefreshPhase.EXPIRED
                 if acknowledgement.status == "expired"
@@ -448,7 +459,7 @@ class ObservationRefreshBroker:
 
         try:
             await session.send_envelope(record.request_envelope)
-        except (RuntimeError, WebSocketDisconnect):
+        except (OSError, RuntimeError, WebSocketDisconnect):
             async with self._lock:
                 current = self._records.get(key)
                 if (
@@ -539,12 +550,6 @@ class ObservationRefreshBroker:
             raise ObservationRefreshConflictError(
                 "refresh message came from a session that does not own current delivery"
             )
-
-    @staticmethod
-    def _ack_statuses_equivalent(left: str, right: str) -> bool:
-        return left == right or (
-            left in _ACCEPTED_ACK_STATUSES and right in _ACCEPTED_ACK_STATUSES
-        )
 
 
 observation_refresh_broker = ObservationRefreshBroker()
