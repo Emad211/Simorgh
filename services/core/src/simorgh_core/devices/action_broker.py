@@ -18,6 +18,8 @@ from simorgh_core.devices.protocol import (
 from simorgh_core.devices.registry import DeviceSession, registry
 
 MAX_TERMINAL_ACTIONS = 256
+_ACCEPTED_COMMAND_ACKS = frozenset({"accepted", "duplicate"})
+_ACCEPTED_CANCEL_ACKS = frozenset({"accepted", "duplicate"})
 
 
 class DeviceActionBrokerError(ValueError):
@@ -164,19 +166,37 @@ class DeviceActionBroker:
         async with self._lock:
             record = self._records.get(key)
             if record is None:
-                raise DeviceActionNotFoundError("command acknowledgement references unknown action")
+                raise DeviceActionNotFoundError(
+                    "command acknowledgement references unknown action"
+                )
             self._require_current_session(record, session)
             self._require_ack_identity(record, envelope, acknowledgement)
 
-            if record.result is not None:
-                return record
-            if record.terminal and record.phase != DeviceActionPhase.EXPIRED:
+            if record.result is not None or record.terminal:
                 return record
 
+            previous = record.command_ack
+            if previous is not None:
+                if self._command_ack_statuses_are_equivalent(
+                    previous.status,
+                    acknowledgement.status,
+                ):
+                    return record
+                raise DeviceActionConflictError(
+                    "action command acknowledgement changed after it was recorded"
+                )
+
+            next_phase = self._phase_from_command_ack(acknowledgement.status)
             record.command_ack = acknowledgement
             record.updated_at_ms = now_ms
             record.detail = acknowledgement.detail
-            record.phase = self._phase_from_command_ack(acknowledgement.status)
+            if (
+                record.phase == DeviceActionPhase.CANCELLING
+                and next_phase == DeviceActionPhase.ACCEPTED
+            ):
+                return record
+
+            record.phase = next_phase
             if record.terminal:
                 self._remember_terminal_locked(key)
             return record
@@ -193,7 +213,9 @@ class DeviceActionBroker:
         async with self._lock:
             record = self._records.get(key)
             if record is None:
-                raise DeviceActionNotFoundError("cancel acknowledgement references unknown action")
+                raise DeviceActionNotFoundError(
+                    "cancel acknowledgement references unknown action"
+                )
             self._require_current_session(record, session)
             if acknowledgement.command_id != record.command_id:
                 raise DeviceActionConflictError("cancel ack command_id does not match dispatch")
@@ -202,6 +224,18 @@ class DeviceActionBroker:
                 raise DeviceActionConflictError(
                     "cancel ack correlation_id does not match cancel message_id"
                 )
+
+            previous = record.cancel_ack
+            if previous is not None:
+                if self._cancel_ack_statuses_are_equivalent(
+                    previous.status,
+                    acknowledgement.status,
+                ):
+                    return record
+                raise DeviceActionConflictError(
+                    "action cancellation acknowledgement changed after it was recorded"
+                )
+
             record.cancel_ack = acknowledgement
             record.updated_at_ms = now_ms
             if acknowledgement.status == "completed" and record.result is not None:
@@ -224,7 +258,9 @@ class DeviceActionBroker:
             if record is None:
                 return "unknown_action", None
             if result.command_id != record.command_id:
-                raise DeviceActionConflictError("action result command_id does not match dispatch")
+                raise DeviceActionConflictError(
+                    "action result command_id does not match dispatch"
+                )
             if envelope.correlation_id != record.command_envelope.message_id:
                 raise DeviceActionConflictError(
                     "action result correlation_id does not match command message_id"
@@ -237,6 +273,11 @@ class DeviceActionBroker:
                 return "duplicate", record
 
             self._require_current_session(record, session)
+            if record.phase == DeviceActionPhase.REJECTED:
+                raise DeviceActionConflictError(
+                    "rejected action cannot later publish a result"
+                )
+
             record.result = result
             record.phase = (
                 DeviceActionPhase.CANCELLED
@@ -306,7 +347,8 @@ class DeviceActionBroker:
             return
         envelope = (
             record.cancel_envelope
-            if record.phase == DeviceActionPhase.CANCELLING and record.cancel_envelope is not None
+            if record.phase == DeviceActionPhase.CANCELLING
+            and record.cancel_envelope is not None
             else record.command_envelope
         )
         await session.send_envelope(envelope)
@@ -323,7 +365,10 @@ class DeviceActionBroker:
                     record.phase = DeviceActionPhase.DELIVERED
                 record.updated_at_ms = now_ms
 
-    def _active_record_for_device_locked(self, device_id: UUID) -> DeviceActionRecord | None:
+    def _active_record_for_device_locked(
+        self,
+        device_id: UUID,
+    ) -> DeviceActionRecord | None:
         return next(
             (
                 record
@@ -395,6 +440,20 @@ class DeviceActionBroker:
             raise DeviceActionConflictError(
                 "ack correlation_id does not match command message_id"
             )
+
+    def _command_ack_statuses_are_equivalent(
+        self,
+        previous: ActionCommandAckStatus,
+        current: ActionCommandAckStatus,
+    ) -> bool:
+        if previous == current:
+            return True
+        return previous in _ACCEPTED_COMMAND_ACKS and current in _ACCEPTED_COMMAND_ACKS
+
+    def _cancel_ack_statuses_are_equivalent(self, previous: str, current: str) -> bool:
+        if previous == current:
+            return True
+        return previous in _ACCEPTED_CANCEL_ACKS and current in _ACCEPTED_CANCEL_ACKS
 
     def _phase_from_command_ack(
         self,
