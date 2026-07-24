@@ -95,11 +95,12 @@ def _session() -> DeviceSession:
     )
 
 
-def test_exact_replay_refreshes_message_and_evidence_lru_together() -> None:
+def test_exact_replay_refreshes_lru_without_changing_first_ack_chronology() -> None:
     async def scenario() -> None:
         registry = DeviceRegistry()
         session = _session()
         await registry.register(session)
+        first_session_id = session.session_id
 
         original_message_id = uuid4()
         original = _observation(0)
@@ -139,7 +140,8 @@ def test_exact_replay_refreshes_message_and_evidence_lru_together() -> None:
         evidence = await _lookup(registry, original)
         assert evidence is not None
         assert evidence.message_id == original_message_id
-        assert evidence.received_at_ms == 30_000
+        assert evidence.session_id == first_session_id
+        assert evidence.received_at_ms == 20_000
 
     asyncio.run(scenario())
 
