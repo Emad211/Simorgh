@@ -11,6 +11,7 @@ data class DeviceCapabilities(
     val androidRelease: String,
     val manufacturer: String,
     val model: String,
+    val buildFingerprint: String,
     val supportTier: AndroidSupportTier,
     val capabilities: Set<String>,
 ) {
@@ -37,6 +38,7 @@ data class DeviceCapabilities(
                 androidRelease = Build.VERSION.RELEASE,
                 manufacturer = Build.MANUFACTURER.orEmpty(),
                 model = Build.MODEL.orEmpty(),
+                buildFingerprint = Build.FINGERPRINT.orEmpty(),
                 supportTier = compatibility.tier,
                 capabilities = capabilities,
             )

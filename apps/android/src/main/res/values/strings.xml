@@ -2,12 +2,22 @@
 <resources>
     <string name="app_name">سیمرغ</string>
     <string name="status_title">وضعیت دستگاه</string>
+    <string name="connection_title">اتصال به هسته سیمرغ</string>
     <string name="connection_disconnected">اتصال به هسته برقرار نیست</string>
-    <string name="connection_hint">در مرحله بعد، ارتباط امن و پایدار با Simorgh Core اضافه می‌شود.</string>
+    <string name="connection_connecting">در حال برقراری اتصال…</string>
+    <string name="connection_registering">در حال ثبت و تأیید دستگاه…</string>
+    <string name="connection_connected">دستگاه به هسته متصل است</string>
+    <string name="connection_retry_wait">تلاش مجدد شماره %1$d در صف است</string>
+    <string name="connection_failed">تنظیمات یا اتصال نامعتبر است</string>
+    <string name="endpoint_label">آدرس WebSocket هسته</string>
+    <string name="device_token_label">توکن اتصال دستگاه</string>
+    <string name="device_token_hint">این توکن فقط در حافظه همین اجرای اپ نگه داشته می‌شود.</string>
+    <string name="connect_action">اتصال</string>
+    <string name="disconnect_action">قطع اتصال</string>
     <string name="protocol_label">نسخه پروتکل</string>
     <string name="android_label">نسخه اندروید</string>
     <string name="support_tier_label">سطح سازگاری</string>
     <string name="device_label">دستگاه</string>
     <string name="capabilities_label">قابلیت‌های اعلام‌شده</string>
-    <string name="foundation_ready">پوسته اندروید آماده توسعه است</string>
+    <string name="foundation_ready">مرز ارتباطی اندروید آماده آزمایش است</string>
 </resources>

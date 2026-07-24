@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from simorgh_core import __version__
 from simorgh_core.config import Settings, get_settings
+from simorgh_core.devices.gateway import router as device_router
 from simorgh_core.providers.avalai import AvalAIProvider, MissingAvalAICredentialsError
 
 app = FastAPI(
@@ -14,6 +15,7 @@ app = FastAPI(
     version=__version__,
     description="Core orchestration API for the Simorgh personal agent operating system.",
 )
+app.include_router(device_router)
 
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
 
@@ -25,6 +27,7 @@ class HealthResponse(BaseModel):
     version: str
     environment: str
     model_gateway_configured: bool
+    device_gateway_configured: bool
 
 
 class TextGenerationRequest(BaseModel):
@@ -52,6 +55,7 @@ async def health(settings: SettingsDependency) -> HealthResponse:
         version=__version__,
         environment=settings.simorgh_env,
         model_gateway_configured=settings.has_model_credentials,
+        device_gateway_configured=settings.has_device_gateway_credentials,
     )
 
 

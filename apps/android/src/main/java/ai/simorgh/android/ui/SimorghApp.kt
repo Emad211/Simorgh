@@ -9,10 +9,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,13 +25,36 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import ai.simorgh.android.R
 import ai.simorgh.android.device.DeviceCapabilities
+import ai.simorgh.android.transport.ConnectionPhase
+import ai.simorgh.android.transport.ConnectionState
 
 @Composable
-fun SimorghApp(capabilities: DeviceCapabilities) {
+fun SimorghApp(viewModel: SimorghViewModel) {
+    val state = viewModel.uiState.value
+    SimorghApp(
+        state = state,
+        onEndpointChanged = viewModel::updateEndpoint,
+        onDeviceTokenChanged = viewModel::updateDeviceToken,
+        onConnect = viewModel::connect,
+        onDisconnect = viewModel::disconnect,
+    )
+}
+
+@Composable
+private fun SimorghApp(
+    state: SimorghUiState,
+    onEndpointChanged: (String) -> Unit,
+    onDeviceTokenChanged: (String) -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(
@@ -44,30 +72,118 @@ fun SimorghApp(capabilities: DeviceCapabilities) {
                     style = MaterialTheme.typography.titleMedium,
                 )
 
-                ConnectionCard()
-                DeviceCard(capabilities)
+                ConnectionCard(
+                    endpoint = state.endpoint,
+                    token = state.deviceToken,
+                    connectionState = state.connectionState,
+                    lastProtocolEvent = state.lastProtocolEvent,
+                    onEndpointChanged = onEndpointChanged,
+                    onDeviceTokenChanged = onDeviceTokenChanged,
+                    onConnect = onConnect,
+                    onDisconnect = onDisconnect,
+                )
+                DeviceCard(state.capabilities)
             }
         }
     }
 }
 
 @Composable
-private fun ConnectionCard() {
+private fun ConnectionCard(
+    endpoint: String,
+    token: String,
+    connectionState: ConnectionState,
+    lastProtocolEvent: String?,
+    onEndpointChanged: (String) -> Unit,
+    onDeviceTokenChanged: (String) -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    val isBusyOrConnected = connectionState.phase in setOf(
+        ConnectionPhase.CONNECTING,
+        ConnectionPhase.REGISTERING,
+        ConnectionPhase.CONNECTED,
+        ConnectionPhase.RETRY_WAIT,
+    )
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = stringResource(R.string.connection_disconnected),
-                style = MaterialTheme.typography.titleMedium,
+                text = stringResource(R.string.connection_title),
+                style = MaterialTheme.typography.titleLarge,
             )
             Text(
-                text = stringResource(R.string.connection_hint),
-                style = MaterialTheme.typography.bodyMedium,
+                text = connectionStateLabel(connectionState),
+                style = MaterialTheme.typography.titleMedium,
             )
+
+            OutlinedTextField(
+                value = endpoint,
+                onValueChange = onEndpointChanged,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isBusyOrConnected,
+                singleLine = true,
+                label = { Text(stringResource(R.string.endpoint_label)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = onDeviceTokenChanged,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isBusyOrConnected,
+                singleLine = true,
+                label = { Text(stringResource(R.string.device_token_label)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                visualTransformation = PasswordVisualTransformation(),
+                textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Ltr),
+                supportingText = { Text(stringResource(R.string.device_token_hint)) },
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Button(
+                    onClick = onConnect,
+                    enabled = !isBusyOrConnected,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.connect_action))
+                }
+                OutlinedButton(
+                    onClick = onDisconnect,
+                    enabled = connectionState.phase != ConnectionPhase.DISCONNECTED,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.disconnect_action))
+                }
+            }
+
+            connectionState.detail?.takeIf { it.isNotBlank() }?.let { detail ->
+                Text(text = detail, style = MaterialTheme.typography.bodySmall)
+            }
+            lastProtocolEvent?.takeIf { it.isNotBlank() }?.let { event ->
+                Text(text = event, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
+}
+
+@Composable
+private fun connectionStateLabel(state: ConnectionState): String = when (state.phase) {
+    ConnectionPhase.DISCONNECTED -> stringResource(R.string.connection_disconnected)
+    ConnectionPhase.CONNECTING -> stringResource(R.string.connection_connecting)
+    ConnectionPhase.REGISTERING -> stringResource(R.string.connection_registering)
+    ConnectionPhase.CONNECTED -> stringResource(R.string.connection_connected)
+    ConnectionPhase.RETRY_WAIT -> stringResource(
+        R.string.connection_retry_wait,
+        state.reconnectAttempt,
+    )
+    ConnectionPhase.FAILED -> stringResource(R.string.connection_failed)
 }
 
 @Composable
