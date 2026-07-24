@@ -52,8 +52,9 @@ class AndroidActionRouterTest {
         assertEquals(ActionCommandAckStatus.ACCEPTED, receipt.status)
         assertEquals(ActionLedgerPhase.COMPLETED, persisted.phase)
         assertEquals(ActionOutcome.SUCCEEDED, persisted.result?.outcome)
-        assertEquals(1, deliveries.size)
-        assertEquals(persisted.resultMessageId, deliveries.single().resultMessageId)
+        assertEquals(2, deliveries.size)
+        assertEquals(1, deliveries.map(PendingActionResultDelivery::resultMessageId).distinct().size)
+        assertEquals(persisted.resultMessageId, deliveries.first().resultMessageId)
     }
 
     @Test
@@ -99,11 +100,14 @@ class AndroidActionRouterTest {
         val firstCommand = command()
         router.receiveCommand(COMMAND_ENVELOPE_ID, firstCommand)
 
-        val blocked = router.receiveCommand(SECOND_COMMAND_ENVELOPE_ID, command(
-            commandId = SECOND_COMMAND_ID,
-            actionId = SECOND_ACTION_ID,
-        ))
-        val firstDelivery = deliveries.single()
+        val blocked = router.receiveCommand(
+            SECOND_COMMAND_ENVELOPE_ID,
+            command(
+                commandId = SECOND_COMMAND_ID,
+                actionId = SECOND_ACTION_ID,
+            ),
+        )
+        val firstDelivery = deliveries.first()
         val acknowledgement = DeviceActionResultAckPayload(
             commandId = firstCommand.commandId,
             actionId = firstCommand.actionId,
@@ -112,6 +116,8 @@ class AndroidActionRouterTest {
         )
 
         assertEquals(ActionCommandAckStatus.BUSY, blocked.status)
+        assertEquals(2, deliveries.size)
+        assertEquals(1, deliveries.map(PendingActionResultDelivery::resultMessageId).distinct().size)
         assertTrue(
             router.acknowledgeResult(
                 acknowledgement = acknowledgement,
