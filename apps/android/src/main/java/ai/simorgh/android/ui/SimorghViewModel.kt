@@ -47,11 +47,15 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
     private val accessibilityStatusSubscription: Closeable =
         AccessibilityObservationBus.subscribe { observerState ->
             mainHandler.post {
-                mutableUiState.value = mutableUiState.value.copy(
+                val currentState = mutableUiState.value
+                val observedSnapshot = observerState.latestSnapshot
+                    ?.takeUnless { it.activePackage == application.packageName }
+                    ?: currentState.accessibilitySnapshot
+                mutableUiState.value = currentState.copy(
                     accessibilityEnabled = observerState.serviceConnected ||
                         AccessibilityServiceStatus.isEnabled(application),
                     accessibilityServiceConnected = observerState.serviceConnected,
-                    accessibilitySnapshot = observerState.latestSnapshot,
+                    accessibilitySnapshot = observedSnapshot,
                     accessibilityError = observerState.lastError,
                 )
             }
