@@ -16,9 +16,12 @@ The application currently contains:
 - an ongoing status notification with an explicit Stop action;
 - Android Keystore-backed encryption for the private device token;
 - optional restoration after device boot;
+- a protected AccessibilityService that observes active app/window structure;
+- bounded immutable snapshots with password-field redaction;
+- a local Accessibility inspector for OEM and app diagnostics;
 - an installable Compose application boundary.
 
-Accessibility observation, command delivery, execution, and screen capture are implemented in subsequent work items so each boundary can be tested independently.
+Command delivery, screenshot transport, selector resolution, and action execution are implemented in subsequent work items so each boundary can be tested independently.
 
 ## Supported Android versions
 
@@ -81,10 +84,23 @@ Enter the same `SIMORGH_DEVICE_TOKEN` in the app and start the foreground servic
 
 The optional start-on-boot switch is separate from ordinary sticky-service recovery. Stopping the service explicitly disables recovery until the user starts it again.
 
+## Enable the observer
+
+Open Simorgh and tap **بازکردن تنظیمات Accessibility**, then enable **مشاهده‌گر صفحه سیمرغ**. Return to Simorgh to inspect the latest external-app snapshot.
+
+The observer:
+
+- never stores Android node handles;
+- caps nodes, depth, children, actions, and text length;
+- strips semantic text from password nodes;
+- ignores self-snapshots in the inspector;
+- performs no clicks, typing, gestures, or global actions in this increment.
+
 See:
 
 - [`docs/DEVICE_TRANSPORT.md`](../../docs/DEVICE_TRANSPORT.md) for the protocol;
-- [`docs/ANDROID_ALWAYS_ON.md`](../../docs/ANDROID_ALWAYS_ON.md) for lifecycle, Samsung One UI setup, and validation scenarios.
+- [`docs/ANDROID_ALWAYS_ON.md`](../../docs/ANDROID_ALWAYS_ON.md) for lifecycle and Samsung setup;
+- [`docs/ANDROID_ACCESSIBILITY_OBSERVER.md`](../../docs/ANDROID_ACCESSIBILITY_OBSERVER.md) for the snapshot schema and validation plan.
 
 ## Package
 
@@ -101,3 +117,4 @@ ai.simorgh.android
 - New Android APIs must be guarded by SDK checks and have a documented fallback.
 - Production transport must use `wss://`; local `ws://` is debug-only.
 - A permanent connection must remain user-visible and immediately stoppable.
+- Accessibility nodes are short-lived input data, never durable action handles.

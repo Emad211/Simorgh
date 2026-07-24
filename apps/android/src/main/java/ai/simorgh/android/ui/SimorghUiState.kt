@@ -1,5 +1,6 @@
 package ai.simorgh.android.ui
 
+import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.transport.ConnectionState
 
@@ -11,4 +12,8 @@ data class SimorghUiState(
     val startOnBootEnabled: Boolean = false,
     val connectionState: ConnectionState = ConnectionState.Disconnected,
     val lastProtocolEvent: String? = null,
+    val accessibilityEnabled: Boolean = false,
+    val accessibilityServiceConnected: Boolean = false,
+    val accessibilitySnapshot: AccessibilitySnapshot? = null,
+    val accessibilityError: String? = null,
 )

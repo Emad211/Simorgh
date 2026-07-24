@@ -6,6 +6,8 @@ import android.os.Looper
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
+import ai.simorgh.android.accessibility.AccessibilityObservationBus
+import ai.simorgh.android.accessibility.AccessibilityServiceStatus
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.service.ConnectionStatusBus
 import ai.simorgh.android.service.SecureConnectionStore
@@ -27,11 +29,12 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
             endpoint = secureConnectionStore.load()?.endpoint
                 ?: connectionPreferences.loadEndpoint(),
             startOnBootEnabled = secureConnectionStore.isStartOnBootEnabled(),
+            accessibilityEnabled = AccessibilityServiceStatus.isEnabled(application),
         ),
     )
     val uiState: State<SimorghUiState> = mutableUiState
 
-    private val statusSubscription: Closeable = ConnectionStatusBus.subscribe { snapshot ->
+    private val connectionStatusSubscription: Closeable = ConnectionStatusBus.subscribe { snapshot ->
         mainHandler.post {
             mutableUiState.value = mutableUiState.value.copy(
                 serviceRunning = snapshot.serviceRunning,
@@ -40,6 +43,23 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
             )
         }
     }
+
+    private val accessibilityStatusSubscription: Closeable =
+        AccessibilityObservationBus.subscribe { observerState ->
+            mainHandler.post {
+                val currentState = mutableUiState.value
+                val observedSnapshot = observerState.latestSnapshot
+                    ?.takeUnless { it.activePackage == application.packageName }
+                    ?: currentState.accessibilitySnapshot
+                mutableUiState.value = currentState.copy(
+                    accessibilityEnabled = observerState.serviceConnected ||
+                        AccessibilityServiceStatus.isEnabled(application),
+                    accessibilityServiceConnected = observerState.serviceConnected,
+                    accessibilitySnapshot = observedSnapshot,
+                    accessibilityError = observerState.lastError,
+                )
+            }
+        }
 
     fun updateEndpoint(endpoint: String) {
         mutableUiState.value = mutableUiState.value.copy(endpoint = endpoint)
@@ -52,6 +72,16 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
     fun updateStartOnBoot(enabled: Boolean) {
         secureConnectionStore.setStartOnBootEnabled(enabled)
         mutableUiState.value = mutableUiState.value.copy(startOnBootEnabled = enabled)
+    }
+
+    fun refreshAccessibilityStatus() {
+        mutableUiState.value = mutableUiState.value.copy(
+            accessibilityEnabled = AccessibilityServiceStatus.isEnabled(getApplication()),
+        )
+    }
+
+    fun openAccessibilitySettings() {
+        AccessibilityServiceStatus.openSystemSettings(getApplication())
     }
 
     fun connect() {
@@ -88,7 +118,8 @@ class SimorghViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
-        statusSubscription.close()
+        connectionStatusSubscription.close()
+        accessibilityStatusSubscription.close()
         super.onCleared()
     }
 }
