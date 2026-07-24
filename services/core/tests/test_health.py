@@ -14,3 +14,4 @@ def test_health_endpoint() -> None:
     assert payload["version"] == "0.1.0"
     assert payload["environment"] in {"development", "test", "production"}
     assert isinstance(payload["model_gateway_configured"], bool)
+    assert isinstance(payload["device_gateway_configured"], bool)
