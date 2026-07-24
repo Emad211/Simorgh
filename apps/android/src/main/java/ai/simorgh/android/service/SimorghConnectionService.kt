@@ -49,7 +49,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            connectionStore.setAutoResumeEnabled(false)
+            connectionStore.setConnectionEnabled(false)
             stopConnectionAndService()
             return START_NOT_STICKY
         }
@@ -63,7 +63,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
 
         val config = when (intent?.action) {
             ACTION_START -> configFromIntent(intent)
-            else -> connectionStore.loadForAutoResume()
+            else -> connectionStore.loadForServiceResume()
         }
 
         if (config == null) {
@@ -73,7 +73,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         }
 
         if (intent?.action == ACTION_START) {
-            connectionStore.save(config, autoResume = true)
+            connectionStore.save(config, connectionEnabled = true)
         }
         connectionClient.connect(config)
         return START_STICKY
@@ -252,7 +252,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         }
 
         fun stop(context: Context) {
-            SecureConnectionStore(context).setAutoResumeEnabled(false)
+            SecureConnectionStore(context).setConnectionEnabled(false)
             context.stopService(Intent(context, SimorghConnectionService::class.java))
         }
     }
