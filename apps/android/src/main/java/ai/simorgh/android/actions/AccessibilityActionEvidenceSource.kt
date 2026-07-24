@@ -147,10 +147,8 @@ class AccessibilityActionEvidenceSource(
             }
 
             val localSnapshots: List<AccessibilitySnapshot>
-            val acknowledgements: List<AcknowledgedAccessibilityObservation>
             synchronized(monitor) {
                 localSnapshots = localHistory.toList()
-                acknowledgements = acknowledgementHistory.toList()
             }
 
             localSnapshots.forEach { local ->
@@ -178,26 +176,23 @@ class AccessibilityActionEvidenceSource(
                 }
             }
 
-            val qualifyingAcknowledgement = acknowledgements.lastOrNull { evidence ->
-                evidence.capturedAtMs >= launchedAtMs &&
-                    evidence.snapshotId != before.snapshotId &&
-                    (
-                        evidence.streamId != before.streamId ||
-                            evidence.sequence > before.sequence
-                        ) &&
-                    evidence.stateFingerprint == stableFingerprint
-            }
             if (
                 stableSamples >= policy.stableSamples &&
-                qualifyingAcknowledgement != null &&
+                stableFingerprint != null &&
                 latestEvaluation?.outcome == PredicateOutcome.SATISFIED
             ) {
-                return PostActionEvidenceResult(
-                    status = PostActionEvidenceStatus.SATISFIED,
-                    observation = qualifyingAcknowledgement,
-                    evaluation = latestEvaluation,
-                    detail = "postconditions satisfied by stable local samples and Core ACK",
-                )
+                val verified = synchronized(monitor) {
+                    verifiedResultLocked(
+                        before = before,
+                        launchedAtMs = launchedAtMs,
+                        policy = policy,
+                        processedSnapshotIds = processedSnapshotIds,
+                        stableFingerprint = stableFingerprint,
+                    )
+                }
+                if (verified != null) {
+                    return verified
+                }
             }
 
             val remainingMillis = remainingMillis(deadlineNanos)
@@ -243,7 +238,7 @@ class AccessibilityActionEvidenceSource(
                 status = PostActionEvidenceStatus.UNSATISFIED,
                 evaluation = latestEvaluation,
                 detail = if (latestEvaluation?.outcome == PredicateOutcome.SATISFIED) {
-                    "local postconditions were satisfied but matching Core ACK did not arrive"
+                    "local postconditions were satisfied but matching current Core ACK did not arrive"
                 } else {
                     "postconditions were not satisfied before timeout"
                 },
@@ -261,6 +256,46 @@ class AccessibilityActionEvidenceSource(
         synchronized(monitor) {
             monitor.notifyAll()
         }
+    }
+
+    private fun verifiedResultLocked(
+        before: AcknowledgedAccessibilityObservation,
+        launchedAtMs: Long,
+        policy: AndroidVerificationPolicy,
+        processedSnapshotIds: Set<String>,
+        stableFingerprint: String,
+    ): PostActionEvidenceResult? {
+        val latestLocal = localHistory.peekLast() ?: return null
+        if (
+            latestLocal.snapshotId !in processedSnapshotIds ||
+            latestLocal.snapshotId == before.snapshotId ||
+            latestLocal.capturedAtMs < launchedAtMs ||
+            AccessibilitySnapshotFingerprint.calculate(latestLocal) != stableFingerprint
+        ) {
+            return null
+        }
+
+        val finalEvaluation = UiPostconditionEvaluator.evaluate(latestLocal, policy)
+        if (finalEvaluation.outcome != PredicateOutcome.SATISFIED) {
+            return null
+        }
+
+        val qualifyingAcknowledgement = acknowledgementHistory.lastOrNull { evidence ->
+            evidence.capturedAtMs >= launchedAtMs &&
+                evidence.snapshotId != before.snapshotId &&
+                (
+                    evidence.streamId != before.streamId ||
+                        evidence.sequence > before.sequence
+                    ) &&
+                evidence.stateFingerprint == stableFingerprint
+        } ?: return null
+
+        return PostActionEvidenceResult(
+            status = PostActionEvidenceStatus.SATISFIED,
+            observation = qualifyingAcknowledgement,
+            evaluation = finalEvaluation,
+            detail = "postconditions satisfied by stable current local samples and Core ACK",
+        )
     }
 
     private fun appendLocalLocked(snapshot: AccessibilitySnapshot) {
