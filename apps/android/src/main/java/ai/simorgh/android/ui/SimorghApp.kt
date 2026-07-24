@@ -18,10 +18,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalLayoutDirection
 import ai.simorgh.android.R
 import ai.simorgh.android.device.DeviceCapabilities
 
@@ -88,6 +88,11 @@ private fun DeviceCard(capabilities: DeviceCapabilities) {
             StatusRow(
                 label = stringResource(R.string.android_label),
                 value = "${capabilities.androidRelease} (API ${capabilities.sdkInt})",
+            )
+            HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
+            StatusRow(
+                label = stringResource(R.string.support_tier_label),
+                value = capabilities.supportTier.name,
             )
             HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
             StatusRow(
