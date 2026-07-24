@@ -11,7 +11,7 @@ from simorgh_core.devices.actions import (
     OpenAppOperation,
     PredicateOutcome,
 )
-from simorgh_core.devices.protocol import DeviceObservationPayload
+from simorgh_core.devices.registry import StoredObservationEvidence
 
 
 class AndroidActionSemanticError(ValueError):
@@ -48,9 +48,10 @@ def validate_result_semantics(
     *,
     command: AndroidActionCommand,
     result: AndroidActionResult,
-    latest_observation: DeviceObservationPayload | None,
+    before_evidence: StoredObservationEvidence | None,
+    after_evidence: StoredObservationEvidence | None,
 ) -> AndroidActionResult:
-    """Verify device-reported result evidence against the original command and Core state."""
+    """Verify device-reported result evidence against the command and Core ACK history."""
 
     if result.command_id != command.command_id:
         raise AndroidActionSemanticError("result command_id does not match the original command")
@@ -74,6 +75,11 @@ def validate_result_semantics(
         )
 
     _validate_before_reference(command=command, before=before)
+    _require_known_observation(
+        label="before",
+        reference=before,
+        evidence=before_evidence,
+    )
 
     if after.active_package != operation.package_name:
         raise AndroidActionSemanticError(
@@ -108,14 +114,21 @@ def validate_result_semantics(
     else:
         _require_newer_after_reference(before=before, after=after)
 
-    if latest_observation is None:
-        raise AndroidActionSemanticError(
-            "Core has no current observation to verify the successful open_app result"
-        )
-    _require_reference_matches_observation(
+    _require_known_observation(
+        label="after",
         reference=after,
-        observation=latest_observation,
+        evidence=after_evidence,
     )
+
+    if (
+        result.attempts == 1
+        and before_evidence is not None
+        and after_evidence is not None
+        and after_evidence.received_at_ms < before_evidence.received_at_ms
+    ):
+        raise AndroidActionSemanticError(
+            "one-attempt open_app after observation was acknowledged before before observation"
+        )
     return result
 
 
@@ -174,28 +187,33 @@ def _require_newer_after_reference(
         )
 
 
-def _require_reference_matches_observation(
+def _require_known_observation(
     *,
+    label: str,
     reference: ObservationReference,
-    observation: DeviceObservationPayload,
+    evidence: StoredObservationEvidence | None,
 ) -> None:
-    snapshot = observation.snapshot
+    if evidence is None:
+        raise AndroidActionSemanticError(
+            f"successful open_app {label} observation is not in Core acknowledged history"
+        )
+
     mismatches: list[str] = []
-    if reference.stream_id != observation.stream_id:
+    if reference.stream_id != evidence.stream_id:
         mismatches.append("stream_id")
-    if reference.sequence != observation.sequence:
+    if reference.sequence != evidence.sequence:
         mismatches.append("sequence")
-    if reference.snapshot_id != snapshot.snapshot_id:
+    if reference.snapshot_id != evidence.snapshot_id:
         mismatches.append("snapshot_id")
-    if reference.state_fingerprint != observation.state_fingerprint:
+    if reference.state_fingerprint != evidence.state_fingerprint:
         mismatches.append("state_fingerprint")
-    if reference.captured_at_ms != snapshot.captured_at_ms:
+    if reference.captured_at_ms != evidence.captured_at_ms:
         mismatches.append("captured_at_ms")
-    if reference.active_package != snapshot.active_package:
+    if reference.active_package != evidence.active_package:
         mismatches.append("active_package")
 
     if mismatches:
         raise AndroidActionSemanticError(
-            "successful open_app after observation does not match Core state: "
+            f"successful open_app {label} observation does not match Core evidence: "
             + ", ".join(mismatches)
         )
