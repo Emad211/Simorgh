@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +14,8 @@ app = FastAPI(
     version=__version__,
     description="Core orchestration API for the Simorgh personal agent operating system.",
 )
+
+SettingsDependency = Annotated[Settings, Depends(get_settings)]
 
 
 class HealthResponse(BaseModel):
@@ -42,7 +46,7 @@ class TextGenerationResponse(BaseModel):
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health(settings: Settings = Depends(get_settings)) -> HealthResponse:
+async def health(settings: SettingsDependency) -> HealthResponse:
     return HealthResponse(
         status="ok",
         version=__version__,
@@ -54,7 +58,7 @@ async def health(settings: Settings = Depends(get_settings)) -> HealthResponse:
 @app.post("/v1/model/text", response_model=TextGenerationResponse)
 async def generate_text(
     payload: TextGenerationRequest,
-    settings: Settings = Depends(get_settings),
+    settings: SettingsDependency,
 ) -> TextGenerationResponse:
     try:
         provider = AvalAIProvider(settings)
