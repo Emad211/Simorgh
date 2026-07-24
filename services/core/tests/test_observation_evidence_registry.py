@@ -12,7 +12,11 @@ from simorgh_core.devices.protocol import (
     DeviceRegistrationPayload,
     calculate_accessibility_state_fingerprint,
 )
-from simorgh_core.devices.registry import DeviceRegistry, DeviceSession
+from simorgh_core.devices.registry import (
+    DeviceRegistry,
+    DeviceSession,
+    StoredObservationEvidence,
+)
 
 DEVICE_ID = UUID("11111111-1111-1111-1111-111111111111")
 STREAM_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -71,7 +75,7 @@ async def _record(
 async def _lookup(
     registry: DeviceRegistry,
     observation: DeviceObservationPayload,
-):
+) -> StoredObservationEvidence | None:
     return await registry.observation_evidence(
         device_id=DEVICE_ID,
         stream_id=observation.stream_id,
