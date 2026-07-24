@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,15 +12,27 @@ from simorgh_core.config import get_settings
 from simorgh_core.devices.action_semantics import (
     AndroidActionSemanticError,
     validate_dispatch_semantics,
+    validate_result_semantics,
 )
 from simorgh_core.devices.actions import (
+    ActionFailureCode,
+    ActionOutcome,
     ActivePackageEqualsPredicate,
     AndroidActionCommand,
+    AndroidActionResult,
     AndroidNodeSelector,
     AndroidVerificationPolicy,
     NodeExistsPredicate,
     ObservationPrecondition,
+    ObservationReference,
     OpenAppOperation,
+    PredicateEvidence,
+    PredicateOutcome,
+)
+from simorgh_core.devices.protocol import (
+    AccessibilitySnapshotPayload,
+    DeviceObservationPayload,
+    calculate_accessibility_state_fingerprint,
 )
 
 TARGET_PACKAGE = "com.example.target"
@@ -45,7 +57,73 @@ def _command(*, predicates: list[object]) -> AndroidActionCommand:
         deadline_at_ms=now_ms + 30_000,
         precondition=ObservationPrecondition(),
         operation=OpenAppOperation(package_name=TARGET_PACKAGE),
-        verification=AndroidVerificationPolicy(predicates=predicates),
+        verification=AndroidVerificationPolicy(predicates=predicates),  # type: ignore[arg-type]
+    )
+
+
+def _observation(
+    *,
+    active_package: str = TARGET_PACKAGE,
+    stream_id: UUID | None = None,
+    sequence: int = 7,
+    captured_at_ms: int = 2_000,
+) -> DeviceObservationPayload:
+    snapshot = AccessibilitySnapshotPayload(
+        snapshot_id=uuid4(),
+        captured_at_ms=captured_at_ms,
+        active_package=active_package,
+        active_window_id=None,
+        root_node_id=None,
+        windows=[],
+        nodes=[],
+        truncated=False,
+        truncation_reasons=[],
+        max_depth_observed=0,
+    )
+    return DeviceObservationPayload(
+        stream_id=stream_id or uuid4(),
+        sequence=sequence,
+        state_fingerprint=calculate_accessibility_state_fingerprint(snapshot),
+        snapshot=snapshot,
+    )
+
+
+def _reference(observation: DeviceObservationPayload) -> ObservationReference:
+    return ObservationReference(
+        stream_id=observation.stream_id,
+        sequence=observation.sequence,
+        snapshot_id=observation.snapshot.snapshot_id,
+        state_fingerprint=observation.state_fingerprint,
+        captured_at_ms=observation.snapshot.captured_at_ms,
+        active_package=observation.snapshot.active_package,
+    )
+
+
+def _success_result(
+    *,
+    command: AndroidActionCommand,
+    before: ObservationReference,
+    after: ObservationReference,
+    attempts: int = 0,
+) -> AndroidActionResult:
+    return AndroidActionResult(
+        command_id=command.command_id,
+        action_id=command.action_id,
+        outcome=ActionOutcome.SUCCEEDED,
+        failure_code=ActionFailureCode.NONE,
+        started_at_ms=2_000,
+        finished_at_ms=2_010,
+        attempts=attempts,
+        before_observation=before,
+        after_observation=after,
+        predicates=[
+            PredicateEvidence(
+                kind="active_package_equals",
+                outcome=PredicateOutcome.SATISFIED,
+                detail=f"active package={TARGET_PACKAGE} expected={TARGET_PACKAGE}",
+            )
+        ],
+        detail="fixture success",
     )
 
 
@@ -110,3 +188,104 @@ def test_operator_api_rejects_semantically_invalid_open_app_before_broker(
 
     assert response.status_code == 400
     assert "must match operation package_name" in response.json()["detail"]
+
+
+def test_successful_open_app_result_matches_command_and_current_core_observation() -> None:
+    command = _command(
+        predicates=[ActivePackageEqualsPredicate(package_name=TARGET_PACKAGE)]
+    )
+    observation = _observation()
+    reference = _reference(observation)
+    result = _success_result(
+        command=command,
+        before=reference,
+        after=reference,
+        attempts=0,
+    )
+
+    assert validate_result_semantics(
+        command=command,
+        result=result,
+        latest_observation=observation,
+    ) is result
+
+
+@pytest.mark.parametrize(
+    "mutation, expected_message",
+    [
+        ("missing_after", "requires before and after"),
+        ("wrong_package", "must show the target package"),
+        ("missing_predicates", "does not match the verification policy"),
+        ("unsatisfied", "every predicate outcome"),
+        ("wrong_latest", "does not match Core state"),
+    ],
+)
+def test_successful_open_app_result_rejects_unverifiable_evidence(
+    mutation: str,
+    expected_message: str,
+) -> None:
+    command = _command(
+        predicates=[ActivePackageEqualsPredicate(package_name=TARGET_PACKAGE)]
+    )
+    observation = _observation()
+    reference = _reference(observation)
+    result = _success_result(
+        command=command,
+        before=reference,
+        after=reference,
+        attempts=0,
+    )
+    latest = observation
+
+    if mutation == "missing_after":
+        result = result.model_copy(update={"after_observation": None})
+    elif mutation == "wrong_package":
+        result = result.model_copy(
+            update={
+                "after_observation": reference.model_copy(
+                    update={"active_package": OTHER_PACKAGE}
+                )
+            }
+        )
+    elif mutation == "missing_predicates":
+        result = result.model_copy(update={"predicates": []})
+    elif mutation == "unsatisfied":
+        result = result.model_copy(
+            update={
+                "predicates": [
+                    result.predicates[0].model_copy(
+                        update={"outcome": PredicateOutcome.UNSATISFIED}
+                    )
+                ]
+            }
+        )
+    elif mutation == "wrong_latest":
+        latest = _observation(active_package=OTHER_PACKAGE)
+
+    with pytest.raises(AndroidActionSemanticError, match=expected_message):
+        validate_result_semantics(
+            command=command,
+            result=result,
+            latest_observation=latest,
+        )
+
+
+def test_one_attempt_open_app_success_requires_newer_after_evidence() -> None:
+    command = _command(
+        predicates=[ActivePackageEqualsPredicate(package_name=TARGET_PACKAGE)]
+    )
+    observation = _observation()
+    reference = _reference(observation)
+    result = _success_result(
+        command=command,
+        before=reference,
+        after=reference,
+        attempts=1,
+    )
+
+    with pytest.raises(AndroidActionSemanticError, match="newer after-observation"):
+        validate_result_semantics(
+            command=command,
+            result=result,
+            latest_observation=observation,
+        )
