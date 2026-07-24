@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     simorgh_host: str = "127.0.0.1"
     simorgh_port: int = 8080
     simorgh_device_token: SecretStr | None = None
+    simorgh_operator_token: SecretStr | None = None
 
     avalai_api_key: SecretStr | None = None
     avalai_base_url: str = "https://api.avalai.ir/v1"
@@ -33,6 +34,10 @@ class Settings(BaseSettings):
     @property
     def has_device_gateway_credentials(self) -> bool:
         return bool(self.simorgh_device_token and self.simorgh_device_token.get_secret_value())
+
+    @property
+    def has_operator_credentials(self) -> bool:
+        return bool(self.simorgh_operator_token and self.simorgh_operator_token.get_secret_value())
 
 
 @lru_cache(maxsize=1)
