@@ -16,9 +16,18 @@ MessageType = Literal[
     "device.heartbeat_ack",
     "device.observation",
     "device.observation_ack",
+    "device.action_command",
+    "device.action_command_ack",
+    "device.action_result",
+    "device.action_result_ack",
+    "device.action_cancel",
+    "device.action_cancel_ack",
     "device.error",
 ]
 ObservationAckStatus = Literal["accepted", "unchanged", "duplicate", "stale"]
+ActionCommandAckStatus = Literal["accepted", "duplicate", "busy", "expired", "rejected"]
+ActionResultAckStatus = Literal["accepted", "duplicate", "unknown_action", "rejected"]
+ActionCancelAckStatus = Literal["accepted", "duplicate", "not_found", "completed"]
 TruncationReason = Literal["node_limit", "depth_limit", "child_limit"]
 
 
@@ -281,6 +290,43 @@ class DeviceObservationAckPayload(BaseModel):
     sequence: int = Field(ge=0)
     snapshot_id: UUID
     status: ObservationAckStatus
+    received_at_ms: int = Field(ge=0)
+
+
+class DeviceActionCommandAckPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: UUID
+    action_id: UUID
+    status: ActionCommandAckStatus
+    received_at_ms: int = Field(ge=0)
+    detail: str = Field(default="", max_length=1_000)
+
+
+class DeviceActionResultAckPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: UUID
+    action_id: UUID
+    status: ActionResultAckStatus
+    received_at_ms: int = Field(ge=0)
+    detail: str = Field(default="", max_length=1_000)
+
+
+class DeviceActionCancelPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: UUID
+    action_id: UUID
+    reason: str = Field(default="", max_length=1_000)
+
+
+class DeviceActionCancelAckPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: UUID
+    action_id: UUID
+    status: ActionCancelAckStatus
     received_at_ms: int = Field(ge=0)
 
 
