@@ -14,7 +14,7 @@ It is not a natural-language agent. Planning happens in Simorgh Core. The phone 
 No fresh unambiguous target + no verifiable postcondition = no side effect
 ```
 
-A Boolean returned by `AccessibilityNodeInfo.performAction`, `dispatchGesture`, `performGlobalAction`, or `startActivity` is acceptance evidence only. It is never the final success criterion. Android documentation notes that window content can change at any time and node information can be stale; the executor therefore reacquires the current tree immediately before a node action and waits for a new bounded snapshot afterward.
+A Boolean returned by `AccessibilityNodeInfo.performAction`, `dispatchGesture`, `performGlobalAction`, or `startActivity` is acceptance evidence only. It is never the final success criterion. Android window content can change at any time and node information can become stale; the executor therefore reacquires the current tree immediately before a node action and waits for a new bounded snapshot afterward.
 
 ## Command lifecycle
 
@@ -28,7 +28,7 @@ Android validates schema and deadline
 fresh observation precondition
         |
         v
-resolve target selector
+resolve target selector in ACTION_TARGET mode
         |
         +-- not found / ambiguous --> BLOCKED
         |
@@ -39,7 +39,7 @@ execute exactly one operation
 wait for post-action observation
         |
         v
-evaluate deterministic predicates
+evaluate deterministic predicates in VERIFICATION mode
         |
         +-- satisfied ----> SUCCEEDED
         +-- unsatisfied --> FAILED
@@ -69,6 +69,22 @@ Every command contains:
 - one verification policy with 1–10 typed predicates;
 - a verification timeout of 250–30,000 ms;
 - 1–3 required stable samples.
+
+### Independent validation
+
+Core validates every command and result with strict Pydantic models. Android validates the decoded payload again before it reaches the executor. The Android validator checks:
+
+- schema version;
+- UUID syntax;
+- command deadline and lifetime;
+- observation stream, sequence, fingerprint, package, and age limits;
+- operation-specific field lengths and collection sizes;
+- selector identity, field lengths, bounds, required fields, and capabilities;
+- predicate-specific fields;
+- verification timeout and stable-sample count;
+- result timestamps, attempt count, evidence sizes, hashes, and failure-code consistency.
+
+The Android copy is deliberately independent of Core validation. The execution boundary must not assume that a payload is safe merely because a remote process previously accepted it.
 
 ### Observation precondition
 
@@ -127,15 +143,21 @@ At least one identity field is mandatory. If the producer does not declare a req
 
 Weights are code-owned and versioned. A model cannot alter them.
 
-### Candidate exclusion
+### Candidate eligibility
 
-A node is excluded before scoring when:
+All candidates are excluded before scoring when:
 
-- it is not visible;
-- it is disabled;
-- its effective package differs;
+- they are not visible;
+- their effective package differs;
 - a required capability is false;
 - a required field does not match.
+
+The resolver has two explicit modes:
+
+- **`ACTION_TARGET`** also excludes disabled nodes, because a disabled control must never become an action target.
+- **`VERIFICATION`** allows visible disabled nodes, because a postcondition such as `enabled=false` must be verifiable from the real node.
+
+This distinction prevents an important false negative without weakening execution targeting.
 
 ### Ambiguity
 
@@ -197,6 +219,8 @@ A result can include:
 - start and finish times;
 - bounded human-readable detail.
 
+A successful result must use `failure_code=none`. Every non-successful result must contain a typed non-`none` failure code. Android and Core both enforce this invariant.
+
 ## Failure codes
 
 - `invalid_command`
@@ -215,20 +239,20 @@ A result can include:
 
 ### Open application
 
-The executor will prefer an explicit package-targeted launch and catch `ActivityNotFoundException`. On Android 13/API 33 and newer, `PackageManager.getLaunchIntentSenderForPackage` is available and avoids package-visibility restrictions. Earlier versions use package-targeted launcher intents and a documented fallback.
+The executor will prefer an explicit package-targeted launch and catch `ActivityNotFoundException`. On Android 13/API 33 and newer, `PackageManager.getLaunchIntentSenderForPackage` is available. Earlier versions use package-targeted launcher intents and a documented fallback.
 
 Verification: a fresh snapshot reports the requested active package.
 
 ### Click
 
 1. Reacquire the active Accessibility tree.
-2. Resolve the selector against a fresh immutable snapshot.
+2. Resolve the selector against a fresh immutable snapshot in `ACTION_TARGET` mode.
 3. Traverse the live tree again to the selected structural identity.
 4. Request `ACTION_CLICK` when exposed.
 5. If the action is rejected and the command explicitly permits it, dispatch a tap at the visible bounds center.
-6. Verify declared postconditions from a newer snapshot.
+6. Verify declared postconditions from a newer snapshot in `VERIFICATION` mode.
 
-Android documents direct gesture dispatch as a fallback because some apps incorrectly omit or fail `ACTION_CLICK`.
+Direct gesture dispatch is a fallback for applications that omit or reject a semantic click action. It is never used to resolve an ambiguous target.
 
 ### Set text
 
@@ -260,11 +284,13 @@ Back, Home, and Recents use `performGlobalAction`. On API 30 and newer, availabl
 - selector score and signal evidence;
 - equal-score ambiguity;
 - required-field mismatch;
-- hidden and disabled exclusion;
+- hidden and disabled exclusion in action mode;
+- visible disabled-node resolution in verification mode;
 - bounds overlap;
 - predicate satisfaction, failure, and indeterminate states;
 - strict polymorphic JSON round trips;
-- command deadline and size bounds.
+- command UUID, deadline, length, and collection bounds;
+- result status/failure-code consistency.
 
 ### Instrumented fixture app
 
@@ -273,6 +299,7 @@ A separate test application will expose deterministic controls for:
 - duplicated labels;
 - editable fields;
 - checkbox state;
+- disabled post-state controls;
 - scroll containers;
 - delayed transitions;
 - action rejection and gesture fallback;
@@ -296,4 +323,4 @@ Physical validation must record:
 
 ## Current boundary
 
-The current increment defines the contracts, matcher, Persian normalizer, and postcondition evaluator only. It deliberately performs no side effects. The following PR will add command transport and live execution against newly reacquired Accessibility nodes.
+The current increment defines and tests the contracts, strict validators, matcher, Persian normalizer, resolver modes, and postcondition evaluator only. It deliberately performs no side effects. The following PR will add command transport and live execution against newly reacquired Accessibility nodes.
