@@ -11,16 +11,18 @@ The implementation is intentionally narrow. Only `OpenAppOperation` owns a side-
 ## Non-negotiable invariants
 
 1. Raw natural language never reaches Android execution code.
-2. Android validates the typed command after transport decoding.
-3. At most one non-terminal device action exists.
-4. No launch runs from state that Core has not acknowledged.
-5. A newly captured local state must still match the acknowledged state.
-6. Core evidence is read and validated again at the launch boundary.
-7. An Android API returning normally is not success.
-8. Success requires stable visible postconditions and a matching newer Core acknowledgement.
-9. A newly captured failing state cannot be skipped during final verification.
-10. An uncertain action after process death is never blindly replayed.
-11. Every result carries a typed outcome, failure code, attempt count, evidence references, and predicate evidence.
+2. Core rejects semantically unsafe commands before broker ownership.
+3. Android validates the typed command again after transport decoding.
+4. `open_app(package_name)` must include `active_package_equals(package_name)` in verification.
+5. At most one non-terminal device action exists.
+6. No launch runs from state that Core has not acknowledged.
+7. A newly captured local state must still match the acknowledged state.
+8. Core evidence is read and validated again at the launch boundary.
+9. An Android API returning normally is not success.
+10. Success requires stable visible postconditions and a matching newer Core acknowledgement.
+11. A newly captured failing state cannot be skipped during final verification.
+12. An uncertain action after process death is never blindly replayed.
+13. Every result carries a typed outcome, failure code, attempt count, evidence references, and predicate evidence.
 
 ## End-to-end flow
 
@@ -28,10 +30,16 @@ The implementation is intentionally narrow. Only `OpenAppOperation` owns a side-
 Core operator API
       |
       v
+Core semantic validation
+      |
+      v
 typed AndroidActionCommand
       |
       v
 device.action_command
+      |
+      v
+Android contract validation
       |
       v
 encrypted write-ahead ledger commit
@@ -73,13 +81,23 @@ matching newer Core acknowledgement
 typed ActionResult + durable result delivery
 ```
 
-## Typed operation
+## Typed operation and mandatory package proof
 
 ```json
 {
-  "kind": "open_app",
-  "package_name": "com.example.app",
-  "uri": "example://optional/path"
+  "operation": {
+    "kind": "open_app",
+    "package_name": "com.example.app",
+    "uri": "example://optional/path"
+  },
+  "verification": {
+    "predicates": [
+      {
+        "kind": "active_package_equals",
+        "package_name": "com.example.app"
+      }
+    ]
+  }
 }
 ```
 
@@ -88,12 +106,22 @@ Rules:
 - `package_name` is mandatory;
 - `uri` is optional;
 - an explicit URI remains package-scoped with `Intent.setPackage`;
+- verification must contain at least one `active_package_equals` predicate;
+- every active-package predicate must equal the operation's `package_name`;
+- additional node or state predicates are allowed;
 - all other operation discriminators are rejected by the installed handler;
 - at most one launch request is accepted per command.
 
+The package proof is enforced twice:
+
+1. Core's dispatch semantic validator rejects the command before broker ownership;
+2. Android's contract validator rejects it after transport decoding.
+
+This prevents an unrelated predicate from making `open_app(com.target)` appear already satisfied while another app is active.
+
 ## Background Activity launch policy
 
-Android launch restrictions differ by platform generation. Simorgh uses a pure, JVM-tested policy rather than scattering SDK checks through the executor.
+Android launch restrictions differ by platform generation. Simorgh uses a pure, JVM-tested policy rather than scattering assumptions through the executor.
 
 | Android | API | Background launch prerequisite |
 |---|---:|---|
@@ -116,7 +144,7 @@ failure_code = unsupported_capability
 attempts = 0
 ```
 
-The Persian UI shows one of three states:
+The Persian UI reports one of three states:
 
 - legacy Android: no special access required;
 - modern Android: special access active;
@@ -187,12 +215,26 @@ failure_code = target_not_found
 attempts = 0
 ```
 
-Android 13 receives the legacy sender-side background-start opt-in. Android 14+ receives `MODE_BACKGROUND_ACTIVITY_START_ALLOWED`. These options express sender intent; they do not bypass platform policy.
+### IntentSender grant modes
+
+The sender-side opt-in is selected by a pure policy and applied behind explicit API guards:
+
+| API | Mode |
+|---:|---|
+| 33 | legacy `setPendingIntentBackgroundActivityLaunchAllowed(true)` |
+| 34–35 | `MODE_BACKGROUND_ACTIVITY_START_ALLOWED` |
+| 36+ and Simorgh visible | `MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE` |
+| 36+ and Simorgh background with overlay | `MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS` |
+
+Android 16 deprecated the earlier single `ALLOWED` mode and split it into visible-only and always-allow variants. Simorgh chooses the narrower visible-only mode when possible and uses always-allow only for the private, explicitly configured background case.
+
+The mode does not bypass Android policy. It expresses the required sender opt-in when a platform exception already applies.
 
 Official references:
 
 - <https://developer.android.com/reference/android/content/pm/PackageManager#getLaunchIntentSenderForPackage(java.lang.String)>
 - <https://developer.android.com/reference/android/content/Context#startIntentSender(android.content.IntentSender,android.content.Intent,int,int,int,android.os.Bundle)>
+- <https://developer.android.com/reference/android/app/ActivityOptions>
 
 ### Explicit package-scoped URI
 
@@ -318,7 +360,7 @@ before_observation = current Core acknowledgement
 after_observation = same acknowledgement
 ```
 
-This prevents unnecessary task switching and makes replay of an already-achieved goal harmless.
+Because target-package proof is mandatory, zero-attempt success also proves that the requested package is already active.
 
 ## Post-action evidence
 
@@ -369,6 +411,7 @@ Until that issue is implemented, physical validation must record automatic-time 
 |---|---|---|---:|
 | Desired state already exists | `succeeded` | `none` | 0 |
 | Launch and verified visible state | `succeeded` | `none` | 1 |
+| Missing/conflicting package proof | rejected before dispatch | `invalid_command` semantics | 0 |
 | Expired command | `blocked` | `expired` | 0 |
 | Stale or mismatched precondition | `blocked` | `precondition_failed` | 0 |
 | ACK invalidated at launch boundary | `blocked` | `precondition_failed` | 0 |
@@ -422,12 +465,14 @@ See:
 
 The JVM and Core suites cover:
 
+- mandatory target-package proof in Core and Android;
 - verified launch success;
 - stale precondition rejection;
 - TOCTOU fingerprint mismatch;
 - acknowledgement invalidation at the launch boundary;
 - already-satisfied zero-attempt success;
 - background launch policy for API 24, 28, 29, and 36;
+- IntentSender grant modes for API 33, 34, 35, and 36;
 - missing background launch capability;
 - missing target package;
 - missing post-launch evidence;
@@ -461,19 +506,20 @@ Physical validation is not complete until the following are recorded:
 10. before stream, sequence, snapshot ID, fingerprint, and active package;
 11. command ID, action ID, and command-envelope ID;
 12. selected launch adapter;
-13. Android return or exception;
-14. first post-launch local snapshot;
-15. stable sample count;
-16. matching Core acknowledgement;
-17. typed result and result ACK;
-18. foreground launch;
-19. background launch;
-20. lock-screen behavior;
-21. battery-optimized mode;
-22. unrestricted battery mode;
-23. reconnect during verification;
-24. Core restart while the screen is unchanged;
-25. forced process death after launch acceptance.
+13. selected IntentSender grant mode, when applicable;
+14. Android return or exception;
+15. first post-launch local snapshot;
+16. stable sample count;
+17. matching Core acknowledgement;
+18. typed result and result ACK;
+19. foreground launch;
+20. background launch;
+21. lock-screen behavior;
+22. battery-optimized mode;
+23. unrestricted battery mode;
+24. reconnect during verification;
+25. Core restart while the screen is unchanged;
+26. forced process death after launch acceptance.
 
 Initial deterministic targets:
 
