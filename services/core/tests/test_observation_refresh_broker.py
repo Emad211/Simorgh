@@ -14,6 +14,7 @@ from simorgh_core.devices.observation_refresh_broker import (
     ObservationRefreshConflictError,
     ObservationRefreshDeviceUnavailableError,
     ObservationRefreshPhase,
+    ObservationRefreshRecord,
 )
 from simorgh_core.devices.observation_refresh_protocol import (
     OBSERVATION_REFRESH_CAPABILITY,
@@ -21,6 +22,7 @@ from simorgh_core.devices.observation_refresh_protocol import (
     DeviceObservationRefreshAckPayload,
     DeviceObservationRefreshEnvelope,
     DeviceObservationRefreshPayload,
+    ObservationRefreshAckStatus,
 )
 from simorgh_core.devices.protocol import (
     AccessibilitySnapshotPayload,
@@ -77,16 +79,12 @@ def _ack(
     *,
     device_id: UUID,
     request_id: UUID,
-    status: str,
+    status: ObservationRefreshAckStatus,
     received_at_ms: int,
 ) -> tuple[DeviceObservationRefreshAckEnvelope, DeviceObservationRefreshAckPayload]:
     payload = DeviceObservationRefreshAckPayload(
         request_id=request_id,
-        status=cast(
-            "Literal['accepted', 'duplicate', 'busy', 'expired', "
-            "'observer_unavailable', 'rejected']",
-            status,
-        ),
+        status=status,
         received_at_ms=received_at_ms,
         detail=f"fixture {status}",
     )
@@ -134,7 +132,7 @@ async def _create(
     expected_state_fingerprint: str | None = None,
     expected_active_package: str | None = None,
     timeout_ms: int = 5_000,
-):
+) -> ObservationRefreshRecord:
     return await broker.create(
         device_id=device_id,
         timeout_ms=timeout_ms,
@@ -385,7 +383,8 @@ def test_reconnect_redelivers_exact_request_and_replaces_owner() -> None:
         await registry.register(first_session)
         broker = ObservationRefreshBroker(now_ms=lambda: 10_000)
         record = await _create(broker, device_id)
-        first_wire = first_socket.sent.single()
+        assert len(first_socket.sent) == 1
+        first_wire = first_socket.sent[0]
 
         second_session, second_socket = _session(device_id=device_id)
         await registry.register(second_session)
