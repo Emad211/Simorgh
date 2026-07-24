@@ -7,7 +7,11 @@ from uuid import UUID, uuid4
 
 from fastapi import WebSocket
 
-from simorgh_core.devices.protocol import DeviceRegistrationPayload
+from simorgh_core.devices.protocol import (
+    DeviceObservationPayload,
+    DeviceRegistrationPayload,
+    ObservationAckStatus,
+)
 
 
 @dataclass(slots=True)
@@ -17,6 +21,7 @@ class DeviceSession:
     websocket: WebSocket
     registration: DeviceRegistrationPayload
     connected_at_ms: int
+    latest_observation: DeviceObservationPayload | None = None
 
     @classmethod
     def create(
@@ -33,6 +38,19 @@ class DeviceSession:
             registration=registration,
             connected_at_ms=int(time.time() * 1000),
         )
+
+    def record_observation(self, observation: DeviceObservationPayload) -> ObservationAckStatus:
+        previous = self.latest_observation
+        if previous is not None:
+            if observation.snapshot.snapshot_id == previous.snapshot.snapshot_id:
+                return "duplicate"
+            if observation.snapshot.captured_at_ms < previous.snapshot.captured_at_ms:
+                return "stale"
+            if observation.state_fingerprint == previous.state_fingerprint:
+                return "duplicate"
+
+        self.latest_observation = observation
+        return "accepted"
 
 
 class DeviceRegistry:
