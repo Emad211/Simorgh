@@ -4,7 +4,7 @@ Status: first live Android side-effect vertical slice
 
 ## Purpose
 
-`open_app` opens one installed Android application's front-door activity or one explicit package-scoped URI, then proves the declared visible postconditions from fresh Accessibility evidence.
+`open_app` opens one installed Android application's front-door activity, or one explicit package-scoped URI, and then proves the declared visible postconditions from fresh Accessibility evidence.
 
 The implementation is intentionally narrow. Only `OpenAppOperation` owns a side-effect path in this increment. Click, text entry, scrolling, arbitrary gestures, and global Accessibility actions remain rejected until each receives an independent implementation, threat analysis, deterministic fixture, and physical-device validation.
 
@@ -14,15 +14,16 @@ The implementation is intentionally narrow. Only `OpenAppOperation` owns a side-
 2. Core rejects semantically unsafe commands before broker ownership.
 3. Android validates the typed command again after transport decoding.
 4. `open_app(package_name)` must include `active_package_equals(package_name)` in verification.
-5. At most one non-terminal device action exists.
+5. At most one non-terminal device action exists per device.
 6. No launch runs from state that Core has not acknowledged.
-7. A newly captured local state must still match the acknowledged state.
-8. Core evidence is read and validated again at the launch boundary.
-9. An Android API returning normally is not success.
+7. A newly captured local state must still match the acknowledged pre-action state.
+8. Core evidence is read and validated again immediately before the launch boundary.
+9. Android API acceptance is not success.
 10. Success requires stable visible postconditions and a matching newer Core acknowledgement.
-11. A newly captured failing state cannot be skipped during final verification.
-12. An uncertain action after process death is never blindly replayed.
-13. Every result carries a typed outcome, failure code, attempt count, evidence references, and predicate evidence.
+11. Core independently validates a successful result against the original command and its latest observation.
+12. A newly captured failing state cannot be skipped during final verification.
+13. An uncertain action after process death is never blindly replayed.
+14. Every result carries typed outcome, failure code, attempt count, evidence references, and predicate evidence.
 
 ## End-to-end flow
 
@@ -30,7 +31,7 @@ The implementation is intentionally narrow. Only `OpenAppOperation` owns a side-
 Core operator API
       |
       v
-Core semantic validation
+Core command semantic validation
       |
       v
 typed AndroidActionCommand
@@ -39,7 +40,7 @@ typed AndroidActionCommand
 device.action_command
       |
       v
-Android contract validation
+Android contract + semantic validation
       |
       v
 encrypted write-ahead ledger commit
@@ -78,7 +79,15 @@ latest local state still satisfies?
 matching newer Core acknowledgement
       |
       v
-typed ActionResult + durable result delivery
+typed ActionResult
+      |
+      v
+Core result semantic validation
+      |
+      +---- evidence mismatch -------------------> REJECTED ACK
+      |
+      v
+durable result delivery acknowledgement
 ```
 
 ## Typed operation and mandatory package proof
@@ -119,6 +128,45 @@ The package proof is enforced twice:
 
 This prevents an unrelated predicate from making `open_app(com.target)` appear already satisfied while another app is active.
 
+## Package visibility model
+
+Simorgh does **not** request `QUERY_ALL_PACKAGES` for this vertical slice.
+
+Android 11 and newer filter many `PackageManager` query results. The API 24–32 launch path calls `PackageManager.getLaunchIntentForPackage`, whose documented front-door search order is:
+
+1. `ACTION_MAIN` with `CATEGORY_INFO`;
+2. `ACTION_MAIN` with `CATEGORY_LAUNCHER`.
+
+The manifest therefore declares exactly those two intent signatures:
+
+```xml
+<queries>
+    <intent>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.INFO" />
+    </intent>
+    <intent>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+    </intent>
+</queries>
+```
+
+Consequences:
+
+- API 24–29 already expose installed packages to this target without Android 11 filtering;
+- API 30–32 can resolve launchable front-door activities without visibility over unrelated packages;
+- API 33+ uses `getLaunchIntentSenderForPackage`, which Android documents as not restricted by package visibility;
+- explicit URI launches call `startActivity()` directly and handle `ActivityNotFoundException`; Android does not require package visibility merely to start another app's Activity;
+- the app does not enumerate or upload the installed-application inventory in this increment.
+
+Official references:
+
+- <https://developer.android.com/training/package-visibility/declaring>
+- <https://developer.android.com/training/package-visibility/use-cases>
+- <https://developer.android.com/reference/android/content/pm/PackageManager#getLaunchIntentForPackage(java.lang.String)>
+- <https://developer.android.com/reference/android/content/pm/PackageManager#getLaunchIntentSenderForPackage(java.lang.String)>
+
 ## Background Activity launch policy
 
 Android launch restrictions differ by platform generation. Simorgh uses a pure, JVM-tested policy rather than scattering assumptions through the executor.
@@ -144,6 +192,8 @@ failure_code = unsupported_capability
 attempts = 0
 ```
 
+The launch guard is checked when the adapter is entered and again immediately before the platform side effect. Losing visibility between lookup and launch therefore fails closed.
+
 The Persian UI reports one of three states:
 
 - legacy Android: no special access required;
@@ -164,17 +214,6 @@ Official references:
 
 - <https://developer.android.com/guide/components/activities/secure-bal>
 - <https://developer.android.com/reference/android/provider/Settings#canDrawOverlays(android.content.Context)>
-
-## Manifest capabilities
-
-The private operator declares:
-
-```xml
-<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-```
-
-`QUERY_ALL_PACKAGES` supports deterministic front-door discovery for arbitrary installed applications on older Android versions. This increment does not enumerate or upload the installed-app inventory.
 
 ## Version-aware launch adapters
 
@@ -226,7 +265,7 @@ The sender-side opt-in is selected by a pure policy and applied behind explicit 
 | 36+ and Simorgh visible | `MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE` |
 | 36+ and Simorgh background with overlay | `MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS` |
 
-Android 16 deprecated the earlier single `ALLOWED` mode and split it into visible-only and always-allow variants. Simorgh chooses the narrower visible-only mode when possible and uses always-allow only for the private, explicitly configured background case.
+Android 16 split the earlier single `ALLOWED` mode into visible-only and always-allow variants. Simorgh chooses the narrower visible-only mode when possible and uses always-allow only for the private, explicitly configured background case.
 
 The mode does not bypass Android policy. It expresses the required sender opt-in when a platform exception already applies.
 
@@ -274,11 +313,7 @@ nodes = []
 
 Capture identity and time remain intact. Internal text, endpoint fields, tokens, controls, windows, and nodes are removed. Different Simorgh screens produce the same canonical state fingerprint.
 
-The same projection function is used by:
-
-- observation transport;
-- local pre-launch evidence;
-- local post-launch evidence.
+The same projection function is used by observation transport, local pre-launch evidence, and local post-launch evidence.
 
 See ADR 0008: [`adr/0008-minimal-simorgh-self-state-observation.md`](adr/0008-minimal-simorgh-self-state-observation.md).
 
@@ -336,7 +371,7 @@ attempts = 0
 
 The Core connection can fail after fresh capture but before the Android Activity-start call. Retaining only the local variable from the initial check would permit a launch based on evidence from an invalidated Core session.
 
-Immediately before evaluating the already-satisfied state or launching, the executor therefore:
+Immediately before evaluating the already-satisfied state or launching, the executor:
 
 1. reads the current acknowledgement again;
 2. requires that it still exists;
@@ -381,6 +416,30 @@ After Android accepts the launch, it:
 
 Step 6 closes a race where a newer failing snapshot could arrive between a history copy and the success return.
 
+## Core result verification
+
+Android's result is a claim until Core verifies it.
+
+For a successful `open_app`, Core requires:
+
+- the result's command and action IDs to match the original dispatch;
+- `attempts` to be either `0` or `1`;
+- before and after observation references;
+- `after_observation.active_package` to equal the target package;
+- predicate evidence count and order to match the command policy;
+- every predicate outcome to be `satisfied`;
+- an `active_package_equals` proof for the target package;
+- the after reference to match Core's latest observation exactly by stream, sequence, snapshot ID, fingerprint, capture time, and active package.
+
+Additional ordering rules:
+
+- zero-attempt success must use the same before and after observation;
+- one-attempt success must use a strictly newer after observation within the same stream, or a different valid stream after a session transition;
+- a result whose correlation ID does not match the original command envelope is rejected;
+- a semantically invalid result receives `device.action_result_ack(status=rejected)` and is not recorded as terminal success.
+
+Android keeps a rejected result in its encrypted ledger and blocks later actions. This fail-closed behavior avoids silently accepting an unverifiable side effect. Durable repair across a Core restart is tracked in issue [#22](https://github.com/Emad211/Simorgh/issues/22).
+
 ## Evidence-session behavior across reconnect
 
 Core's current live-observation registry is process-local. An acknowledgement from a previous connection cannot remain executable evidence after disconnect or Core restart.
@@ -397,13 +456,11 @@ The Android publisher therefore:
 
 This restores usable current state after reconnect without continuously resending unchanged UI trees.
 
-Durable action recovery on the Core side is tracked separately in issue [#22](https://github.com/Emad211/Simorgh/issues/22).
-
 ## Time model limitation
 
 Absolute command deadlines and capture timestamps currently depend on Core and device wall clocks. Clock normalization, bounded uncertainty, and monotonic deadline accounting are tracked in issue [#23](https://github.com/Emad211/Simorgh/issues/23).
 
-Until that issue is implemented, physical validation must record automatic-time state and clock skew.
+Until that issue is implemented, physical validation must record automatic-time state and measured clock skew.
 
 ## Result mapping
 
@@ -411,7 +468,7 @@ Until that issue is implemented, physical validation must record automatic-time 
 |---|---|---|---:|
 | Desired state already exists | `succeeded` | `none` | 0 |
 | Launch and verified visible state | `succeeded` | `none` | 1 |
-| Missing/conflicting package proof | rejected before dispatch | `invalid_command` semantics | 0 |
+| Missing/conflicting package proof | rejected before dispatch | invalid-command semantics | 0 |
 | Expired command | `blocked` | `expired` | 0 |
 | Stale or mismatched precondition | `blocked` | `precondition_failed` | 0 |
 | ACK invalidated at launch boundary | `blocked` | `precondition_failed` | 0 |
@@ -426,6 +483,7 @@ Until that issue is implemented, physical validation must record automatic-time 
 | Cancellation before launch | `cancelled` | `cancelled` | 0 |
 | Cancellation after launch acceptance | `cancelled` | `cancelled` | 1 |
 | Unexpected exception after launch acceptance | `blocked` | `internal_error` | 1 |
+| Core cannot prove a claimed success | result ACK `rejected` | not stored as terminal success | unchanged |
 
 `attempts` counts accepted side-effect requests. Guards, lookups, validation failures, and missing-target exceptions before Activity-start acceptance do not increment it.
 
@@ -467,6 +525,7 @@ The JVM and Core suites cover:
 
 - mandatory target-package proof in Core and Android;
 - verified launch success;
+- Core rejection of unproven success;
 - stale precondition rejection;
 - TOCTOU fingerprint mismatch;
 - acknowledgement invalidation at the launch boundary;
@@ -486,7 +545,8 @@ The JVM and Core suites cover:
 - compact self-state projection;
 - live root identity overriding stale event hints;
 - state resubmission after reconnect;
-- complete Core-to-Android command contract round trip.
+- complete Core-to-Android command contract round trip;
+- Android ledger retention after a rejected result ACK.
 
 CI builds the debug APK, runs Android JVM tests, and runs Android lint against stable API 36 with `minSdk=24`.
 
