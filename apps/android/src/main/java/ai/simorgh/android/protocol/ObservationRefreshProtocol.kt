@@ -56,11 +56,20 @@ object ObservationRefreshProtocol {
     const val TYPE_REFRESH_ACK: String = "device.observation_refresh_ack"
     const val CAPABILITY: String = "android.observation.refresh.v1"
 
-    fun decodeRequest(envelope: ProtocolEnvelope): DeviceObservationRefreshPayload =
-        DeviceProtocol.json.decodeFromJsonElement(
+    fun decodeRequest(envelope: ProtocolEnvelope): DeviceObservationRefreshPayload {
+        require(envelope.type == TYPE_REFRESH) { "unexpected refresh message type" }
+        require(envelope.correlationId == null) {
+            "refresh request cannot declare correlation_id"
+        }
+        val payload = DeviceProtocol.json.decodeFromJsonElement(
             DeviceObservationRefreshPayload.serializer(),
             envelope.payload,
         )
+        return validateRequest(
+            requestEnvelopeId = envelope.messageId,
+            payload = payload,
+        )
+    }
 
     fun acknowledgement(
         deviceId: String,
