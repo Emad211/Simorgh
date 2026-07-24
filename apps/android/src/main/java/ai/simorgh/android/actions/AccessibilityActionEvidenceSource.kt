@@ -45,6 +45,7 @@ data class PostActionEvidenceResult(
 
 class AccessibilityActionEvidenceSource(
     private val captureRequester: () -> Boolean = AccessibilityCaptureController::requestCapture,
+    private val snapshotProjector: (AccessibilitySnapshot) -> AccessibilitySnapshot = { it },
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
     private val monotonicNanos: () -> Long = System::nanoTime,
     private val pollIntervalMillis: Long = DEFAULT_POLL_INTERVAL_MILLIS,
@@ -64,7 +65,7 @@ class AccessibilityActionEvidenceSource(
             "poll interval must be in 25..1000 milliseconds"
         }
         AccessibilityObservationBus.current().latestSnapshot?.let { snapshot ->
-            appendLocalLocked(snapshot)
+            appendLocalLocked(snapshotProjector(snapshot))
         }
         AccessibilityAcknowledgementBus.latest()?.let { observation ->
             appendAcknowledgedLocked(observation)
@@ -72,7 +73,7 @@ class AccessibilityActionEvidenceSource(
         localSubscription = AccessibilityObservationBus.subscribe { state ->
             val snapshot = state.latestSnapshot ?: return@subscribe
             synchronized(monitor) {
-                appendLocalLocked(snapshot)
+                appendLocalLocked(snapshotProjector(snapshot))
                 monitor.notifyAll()
             }
         }
@@ -155,7 +156,7 @@ class AccessibilityActionEvidenceSource(
             localSnapshots.forEach { local ->
                 if (
                     !processedSnapshotIds.add(local.snapshotId) ||
-                    local.snapshotId == before.snapshot.snapshotId ||
+                    local.snapshotId == before.snapshotId ||
                     local.capturedAtMs < launchedAtMs
                 ) {
                     return@forEach
@@ -178,8 +179,8 @@ class AccessibilityActionEvidenceSource(
             }
 
             val qualifyingAcknowledgement = acknowledgements.lastOrNull { evidence ->
-                evidence.snapshot.capturedAtMs >= launchedAtMs &&
-                    evidence.snapshot.snapshotId != before.snapshot.snapshotId &&
+                evidence.capturedAtMs >= launchedAtMs &&
+                    evidence.snapshotId != before.snapshotId &&
                     (
                         evidence.streamId != before.streamId ||
                             evidence.sequence > before.sequence
@@ -267,7 +268,7 @@ class AccessibilityActionEvidenceSource(
             return
         }
         localHistory.addLast(snapshot)
-        while (localHistory.size > MAX_HISTORY_ENTRIES) {
+        while (localHistory.size > MAX_LOCAL_HISTORY_ENTRIES) {
             localHistory.removeFirst()
         }
     }
@@ -277,12 +278,12 @@ class AccessibilityActionEvidenceSource(
         if (
             previous?.streamId == observation.streamId &&
             previous.sequence == observation.sequence &&
-            previous.snapshot.snapshotId == observation.snapshot.snapshotId
+            previous.snapshotId == observation.snapshotId
         ) {
             return
         }
         acknowledgementHistory.addLast(observation)
-        while (acknowledgementHistory.size > MAX_HISTORY_ENTRIES) {
+        while (acknowledgementHistory.size > MAX_ACK_HISTORY_ENTRIES) {
             acknowledgementHistory.removeFirst()
         }
     }
@@ -303,6 +304,7 @@ class AccessibilityActionEvidenceSource(
 
     private companion object {
         const val DEFAULT_POLL_INTERVAL_MILLIS = 200L
-        const val MAX_HISTORY_ENTRIES = 64
+        const val MAX_LOCAL_HISTORY_ENTRIES = 32
+        const val MAX_ACK_HISTORY_ENTRIES = 64
     }
 }
