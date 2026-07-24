@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION: Literal["1.0"] = "1.0"
 
 MessageType = Literal[
     "device.register",
