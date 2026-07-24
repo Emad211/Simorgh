@@ -8,9 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from simorgh_core.devices.protocol import PROTOCOL_VERSION, ProtocolEnvelope
 
-OBSERVATION_REFRESH_CAPABILITY = "android.observation.refresh.v1"
-OBSERVATION_REFRESH_REQUEST_TYPE = "device.observation_refresh"
-OBSERVATION_REFRESH_ACK_TYPE = "device.observation_refresh_ack"
+OBSERVATION_REFRESH_CAPABILITY: Literal[
+    "android.observation.refresh.v1"
+] = "android.observation.refresh.v1"
+OBSERVATION_REFRESH_REQUEST_TYPE: Literal[
+    "device.observation_refresh"
+] = "device.observation_refresh"
+OBSERVATION_REFRESH_ACK_TYPE: Literal[
+    "device.observation_refresh_ack"
+] = "device.observation_refresh_ack"
 
 ObservationRefreshAckStatus = Literal[
     "accepted",
@@ -51,10 +57,12 @@ class DeviceObservationRefreshAckPayload(BaseModel):
 
 
 class DeviceObservationRefreshEnvelope(ProtocolEnvelope):
-    type: Literal["device.observation_refresh"] = OBSERVATION_REFRESH_REQUEST_TYPE
+    type: Literal["device.observation_refresh"] = (  # type: ignore[assignment]
+        OBSERVATION_REFRESH_REQUEST_TYPE
+    )
 
     @classmethod
-    def create(
+    def create(  # type: ignore[override]
         cls,
         *,
         device_id: UUID,
@@ -83,10 +91,12 @@ class DeviceObservationRefreshEnvelope(ProtocolEnvelope):
 
 
 class DeviceObservationRefreshAckEnvelope(ProtocolEnvelope):
-    type: Literal["device.observation_refresh_ack"] = OBSERVATION_REFRESH_ACK_TYPE
+    type: Literal["device.observation_refresh_ack"] = (  # type: ignore[assignment]
+        OBSERVATION_REFRESH_ACK_TYPE
+    )
 
     @classmethod
-    def create(
+    def create(  # type: ignore[override]
         cls,
         *,
         device_id: UUID,
