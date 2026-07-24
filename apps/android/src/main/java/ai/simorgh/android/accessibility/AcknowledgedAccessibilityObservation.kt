@@ -11,7 +11,23 @@ data class AcknowledgedAccessibilityObservation(
     val capturedAtMs: Long,
     val activePackage: String? = null,
     val acknowledgedAtMs: Long,
-)
+) {
+    constructor(
+        streamId: String,
+        sequence: Long,
+        stateFingerprint: String,
+        snapshot: AccessibilitySnapshot,
+        acknowledgedAtMs: Long,
+    ) : this(
+        streamId = streamId,
+        sequence = sequence,
+        stateFingerprint = stateFingerprint,
+        snapshotId = snapshot.snapshotId,
+        capturedAtMs = snapshot.capturedAtMs,
+        activePackage = snapshot.activePackage,
+        acknowledgedAtMs = acknowledgedAtMs,
+    )
+}
 
 object AccessibilityAcknowledgementBus {
     private val listeners =
