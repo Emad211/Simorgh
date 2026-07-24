@@ -31,6 +31,7 @@ from simorgh_core.devices.actions import (
     OpenAppOperation,
 )
 from simorgh_core.devices.protocol import (
+    ActionResultAckStatus,
     DeviceActionCancelAckPayload,
     DeviceActionCommandAckPayload,
     ProtocolEnvelope,
@@ -40,7 +41,6 @@ DEVICE_ID = UUID("11111111-1111-1111-1111-111111111111")
 SESSION_ID = UUID("22222222-2222-2222-2222-222222222222")
 COMMAND_ID = UUID("33333333-3333-3333-3333-333333333333")
 ACTION_ID = UUID("44444444-4444-4444-4444-444444444444")
-RESULT_MESSAGE_ID = UUID("55555555-5555-5555-5555-555555555555")
 TARGET_PACKAGE = "com.example.target"
 
 
@@ -62,9 +62,13 @@ def _command(
     )
 
 
-def _command_envelope(command: AndroidActionCommand) -> ProtocolEnvelope:
+def _command_envelope(
+    command: AndroidActionCommand,
+    *,
+    message_id: UUID | None = None,
+) -> ProtocolEnvelope:
     return ProtocolEnvelope(
-        message_id=UUID("66666666-6666-6666-6666-666666666666"),
+        message_id=message_id or uuid4(),
         type="device.action_command",
         sent_at_ms=1_000,
         device_id=DEVICE_ID,
@@ -77,10 +81,12 @@ def _completed_entry(
     command_id: UUID = COMMAND_ID,
     action_id: UUID = ACTION_ID,
     updated_at_ms: int = 2_000,
-    ack_status: str | None = "accepted",
+    ack_status: ActionResultAckStatus | None = "accepted",
+    command_message_id: UUID | None = None,
+    result_message_id: UUID | None = None,
 ) -> ActionJournalEntryV1:
     command = _command(command_id=command_id, action_id=action_id)
-    command_envelope = _command_envelope(command)
+    command_envelope = _command_envelope(command, message_id=command_message_id)
     result = AndroidActionResult(
         command_id=command.command_id,
         action_id=command.action_id,
@@ -108,7 +114,7 @@ def _completed_entry(
             detail="fixture accepted",
         ),
         cancel_envelope=ProtocolEnvelope(
-            message_id=UUID("77777777-7777-7777-7777-777777777777"),
+            message_id=uuid4(),
             type="device.action_cancel",
             sent_at_ms=1_300,
             device_id=DEVICE_ID,
@@ -126,9 +132,9 @@ def _completed_entry(
             received_at_ms=1_400,
         ),
         result=result,
-        result_envelope_id=RESULT_MESSAGE_ID,
+        result_envelope_id=result_message_id or uuid4(),
         result_correlation_id=command_envelope.message_id,
-        result_ack_status=ack_status,  # type: ignore[arg-type]
+        result_ack_status=ack_status,
         result_ack_sent_at_ms=(1_700 if ack_status is not None else None),
         detail=result.detail,
     )
@@ -138,12 +144,13 @@ def _queued_entry(
     *,
     command_id: UUID = COMMAND_ID,
     action_id: UUID = ACTION_ID,
+    command_message_id: UUID | None = None,
 ) -> ActionJournalEntryV1:
     command = _command(command_id=command_id, action_id=action_id)
     return new_journal_entry(
         device_id=DEVICE_ID,
         command=command,
-        command_envelope=_command_envelope(command),
+        command_envelope=_command_envelope(command, message_id=command_message_id),
         phase="queued",
         created_at_ms=1_000,
         updated_at_ms=1_000,
@@ -275,6 +282,41 @@ def test_command_id_conflict_is_atomic_and_preserves_original(tmp_path: Path) ->
         journal.close()
 
 
+def test_command_and_result_message_ids_are_globally_unique(tmp_path: Path) -> None:
+    path = _database_path(tmp_path)
+    command_message_id = uuid4()
+    result_message_id = uuid4()
+    first = _completed_entry(
+        command_id=uuid4(),
+        action_id=uuid4(),
+        command_message_id=command_message_id,
+        result_message_id=result_message_id,
+    )
+    journal = SQLiteActionJournal(path)
+    try:
+        journal.upsert(first)
+        with pytest.raises(ActionJournalConflictError):
+            journal.upsert(
+                _completed_entry(
+                    command_id=uuid4(),
+                    action_id=uuid4(),
+                    command_message_id=command_message_id,
+                )
+            )
+        with pytest.raises(ActionJournalConflictError):
+            journal.upsert(
+                _completed_entry(
+                    command_id=uuid4(),
+                    action_id=uuid4(),
+                    result_message_id=result_message_id,
+                )
+            )
+
+        assert journal.load() == [first]
+    finally:
+        journal.close()
+
+
 def test_terminal_retention_prunes_oldest_rows_only(tmp_path: Path) -> None:
     path = _database_path(tmp_path)
     journal = SQLiteActionJournal(path, max_terminal_records=2)
@@ -299,8 +341,13 @@ def test_terminal_retention_prunes_oldest_rows_only(tmp_path: Path) -> None:
             journal.upsert(entry)
 
         loaded = journal.load()
-        assert first not in loaded
-        assert set(loaded) == {second, third, queued}
+        loaded_action_ids = {entry.action_id for entry in loaded}
+        assert first.action_id not in loaded_action_ids
+        assert loaded_action_ids == {
+            second.action_id,
+            third.action_id,
+            queued.action_id,
+        }
     finally:
         journal.close()
 
@@ -347,9 +394,8 @@ def test_entry_rejects_result_hash_or_ack_shape_mismatch() -> None:
 
 def test_canonical_serialization_is_stable_and_schema_is_versioned() -> None:
     entry = _completed_entry()
+    reconstructed = ActionJournalEntryV1.model_validate(entry.model_dump(mode="json"))
 
     assert entry.schema_version == ACTION_JOURNAL_SCHEMA_VERSION
-    assert canonical_json(entry) == canonical_json(
-        ActionJournalEntryV1.model_validate(entry.model_dump(mode="json"))
-    )
-    assert canonical_sha256(entry) == canonical_sha256(entry)
+    assert canonical_json(entry) == canonical_json(reconstructed)
+    assert canonical_sha256(entry) == canonical_sha256(reconstructed)
