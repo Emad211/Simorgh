@@ -7,9 +7,19 @@ import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
 import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.ObservationAckStatus
+import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import ai.simorgh.android.protocol.ProtocolEnvelope
 import java.io.Closeable
+import java.util.ArrayDeque
 import java.util.UUID
+
+enum class RefreshObservationSubmissionStatus {
+    ACCEPTED,
+    DUPLICATE,
+    BUSY,
+    CLOSED,
+    TOO_LARGE,
+}
 
 class AccessibilityObservationPublisher(
     private val deviceId: String,
@@ -24,6 +34,7 @@ class AccessibilityObservationPublisher(
     private val streamId: String = UUID.randomUUID().toString(),
 ) : Closeable {
     private val lock = Any()
+    private val recentRefreshRequestIds = ArrayDeque<String>()
 
     private var connected = false
     private var closed = false
@@ -31,7 +42,8 @@ class AccessibilityObservationPublisher(
     private var lastSendAtMillis: Long? = null
     private var lastAcknowledgedFingerprint: String? = null
     private var latestSnapshot: AccessibilitySnapshot? = null
-    private var pending: ObservationDelivery? = null
+    private var pendingNormal: PendingObservation? = null
+    private var pendingRefresh: PendingObservation? = null
     private var inFlight: ObservationDelivery? = null
     private var sendTask: ScheduledObservationTask? = null
     private var acknowledgementTask: ScheduledObservationTask? = null
@@ -54,15 +66,71 @@ class AccessibilityObservationPublisher(
             if (fingerprint == lastAcknowledgedFingerprint) {
                 return false
             }
-            if (fingerprint == inFlight?.fingerprint || fingerprint == pending?.fingerprint) {
+            if (
+                fingerprint == inFlight?.fingerprint ||
+                fingerprint == pendingNormal?.fingerprint ||
+                fingerprint == pendingRefresh?.fingerprint
+            ) {
                 return false
             }
-            if (!enqueueLocked(snapshot, fingerprint)) {
+            val pending = PendingObservation(
+                snapshot = snapshot,
+                fingerprint = fingerprint,
+            )
+            if (!fitsTransportLimitLocked(pending)) {
+                listener("observation ${snapshot.snapshotId} exceeds the transport byte limit")
                 return false
             }
+            pendingNormal = pending
             scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
         }
         return true
+    }
+
+    fun submitRefresh(
+        snapshot: AccessibilitySnapshot,
+        refreshRequestId: String,
+    ): RefreshObservationSubmissionStatus {
+        require(runCatching { UUID.fromString(refreshRequestId) }.isSuccess) {
+            "refresh request id must be a UUID"
+        }
+        val fingerprint = AccessibilitySnapshotFingerprint.calculate(snapshot)
+
+        synchronized(lock) {
+            if (closed) {
+                return RefreshObservationSubmissionStatus.CLOSED
+            }
+            if (hasRefreshRequestLocked(refreshRequestId)) {
+                return RefreshObservationSubmissionStatus.DUPLICATE
+            }
+            if (
+                inFlight?.refreshRequestId != null ||
+                pendingRefresh?.refreshRequestId != null
+            ) {
+                return RefreshObservationSubmissionStatus.BUSY
+            }
+
+            latestSnapshot = snapshot
+            pendingNormal = null
+            val pending = PendingObservation(
+                snapshot = snapshot,
+                fingerprint = fingerprint,
+                refreshRequestId = refreshRequestId,
+            )
+            if (!fitsTransportLimitLocked(pending)) {
+                listener(
+                    "refresh observation ${snapshot.snapshotId} exceeds the transport byte limit",
+                )
+                return RefreshObservationSubmissionStatus.TOO_LARGE
+            }
+            pendingRefresh = pending
+            scheduleSendLocked(delayMillis = delayUntilNextSendLocked())
+        }
+        return RefreshObservationSubmissionStatus.ACCEPTED
+    }
+
+    fun hasRefreshRequest(refreshRequestId: String): Boolean = synchronized(lock) {
+        hasRefreshRequestLocked(refreshRequestId)
     }
 
     fun setConnected(isConnected: Boolean) {
@@ -82,9 +150,9 @@ class AccessibilityObservationPublisher(
                 invalidateAcknowledgement = true
             } else {
                 lastAcknowledgedFingerprint = null
-                if (inFlight == null && pending == null) {
+                if (inFlight == null && pendingRefresh == null && pendingNormal == null) {
                     latestSnapshot?.let { snapshot ->
-                        enqueueLocked(
+                        pendingNormal = PendingObservation(
                             snapshot = snapshot,
                             fingerprint = AccessibilitySnapshotFingerprint.calculate(snapshot),
                         )
@@ -127,6 +195,7 @@ class AccessibilityObservationPublisher(
                     acknowledgedAtMs = acknowledgement.receivedAtMs,
                 )
             }
+            active.refreshRequestId?.let(::rememberRefreshRequestLocked)
             listener(
                 "observation ${acknowledgement.snapshotId} " +
                     acknowledgement.status.name.lowercase(),
@@ -137,9 +206,19 @@ class AccessibilityObservationPublisher(
         return true
     }
 
-    fun pendingSnapshotId(): String? = synchronized(lock) { pending?.snapshot?.snapshotId }
+    fun pendingSnapshotId(): String? = synchronized(lock) {
+        (pendingRefresh ?: pendingNormal)?.snapshot?.snapshotId
+    }
+
+    fun pendingRefreshRequestId(): String? = synchronized(lock) {
+        pendingRefresh?.refreshRequestId
+    }
 
     fun inFlightSnapshotId(): String? = synchronized(lock) { inFlight?.snapshot?.snapshotId }
+
+    fun inFlightRefreshRequestId(): String? = synchronized(lock) {
+        inFlight?.refreshRequestId
+    }
 
     override fun close() {
         synchronized(lock) {
@@ -153,39 +232,13 @@ class AccessibilityObservationPublisher(
             sendTask = null
             acknowledgementTask = null
             latestSnapshot = null
-            pending = null
+            pendingNormal = null
+            pendingRefresh = null
             inFlight = null
+            recentRefreshRequestIds.clear()
         }
         acknowledgementInvalidator()
         scheduler.close()
-    }
-
-    private fun enqueueLocked(
-        snapshot: AccessibilitySnapshot,
-        fingerprint: String,
-    ): Boolean {
-        val sequence = nextSequence
-        val envelope = DeviceProtocol.observation(
-            deviceId = deviceId,
-            streamId = streamId,
-            sequence = sequence,
-            stateFingerprint = fingerprint,
-            snapshot = snapshot,
-        )
-        if (DeviceProtocol.encodedSizeBytes(envelope) > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
-            listener("observation ${snapshot.snapshotId} exceeds the transport byte limit")
-            return false
-        }
-
-        nextSequence += 1
-        pending = ObservationDelivery(
-            envelope = envelope,
-            streamId = streamId,
-            sequence = sequence,
-            snapshot = snapshot,
-            fingerprint = fingerprint,
-        )
-        return true
     }
 
     private fun scheduleSendLocked(delayMillis: Long) {
@@ -195,7 +248,7 @@ class AccessibilityObservationPublisher(
         if (inFlight?.awaitingAcknowledgement == true) {
             return
         }
-        if (inFlight == null && pending == null) {
+        if (inFlight == null && pendingRefresh == null && pendingNormal == null) {
             return
         }
 
@@ -214,7 +267,7 @@ class AccessibilityObservationPublisher(
                 return
             }
 
-            val active = inFlight ?: pending?.also { pending = null } ?: return
+            val active = inFlight ?: materializeNextLocked() ?: return
             if (active.attempts >= maxAttempts) {
                 inFlight = null
                 listener(
@@ -227,7 +280,7 @@ class AccessibilityObservationPublisher(
             val remainingDelay = delayUntilNextSendLocked()
             if (remainingDelay > 0) {
                 if (inFlight == null) {
-                    pending = active
+                    restorePendingLocked(active)
                 }
                 scheduleSendLocked(delayMillis = remainingDelay)
                 return
@@ -267,6 +320,75 @@ class AccessibilityObservationPublisher(
         }
     }
 
+    private fun materializeNextLocked(): ObservationDelivery? {
+        val pending = pendingRefresh?.also { pendingRefresh = null }
+            ?: pendingNormal?.also { pendingNormal = null }
+            ?: return null
+        val sequence = nextSequence
+        val envelope = if (pending.refreshRequestId == null) {
+            DeviceProtocol.observation(
+                deviceId = deviceId,
+                streamId = streamId,
+                sequence = sequence,
+                stateFingerprint = pending.fingerprint,
+                snapshot = pending.snapshot,
+            )
+        } else {
+            ObservationRefreshProtocol.correlatedObservation(
+                deviceId = deviceId,
+                refreshEnvelopeId = pending.refreshRequestId,
+                streamId = streamId,
+                sequence = sequence,
+                stateFingerprint = pending.fingerprint,
+                snapshot = pending.snapshot,
+            )
+        }
+        nextSequence += 1
+        return ObservationDelivery(
+            envelope = envelope,
+            streamId = streamId,
+            sequence = sequence,
+            snapshot = pending.snapshot,
+            fingerprint = pending.fingerprint,
+            refreshRequestId = pending.refreshRequestId,
+        )
+    }
+
+    private fun restorePendingLocked(delivery: ObservationDelivery) {
+        val pending = PendingObservation(
+            snapshot = delivery.snapshot,
+            fingerprint = delivery.fingerprint,
+            refreshRequestId = delivery.refreshRequestId,
+        )
+        if (delivery.refreshRequestId == null) {
+            pendingNormal = pending
+        } else {
+            pendingRefresh = pending
+        }
+    }
+
+    private fun fitsTransportLimitLocked(pending: PendingObservation): Boolean {
+        val preview = if (pending.refreshRequestId == null) {
+            DeviceProtocol.observation(
+                deviceId = deviceId,
+                streamId = streamId,
+                sequence = nextSequence,
+                stateFingerprint = pending.fingerprint,
+                snapshot = pending.snapshot,
+            )
+        } else {
+            ObservationRefreshProtocol.correlatedObservation(
+                deviceId = deviceId,
+                refreshEnvelopeId = pending.refreshRequestId,
+                streamId = streamId,
+                sequence = nextSequence,
+                stateFingerprint = pending.fingerprint,
+                snapshot = pending.snapshot,
+            )
+        }
+        return DeviceProtocol.encodedSizeBytes(preview) <= DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES
+    }
+
     private fun onAcknowledgementTimeout(messageId: String) {
         synchronized(lock) {
             acknowledgementTask = null
@@ -288,13 +410,37 @@ class AccessibilityObservationPublisher(
         return (minimumSendIntervalMillis - elapsed).coerceAtLeast(0)
     }
 
+    private fun hasRefreshRequestLocked(refreshRequestId: String): Boolean =
+        inFlight?.refreshRequestId == refreshRequestId ||
+            pendingRefresh?.refreshRequestId == refreshRequestId ||
+            recentRefreshRequestIds.contains(refreshRequestId)
+
+    private fun rememberRefreshRequestLocked(refreshRequestId: String) {
+        recentRefreshRequestIds.remove(refreshRequestId)
+        recentRefreshRequestIds.addLast(refreshRequestId)
+        while (recentRefreshRequestIds.size > MAX_RECENT_REFRESH_REQUESTS) {
+            recentRefreshRequestIds.removeFirst()
+        }
+    }
+
+    private data class PendingObservation(
+        val snapshot: AccessibilitySnapshot,
+        val fingerprint: String,
+        val refreshRequestId: String? = null,
+    )
+
     private data class ObservationDelivery(
         val envelope: ProtocolEnvelope,
         val streamId: String,
         val sequence: Long,
         val snapshot: AccessibilitySnapshot,
         val fingerprint: String,
+        val refreshRequestId: String? = null,
         val attempts: Int = 0,
         val awaitingAcknowledgement: Boolean = false,
     )
+
+    private companion object {
+        const val MAX_RECENT_REFRESH_REQUESTS = 32
+    }
 }
