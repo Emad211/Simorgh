@@ -44,8 +44,10 @@
     <string name="accessibility_tree_preview">پیش‌نمایش ساختار صفحه</string>
 
     <string name="background_launch_title">اجازه بازکردن خودکار اپ‌ها</string>
+    <string name="background_launch_legacy_ready">در این نسخه Android دسترسی ویژه لازم نیست</string>
+    <string name="background_launch_legacy_explanation">در Android 7 تا 9 مسیر قدیمی بازکردن Activity استفاده می‌شود. نتیجه همچنان از روی Snapshot تازه و تأیید Core بررسی خواهد شد.</string>
     <string name="background_launch_granted">اجازه بازکردن اپ از پس‌زمینه فعال است</string>
     <string name="background_launch_missing">اجازه «نمایش روی سایر برنامه‌ها» فعال نیست</string>
-    <string name="background_launch_explanation">Androidهای جدید اجازه نمی‌دهند یک سرویس پس‌زمینه ناگهان اپ دیگری را باز کند. برای دستیار خصوصی سیمرغ، این Special Access مسیر قابل‌اعتماد اجرای open_app است.</string>
+    <string name="background_launch_explanation">از Android 10 به بعد، سیمرغ برای بازکردن اپ از پس‌زمینه باید روی صفحه باشد یا Special Access «نمایش روی سایر برنامه‌ها» را داشته باشد.</string>
     <string name="background_launch_open_settings">بازکردن تنظیمات دسترسی ویژه</string>
 </resources>
