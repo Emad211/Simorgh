@@ -71,6 +71,9 @@ data class DeviceHeartbeatAckPayload(
 
 @Serializable
 data class DeviceObservationPayload(
+    @SerialName("stream_id")
+    val streamId: String,
+    val sequence: Long,
     @SerialName("state_fingerprint")
     val stateFingerprint: String,
     val snapshot: AccessibilitySnapshot,
@@ -81,6 +84,9 @@ enum class ObservationAckStatus {
     @SerialName("accepted")
     ACCEPTED,
 
+    @SerialName("unchanged")
+    UNCHANGED,
+
     @SerialName("duplicate")
     DUPLICATE,
 
@@ -90,6 +96,9 @@ enum class ObservationAckStatus {
 
 @Serializable
 data class DeviceObservationAckPayload(
+    @SerialName("stream_id")
+    val streamId: String,
+    val sequence: Long,
     @SerialName("snapshot_id")
     val snapshotId: String,
     val status: ObservationAckStatus,
@@ -111,6 +120,7 @@ object DeviceProtocol {
     const val TYPE_OBSERVATION: String = "device.observation"
     const val TYPE_OBSERVATION_ACK: String = "device.observation_ack"
     const val TYPE_ERROR: String = "device.error"
+    const val MAX_DEVICE_MESSAGE_BYTES: Int = 2_000_000
 
     val json: Json = Json {
         encodeDefaults = true
@@ -147,6 +157,8 @@ object DeviceProtocol {
 
     fun observation(
         deviceId: String,
+        streamId: String,
+        sequence: Long,
         stateFingerprint: String,
         snapshot: AccessibilitySnapshot,
         nowMs: Long = System.currentTimeMillis(),
@@ -157,6 +169,8 @@ object DeviceProtocol {
         deviceId = deviceId,
         payload = json.encodeToJsonElement(
             DeviceObservationPayload(
+                streamId = streamId,
+                sequence = sequence,
                 stateFingerprint = stateFingerprint,
                 snapshot = snapshot,
             ),
@@ -164,6 +178,9 @@ object DeviceProtocol {
     )
 
     fun encode(envelope: ProtocolEnvelope): String = json.encodeToString(envelope)
+
+    fun encodedSizeBytes(envelope: ProtocolEnvelope): Int =
+        encode(envelope).toByteArray(Charsets.UTF_8).size
 
     fun decode(raw: String): ProtocolEnvelope = json.decodeFromString(raw)
 
