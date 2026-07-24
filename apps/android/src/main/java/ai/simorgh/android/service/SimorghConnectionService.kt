@@ -16,10 +16,19 @@ import ai.simorgh.android.MainActivity
 import ai.simorgh.android.R
 import ai.simorgh.android.accessibility.AccessibilityObservationBus
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
+import ai.simorgh.android.actions.AndroidActionCommand
+import ai.simorgh.android.actions.AndroidActionRouter
+import ai.simorgh.android.actions.PersistentActionLedger
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.device.DeviceIdentityStore
+import ai.simorgh.android.protocol.ActionResultAckStatus
+import ai.simorgh.android.protocol.DeviceActionCancelPayload
+import ai.simorgh.android.protocol.DeviceActionResultAckPayload
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
+import ai.simorgh.android.protocol.DeviceProtocol
+import ai.simorgh.android.protocol.ProtocolEnvelope
 import ai.simorgh.android.transport.AccessibilityObservationPublisher
+import ai.simorgh.android.transport.ActionResultPublisher
 import ai.simorgh.android.transport.ConnectionPhase
 import ai.simorgh.android.transport.ConnectionState
 import ai.simorgh.android.transport.CoreConnectionConfig
@@ -40,8 +49,11 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     private lateinit var connectionStore: SecureConnectionStore
     private lateinit var connectionClient: CoreWebSocketClient
     private lateinit var observationPublisher: AccessibilityObservationPublisher
+    private lateinit var actionResultPublisher: ActionResultPublisher
+    private lateinit var actionRouter: AndroidActionRouter
     private lateinit var observationSubscription: Closeable
     private lateinit var notificationManager: NotificationManager
+    private lateinit var deviceId: String
 
     private var currentState: ConnectionState = ConnectionState.Disconnected
     private var lastProtocolEvent: String? = null
@@ -54,7 +66,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         createNotificationChannel()
 
         val capabilities = DeviceCapabilities.current()
-        val deviceId = DeviceIdentityStore(this).getOrCreateDeviceId()
+        deviceId = DeviceIdentityStore(this).getOrCreateDeviceId()
         connectionClient = CoreWebSocketClient(
             deviceId = deviceId,
             capabilities = capabilities,
@@ -65,6 +77,24 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             sender = connectionClient::send,
             listener = ::onProtocolEvent,
         )
+        actionResultPublisher = ActionResultPublisher(
+            deviceId = deviceId,
+            sender = connectionClient::send,
+            listener = ::onProtocolEvent,
+        )
+        actionRouter = AndroidActionRouter(
+            ledger = PersistentActionLedger(this),
+            resultEmitter = { delivery ->
+                if (!actionResultPublisher.submit(delivery)) {
+                    onProtocolEvent(
+                        "نتیجه فرمان ${delivery.result.actionId} وارد صف ارسال نشد",
+                    )
+                }
+            },
+            eventListener = ::onProtocolEvent,
+        )
+        actionRouter.recoverUnacknowledgedResult()
+
         observationSubscription = AccessibilityObservationBus.subscribe { observerState ->
             val snapshot = observerState.latestSnapshot ?: return@subscribe
             if (snapshot.activePackage == packageName) {
@@ -113,6 +143,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         latestObservation.set(null)
         observationExecutor.shutdownNow()
         observationPublisher.close()
+        actionResultPublisher.close()
         connectionClient.close()
         ConnectionStatusBus.publish(
             ServiceConnectionSnapshot(
@@ -125,7 +156,12 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     }
 
     override fun onStateChanged(state: ConnectionState) {
-        observationPublisher.setConnected(state.phase == ConnectionPhase.CONNECTED)
+        val connected = state.phase == ConnectionPhase.CONNECTED
+        observationPublisher.setConnected(connected)
+        actionResultPublisher.setConnected(connected)
+        if (connected) {
+            actionRouter.recoverUnacknowledgedResult()
+        }
         mainHandler.post {
             currentState = state
             publishSnapshot()
@@ -150,6 +186,80 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             acknowledgement = acknowledgement,
             correlationId = correlationId,
         )
+    }
+
+    override fun onActionCommand(
+        commandEnvelopeId: String,
+        command: AndroidActionCommand,
+    ) {
+        val receipt = actionRouter.receiveCommand(
+            commandEnvelopeId = commandEnvelopeId,
+            rawCommand = command,
+        )
+        sendProtocolEnvelope(
+            DeviceProtocol.actionCommandAck(
+                deviceId = deviceId,
+                commandEnvelopeId = commandEnvelopeId,
+                command = command,
+                status = receipt.status,
+                detail = receipt.detail,
+            ),
+            event = "پاسخ دریافت فرمان Android",
+        )
+    }
+
+    override fun onActionCancellation(
+        cancelEnvelopeId: String,
+        cancellation: DeviceActionCancelPayload,
+    ) {
+        val status = actionRouter.receiveCancellation(cancellation)
+        sendProtocolEnvelope(
+            DeviceProtocol.actionCancelAck(
+                deviceId = deviceId,
+                cancelEnvelopeId = cancelEnvelopeId,
+                cancellation = cancellation,
+                status = status,
+            ),
+            event = "پاسخ لغو فرمان Android",
+        )
+    }
+
+    override fun onActionResultAcknowledged(
+        acknowledgement: DeviceActionResultAckPayload,
+        correlationId: String?,
+    ) {
+        val ledgerAccepted = runCatching {
+            actionRouter.acknowledgeResult(
+                acknowledgement = acknowledgement,
+                correlationId = correlationId,
+            )
+        }.getOrElse { error ->
+            onProtocolEvent(
+                "ثبت ACK نتیجه فرمان شکست خورد: ${error.javaClass.simpleName}",
+            )
+            false
+        }
+
+        val terminalRejection = acknowledgement.status == ActionResultAckStatus.UNKNOWN_ACTION ||
+            acknowledgement.status == ActionResultAckStatus.REJECTED
+        val publisherAccepted = if (ledgerAccepted || terminalRejection) {
+            actionResultPublisher.acknowledge(
+                acknowledgement = acknowledgement,
+                correlationId = correlationId,
+            )
+        } else {
+            false
+        }
+
+        if (!publisherAccepted) {
+            onProtocolEvent("ACK نتیجه فرمان با پیام درحال‌ارسال تطبیق نداشت")
+        }
+    }
+
+    private fun sendProtocolEnvelope(envelope: ProtocolEnvelope, event: String) {
+        if (!connectionClient.send(envelope)) {
+            onProtocolEvent("$event ارسال نشد")
+        }
     }
 
     private fun enqueueLatestObservation(snapshot: AccessibilitySnapshot) {

@@ -1,7 +1,10 @@
 package ai.simorgh.android.transport
 
 import android.os.SystemClock
+import ai.simorgh.android.actions.AndroidActionCommand
 import ai.simorgh.android.device.DeviceCapabilities
+import ai.simorgh.android.protocol.DeviceActionCancelPayload
+import ai.simorgh.android.protocol.DeviceActionResultAckPayload
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
 import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.DeviceRegistrationPayload
@@ -13,6 +16,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.io.Closeable
 import java.util.ArrayDeque
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -25,6 +29,21 @@ interface CoreConnectionListener {
 
     fun onObservationAcknowledged(
         acknowledgement: DeviceObservationAckPayload,
+        correlationId: String?,
+    ) = Unit
+
+    fun onActionCommand(
+        commandEnvelopeId: String,
+        command: AndroidActionCommand,
+    ) = Unit
+
+    fun onActionCancellation(
+        cancelEnvelopeId: String,
+        cancellation: DeviceActionCancelPayload,
+    ) = Unit
+
+    fun onActionResultAcknowledged(
+        acknowledgement: DeviceActionResultAckPayload,
         correlationId: String?,
     ) = Unit
 }
@@ -94,7 +113,9 @@ class CoreWebSocketClient(
 
         synchronized(lock) {
             val activeSocket = socket
-            if (envelope.type == DeviceProtocol.TYPE_OBSERVATION) {
+            val immediateOnly = envelope.type == DeviceProtocol.TYPE_OBSERVATION ||
+                envelope.type == DeviceProtocol.TYPE_ACTION_RESULT
+            if (immediateOnly) {
                 if (!registered || stopped || activeSocket == null) {
                     return false
                 }
@@ -106,7 +127,10 @@ class CoreWebSocketClient(
             }
 
             if (registered && activeSocket != null) {
-                return activeSocket.send(encoded)
+                if (activeSocket.send(encoded)) {
+                    return true
+                }
+                activeSocket.cancel()
             }
             if (outboundQueue.size >= MAX_OUTBOUND_QUEUE_SIZE) {
                 outboundQueue.removeFirst()
@@ -176,6 +200,11 @@ class CoreWebSocketClient(
         if (!isCurrent(expectedGeneration)) {
             return
         }
+        if (rawMessage.toByteArray(Charsets.UTF_8).size > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
+            listener.onProtocolEvent("پیام هسته از سقف مجاز بزرگ‌تر بود")
+            webSocket.close(MESSAGE_TOO_BIG_CLOSURE_CODE, "core message too large")
+            return
+        }
 
         val envelope = runCatching { DeviceProtocol.decode(rawMessage) }
             .getOrElse { error ->
@@ -184,6 +213,16 @@ class CoreWebSocketClient(
                 return
             }
 
+        if (!isUuid(envelope.messageId)) {
+            listener.onProtocolEvent("شناسه پیام هسته UUID معتبر نیست")
+            webSocket.cancel()
+            return
+        }
+        if (envelope.sentAtMs < 0) {
+            listener.onProtocolEvent("زمان پیام هسته نامعتبر است")
+            webSocket.cancel()
+            return
+        }
         if (envelope.protocolVersion != capabilities.protocolVersion) {
             listener.onProtocolEvent("نسخه پروتکل هسته با گوشی سازگار نیست")
             webSocket.cancel()
@@ -196,29 +235,11 @@ class CoreWebSocketClient(
         }
 
         when (envelope.type) {
-            DeviceProtocol.TYPE_REGISTERED -> {
-                val registeredPayload = runCatching {
-                    DeviceProtocol.decodeRegistered(envelope)
-                }.getOrElse { error ->
-                    listener.onProtocolEvent("پاسخ ثبت دستگاه نامعتبر است: ${error.message.orEmpty()}")
-                    webSocket.cancel()
-                    return
-                }
-                synchronized(lock) {
-                    if (generation != expectedGeneration || stopped) {
-                        return
-                    }
-                    registered = true
-                    reconnectAttempt = 0
-                }
-                scheduleHeartbeat(
-                    expectedGeneration = expectedGeneration,
-                    intervalSeconds = registeredPayload.heartbeatIntervalSeconds,
-                )
-                flushOutboundQueue(webSocket, expectedGeneration)
-                emitState(ConnectionState(ConnectionPhase.CONNECTED))
-                listener.onProtocolEvent("اتصال دستگاه با هسته تأیید شد")
-            }
+            DeviceProtocol.TYPE_REGISTERED -> handleRegistered(
+                webSocket = webSocket,
+                expectedGeneration = expectedGeneration,
+                envelope = envelope,
+            )
 
             DeviceProtocol.TYPE_HEARTBEAT_ACK -> {
                 val acknowledgement = runCatching {
@@ -242,12 +263,109 @@ class CoreWebSocketClient(
                 )
             }
 
+            DeviceProtocol.TYPE_ACTION_COMMAND -> {
+                val command = runCatching {
+                    DeviceProtocol.decodeActionCommand(envelope)
+                }.getOrElse { error ->
+                    listener.onProtocolEvent(
+                        "فرمان Android نامعتبر است: ${error.message.orEmpty()}",
+                    )
+                    webSocket.cancel()
+                    return
+                }
+                invokeListenerOrCancel(webSocket, "action command") {
+                    listener.onActionCommand(
+                        commandEnvelopeId = envelope.messageId,
+                        command = command,
+                    )
+                }
+            }
+
+            DeviceProtocol.TYPE_ACTION_CANCEL -> {
+                val cancellation = runCatching {
+                    DeviceProtocol.decodeActionCancel(envelope)
+                }.getOrElse { error ->
+                    listener.onProtocolEvent(
+                        "لغو فرمان Android نامعتبر است: ${error.message.orEmpty()}",
+                    )
+                    webSocket.cancel()
+                    return
+                }
+                invokeListenerOrCancel(webSocket, "action cancellation") {
+                    listener.onActionCancellation(
+                        cancelEnvelopeId = envelope.messageId,
+                        cancellation = cancellation,
+                    )
+                }
+            }
+
+            DeviceProtocol.TYPE_ACTION_RESULT_ACK -> {
+                val acknowledgement = runCatching {
+                    DeviceProtocol.decodeActionResultAck(envelope)
+                }.getOrElse { error ->
+                    listener.onProtocolEvent(
+                        "پاسخ نتیجه فرمان نامعتبر است: ${error.message.orEmpty()}",
+                    )
+                    return
+                }
+                listener.onActionResultAcknowledged(
+                    acknowledgement = acknowledgement,
+                    correlationId = envelope.correlationId,
+                )
+            }
+
             DeviceProtocol.TYPE_ERROR -> {
                 val error = runCatching { DeviceProtocol.decodeError(envelope) }.getOrNull()
                 listener.onProtocolEvent(
                     error?.let { "${it.code}: ${it.message}" } ?: "خطای ناشناخته از هسته",
                 )
             }
+
+            else -> {
+                listener.onProtocolEvent("نوع پیام پشتیبانی‌نشده از هسته: ${envelope.type}")
+                webSocket.cancel()
+            }
+        }
+    }
+
+    private fun handleRegistered(
+        webSocket: WebSocket,
+        expectedGeneration: Long,
+        envelope: ProtocolEnvelope,
+    ) {
+        val registeredPayload = runCatching {
+            DeviceProtocol.decodeRegistered(envelope)
+        }.getOrElse { error ->
+            listener.onProtocolEvent("پاسخ ثبت دستگاه نامعتبر است: ${error.message.orEmpty()}")
+            webSocket.cancel()
+            return
+        }
+        synchronized(lock) {
+            if (generation != expectedGeneration || stopped) {
+                return
+            }
+            registered = true
+            reconnectAttempt = 0
+        }
+        scheduleHeartbeat(
+            expectedGeneration = expectedGeneration,
+            intervalSeconds = registeredPayload.heartbeatIntervalSeconds,
+        )
+        flushOutboundQueue(webSocket, expectedGeneration)
+        emitState(ConnectionState(ConnectionPhase.CONNECTED))
+        listener.onProtocolEvent("اتصال دستگاه با هسته تأیید شد")
+    }
+
+    private fun invokeListenerOrCancel(
+        webSocket: WebSocket,
+        eventName: String,
+        callback: () -> Unit,
+    ) {
+        runCatching(callback).onFailure { error ->
+            listener.onProtocolEvent(
+                "$eventName processing failed: ${error.javaClass.simpleName}",
+            )
+            webSocket.cancel()
         }
     }
 
@@ -381,8 +499,11 @@ class CoreWebSocketClient(
 
     private companion object {
         const val NORMAL_CLOSURE_CODE: Int = 1000
+        const val MESSAGE_TOO_BIG_CLOSURE_CODE: Int = 1009
         const val MAX_OUTBOUND_QUEUE_SIZE: Int = 100
         const val MIN_HEARTBEAT_SECONDS: Int = 5
         const val MAX_HEARTBEAT_SECONDS: Int = 300
+
+        fun isUuid(value: String): Boolean = runCatching { UUID.fromString(value) }.isSuccess
     }
 }

@@ -12,6 +12,7 @@ from simorgh_core.devices.protocol import (
     DeviceObservationPayload,
     DeviceRegistrationPayload,
     ObservationAckStatus,
+    ProtocolEnvelope,
 )
 
 MAX_RECENT_OBSERVATION_MESSAGES = 256
@@ -81,6 +82,7 @@ class DeviceSession:
     registration: DeviceRegistrationPayload
     connected_at_ms: int
     observation_stream_id: UUID | None = None
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @classmethod
     def create(
@@ -97,6 +99,12 @@ class DeviceSession:
             registration=registration,
             connected_at_ms=int(time.time() * 1000),
         )
+
+    async def send_envelope(self, envelope: ProtocolEnvelope) -> None:
+        """Serialize writes because heartbeats, acks, and commands share one socket."""
+
+        async with self.send_lock:
+            await self.websocket.send_text(envelope.model_dump_json())
 
 
 class DeviceRegistry:

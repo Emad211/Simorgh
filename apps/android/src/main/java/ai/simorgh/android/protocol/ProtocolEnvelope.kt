@@ -1,6 +1,8 @@
 package ai.simorgh.android.protocol
 
 import ai.simorgh.android.accessibility.AccessibilitySnapshot
+import ai.simorgh.android.actions.AndroidActionCommand
+import ai.simorgh.android.actions.AndroidActionResult
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -107,6 +109,98 @@ data class DeviceObservationAckPayload(
 )
 
 @Serializable
+enum class ActionCommandAckStatus {
+    @SerialName("accepted")
+    ACCEPTED,
+
+    @SerialName("duplicate")
+    DUPLICATE,
+
+    @SerialName("busy")
+    BUSY,
+
+    @SerialName("expired")
+    EXPIRED,
+
+    @SerialName("rejected")
+    REJECTED,
+}
+
+@Serializable
+data class DeviceActionCommandAckPayload(
+    @SerialName("command_id")
+    val commandId: String,
+    @SerialName("action_id")
+    val actionId: String,
+    val status: ActionCommandAckStatus,
+    @SerialName("received_at_ms")
+    val receivedAtMs: Long,
+    val detail: String = "",
+)
+
+@Serializable
+enum class ActionResultAckStatus {
+    @SerialName("accepted")
+    ACCEPTED,
+
+    @SerialName("duplicate")
+    DUPLICATE,
+
+    @SerialName("unknown_action")
+    UNKNOWN_ACTION,
+
+    @SerialName("rejected")
+    REJECTED,
+}
+
+@Serializable
+data class DeviceActionResultAckPayload(
+    @SerialName("command_id")
+    val commandId: String,
+    @SerialName("action_id")
+    val actionId: String,
+    val status: ActionResultAckStatus,
+    @SerialName("received_at_ms")
+    val receivedAtMs: Long,
+    val detail: String = "",
+)
+
+@Serializable
+data class DeviceActionCancelPayload(
+    @SerialName("command_id")
+    val commandId: String,
+    @SerialName("action_id")
+    val actionId: String,
+    val reason: String = "",
+)
+
+@Serializable
+enum class ActionCancelAckStatus {
+    @SerialName("accepted")
+    ACCEPTED,
+
+    @SerialName("duplicate")
+    DUPLICATE,
+
+    @SerialName("not_found")
+    NOT_FOUND,
+
+    @SerialName("completed")
+    COMPLETED,
+}
+
+@Serializable
+data class DeviceActionCancelAckPayload(
+    @SerialName("command_id")
+    val commandId: String,
+    @SerialName("action_id")
+    val actionId: String,
+    val status: ActionCancelAckStatus,
+    @SerialName("received_at_ms")
+    val receivedAtMs: Long,
+)
+
+@Serializable
 data class DeviceErrorPayload(
     val code: String,
     val message: String,
@@ -119,6 +213,12 @@ object DeviceProtocol {
     const val TYPE_HEARTBEAT_ACK: String = "device.heartbeat_ack"
     const val TYPE_OBSERVATION: String = "device.observation"
     const val TYPE_OBSERVATION_ACK: String = "device.observation_ack"
+    const val TYPE_ACTION_COMMAND: String = "device.action_command"
+    const val TYPE_ACTION_COMMAND_ACK: String = "device.action_command_ack"
+    const val TYPE_ACTION_RESULT: String = "device.action_result"
+    const val TYPE_ACTION_RESULT_ACK: String = "device.action_result_ack"
+    const val TYPE_ACTION_CANCEL: String = "device.action_cancel"
+    const val TYPE_ACTION_CANCEL_ACK: String = "device.action_cancel_ack"
     const val TYPE_ERROR: String = "device.error"
     const val MAX_DEVICE_MESSAGE_BYTES: Int = 2_000_000
 
@@ -126,6 +226,7 @@ object DeviceProtocol {
         encodeDefaults = true
         explicitNulls = false
         ignoreUnknownKeys = false
+        classDiscriminator = "kind"
     }
 
     fun registration(
@@ -177,6 +278,67 @@ object DeviceProtocol {
         ).jsonObject,
     )
 
+    fun actionCommandAck(
+        deviceId: String,
+        commandEnvelopeId: String,
+        command: AndroidActionCommand,
+        status: ActionCommandAckStatus,
+        detail: String = "",
+        nowMs: Long = System.currentTimeMillis(),
+    ): ProtocolEnvelope = ProtocolEnvelope(
+        messageId = UUID.randomUUID().toString(),
+        type = TYPE_ACTION_COMMAND_ACK,
+        sentAtMs = nowMs,
+        deviceId = deviceId,
+        correlationId = commandEnvelopeId,
+        payload = json.encodeToJsonElement(
+            DeviceActionCommandAckPayload(
+                commandId = command.commandId,
+                actionId = command.actionId,
+                status = status,
+                receivedAtMs = nowMs,
+                detail = detail.take(1_000),
+            ),
+        ).jsonObject,
+    )
+
+    fun actionResult(
+        deviceId: String,
+        commandEnvelopeId: String,
+        result: AndroidActionResult,
+        messageId: String = UUID.randomUUID().toString(),
+        nowMs: Long = System.currentTimeMillis(),
+    ): ProtocolEnvelope = ProtocolEnvelope(
+        messageId = messageId,
+        type = TYPE_ACTION_RESULT,
+        sentAtMs = nowMs,
+        deviceId = deviceId,
+        correlationId = commandEnvelopeId,
+        payload = json.encodeToJsonElement(result).jsonObject,
+    )
+
+    fun actionCancelAck(
+        deviceId: String,
+        cancelEnvelopeId: String,
+        cancellation: DeviceActionCancelPayload,
+        status: ActionCancelAckStatus,
+        nowMs: Long = System.currentTimeMillis(),
+    ): ProtocolEnvelope = ProtocolEnvelope(
+        messageId = UUID.randomUUID().toString(),
+        type = TYPE_ACTION_CANCEL_ACK,
+        sentAtMs = nowMs,
+        deviceId = deviceId,
+        correlationId = cancelEnvelopeId,
+        payload = json.encodeToJsonElement(
+            DeviceActionCancelAckPayload(
+                commandId = cancellation.commandId,
+                actionId = cancellation.actionId,
+                status = status,
+                receivedAtMs = nowMs,
+            ),
+        ).jsonObject,
+    )
+
     fun encode(envelope: ProtocolEnvelope): String = json.encodeToString(envelope)
 
     fun encodedSizeBytes(envelope: ProtocolEnvelope): Int =
@@ -191,6 +353,15 @@ object DeviceProtocol {
         json.decodeFromJsonElement(envelope.payload)
 
     fun decodeObservationAck(envelope: ProtocolEnvelope): DeviceObservationAckPayload =
+        json.decodeFromJsonElement(envelope.payload)
+
+    fun decodeActionCommand(envelope: ProtocolEnvelope): AndroidActionCommand =
+        json.decodeFromJsonElement(envelope.payload)
+
+    fun decodeActionResultAck(envelope: ProtocolEnvelope): DeviceActionResultAckPayload =
+        json.decodeFromJsonElement(envelope.payload)
+
+    fun decodeActionCancel(envelope: ProtocolEnvelope): DeviceActionCancelPayload =
         json.decodeFromJsonElement(envelope.payload)
 
     fun decodeError(envelope: ProtocolEnvelope): DeviceErrorPayload =

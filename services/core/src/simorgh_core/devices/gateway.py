@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
 
 from simorgh_core.config import Settings, get_settings
+from simorgh_core.devices.action_broker import action_broker
+from simorgh_core.devices.actions import AndroidActionResult
 from simorgh_core.devices.protocol import (
+    DeviceActionCancelAckPayload,
+    DeviceActionCommandAckPayload,
+    DeviceActionResultAckPayload,
     DeviceErrorPayload,
     DeviceHeartbeatAckPayload,
     DeviceHeartbeatPayload,
@@ -52,6 +57,7 @@ async def _send_error(
     correlation_id: UUID | None,
     code: str,
     message: str,
+    session: DeviceSession | None = None,
 ) -> None:
     envelope = ProtocolEnvelope.create(
         message_type="device.error",
@@ -59,11 +65,13 @@ async def _send_error(
         correlation_id=correlation_id,
         payload=DeviceErrorPayload(code=code, message=message[:1_000]),
     )
-    await websocket.send_text(envelope.model_dump_json())
+    if session is None:
+        await websocket.send_text(envelope.model_dump_json())
+    else:
+        await session.send_envelope(envelope)
 
 
 async def _handle_heartbeat(
-    websocket: WebSocket,
     *,
     session: DeviceSession,
     envelope: ProtocolEnvelope,
@@ -78,11 +86,10 @@ async def _handle_heartbeat(
             server_time_ms=int(time.time() * 1000),
         ),
     )
-    await websocket.send_text(acknowledgement.model_dump_json())
+    await session.send_envelope(acknowledgement)
 
 
 async def _handle_observation(
-    websocket: WebSocket,
     *,
     session: DeviceSession,
     envelope: ProtocolEnvelope,
@@ -107,7 +114,58 @@ async def _handle_observation(
             received_at_ms=received_at_ms,
         ),
     )
-    await websocket.send_text(acknowledgement.model_dump_json())
+    await session.send_envelope(acknowledgement)
+
+
+async def _handle_action_command_ack(
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+) -> None:
+    acknowledgement = DeviceActionCommandAckPayload.model_validate(envelope.payload)
+    await action_broker.record_command_ack(
+        session=session,
+        envelope=envelope,
+        acknowledgement=acknowledgement,
+    )
+
+
+async def _handle_action_result(
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+) -> None:
+    result = AndroidActionResult.model_validate(envelope.payload)
+    result_status, _ = await action_broker.record_result(
+        session=session,
+        envelope=envelope,
+        result=result,
+    )
+    acknowledgement = ProtocolEnvelope.create(
+        message_type="device.action_result_ack",
+        device_id=session.device_id,
+        correlation_id=envelope.message_id,
+        payload=DeviceActionResultAckPayload(
+            command_id=result.command_id,
+            action_id=result.action_id,
+            status=result_status,
+            received_at_ms=int(time.time() * 1000),
+        ),
+    )
+    await session.send_envelope(acknowledgement)
+
+
+async def _handle_action_cancel_ack(
+    *,
+    session: DeviceSession,
+    envelope: ProtocolEnvelope,
+) -> None:
+    acknowledgement = DeviceActionCancelAckPayload.model_validate(envelope.payload)
+    await action_broker.record_cancel_ack(
+        session=session,
+        envelope=envelope,
+        acknowledgement=acknowledgement,
+    )
 
 
 @router.websocket("/ws")
@@ -181,7 +239,8 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
                 heartbeat_interval_seconds=HEARTBEAT_INTERVAL_SECONDS,
             ),
         )
-        await websocket.send_text(registered.model_dump_json())
+        await session.send_envelope(registered)
+        await action_broker.redeliver(session)
 
         while True:
             raw_message = await websocket.receive_text()
@@ -192,6 +251,7 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
                     correlation_id=None,
                     code="message_too_large",
                     message="device message exceeded the configured byte limit",
+                    session=session,
                 )
                 await websocket.close(
                     code=status.WS_1009_MESSAGE_TOO_BIG,
@@ -213,17 +273,15 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
                     raise ValueError("message device_id does not match registered device")
 
                 if envelope.type == "device.heartbeat":
-                    await _handle_heartbeat(
-                        websocket,
-                        session=session,
-                        envelope=envelope,
-                    )
+                    await _handle_heartbeat(session=session, envelope=envelope)
                 elif envelope.type == "device.observation":
-                    await _handle_observation(
-                        websocket,
-                        session=session,
-                        envelope=envelope,
-                    )
+                    await _handle_observation(session=session, envelope=envelope)
+                elif envelope.type == "device.action_command_ack":
+                    await _handle_action_command_ack(session=session, envelope=envelope)
+                elif envelope.type == "device.action_result":
+                    await _handle_action_result(session=session, envelope=envelope)
+                elif envelope.type == "device.action_cancel_ack":
+                    await _handle_action_cancel_ack(session=session, envelope=envelope)
                 else:
                     raise ValueError(f"unsupported message type: {envelope.type}")
             except (ValidationError, ValueError) as exc:
@@ -233,6 +291,7 @@ async def device_websocket(websocket: WebSocket, settings: SettingsDependency) -
                     correlation_id=envelope.message_id if envelope is not None else None,
                     code="invalid_message",
                     message=str(exc),
+                    session=session,
                 )
 
     except WebSocketDisconnect:
