@@ -242,6 +242,7 @@ class AccessibilityObservationPublisher(
         }
 
         val sent = sender(delivery.envelope)
+        var invalidateAcknowledgement = false
         synchronized(lock) {
             if (closed || inFlight?.envelope?.messageId != delivery.envelope.messageId) {
                 return
@@ -253,13 +254,16 @@ class AccessibilityObservationPublisher(
                     awaitingAcknowledgement = false,
                 )
                 listener("observation ${delivery.snapshot.snapshotId} paused until reconnect")
-                return
+                invalidateAcknowledgement = true
+            } else {
+                acknowledgementTask?.cancel()
+                acknowledgementTask = scheduler.schedule(acknowledgementTimeoutMillis) {
+                    onAcknowledgementTimeout(delivery.envelope.messageId)
+                }
             }
-
-            acknowledgementTask?.cancel()
-            acknowledgementTask = scheduler.schedule(acknowledgementTimeoutMillis) {
-                onAcknowledgementTimeout(delivery.envelope.messageId)
-            }
+        }
+        if (invalidateAcknowledgement) {
+            acknowledgementInvalidator()
         }
     }
 
