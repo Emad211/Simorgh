@@ -1,6 +1,7 @@
 package ai.simorgh.android.transport
 
 import ai.simorgh.android.actions.AndroidActionContractValidator
+import ai.simorgh.android.actions.AndroidActionResult
 import ai.simorgh.android.actions.PendingActionResultDelivery
 import ai.simorgh.android.protocol.ActionResultAckStatus
 import ai.simorgh.android.protocol.DeviceActionResultAckPayload
@@ -47,14 +48,17 @@ class ActionResultPublisher(
             }
             val existing = delivery
             if (existing != null) {
-                if (existing.envelope == envelope) {
+                if (existing.envelope == envelope && existing.result == validated) {
                     scheduleSendLocked(delayMillis = 0)
                     return true
                 }
                 listener("another action result is already pending")
                 return false
             }
-            delivery = ResultDelivery(envelope = envelope)
+            delivery = ResultDelivery(
+                envelope = envelope,
+                result = validated,
+            )
             scheduleSendLocked(delayMillis = 0)
         }
         return true
@@ -203,12 +207,8 @@ class ActionResultPublisher(
 
     private data class ResultDelivery(
         val envelope: ProtocolEnvelope,
+        val result: AndroidActionResult,
         val attemptsOnConnection: Int = 0,
         val awaitingAcknowledgement: Boolean = false,
-    ) {
-        val result
-            get() = DeviceProtocol.json.decodeFromJsonElement<ai.simorgh.android.actions.AndroidActionResult>(
-                envelope.payload,
-            )
-    }
+    )
 }
