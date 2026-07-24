@@ -55,6 +55,7 @@ class ObservationMessageReceipt:
     payload_hash: str
     first_session_id: UUID
     first_received_at_ms: int
+    acknowledgement_status: ObservationAckStatus
 
     @classmethod
     def from_payload(
@@ -63,22 +64,30 @@ class ObservationMessageReceipt:
         *,
         session_id: UUID,
         received_at_ms: int,
+        acknowledgement_status: ObservationAckStatus,
     ) -> ObservationMessageReceipt:
-        canonical = payload.model_dump_json().encode("utf-8")
         return cls(
             identity=ObservationIdentity.from_payload(payload),
-            payload_hash=hashlib.sha256(canonical).hexdigest(),
+            payload_hash=cls.hash_payload(payload),
             first_session_id=session_id,
             first_received_at_ms=received_at_ms,
+            acknowledgement_status=acknowledgement_status,
         )
 
+    @staticmethod
+    def hash_payload(payload: DeviceObservationPayload) -> str:
+        canonical = payload.model_dump_json().encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
     def matches(self, payload: DeviceObservationPayload) -> bool:
-        candidate = ObservationMessageReceipt.from_payload(
-            payload,
-            session_id=self.first_session_id,
-            received_at_ms=self.first_received_at_ms,
+        return (
+            self.identity == ObservationIdentity.from_payload(payload)
+            and self.payload_hash == self.hash_payload(payload)
         )
-        return self.identity == candidate.identity and self.payload_hash == candidate.payload_hash
+
+    @property
+    def evidence_eligible(self) -> bool:
+        return self.acknowledgement_status != "stale"
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,12 +246,6 @@ class DeviceRegistry:
         observation: DeviceObservationPayload,
         received_at_ms: int,
     ) -> ObservationAckStatus:
-        receipt = ObservationMessageReceipt.from_payload(
-            observation,
-            session_id=session.session_id,
-            received_at_ms=received_at_ms,
-        )
-
         async with self._lock:
             current = self._sessions.get(session.device_id)
             if current is None or current.session_id != session.session_id:
@@ -265,13 +268,15 @@ class DeviceRegistry:
                     raise ObservationSequenceConflictError(
                         "message_id was reused for different observation payload"
                     )
+                state.remember_message(message_id, previous_receipt)
+                if not previous_receipt.evidence_eligible:
+                    return "stale"
                 replay = StoredDeviceObservation(
                     message_id=message_id,
                     session_id=previous_receipt.first_session_id,
                     received_at_ms=previous_receipt.first_received_at_ms,
                     payload=observation,
                 )
-                state.remember_message(message_id, previous_receipt)
                 state.refresh_evidence(StoredObservationEvidence.from_stored(replay))
                 return "duplicate"
 
@@ -283,12 +288,24 @@ class DeviceRegistry:
 
             if not stream_changed:
                 if observation.sequence < state.highest_sequence:
-                    state.remember_message(message_id, receipt)
+                    stale_receipt = ObservationMessageReceipt.from_payload(
+                        observation,
+                        session_id=session.session_id,
+                        received_at_ms=received_at_ms,
+                        acknowledgement_status="stale",
+                    )
+                    state.remember_message(message_id, stale_receipt)
                     return "stale"
                 if observation.sequence == state.highest_sequence:
                     latest = state.latest
                     if latest is not None and latest.payload == observation:
-                        state.remember_message(message_id, receipt)
+                        duplicate_receipt = ObservationMessageReceipt.from_payload(
+                            observation,
+                            session_id=session.session_id,
+                            received_at_ms=received_at_ms,
+                            acknowledgement_status="duplicate",
+                        )
+                        state.remember_message(message_id, duplicate_receipt)
                         state.refresh_evidence(StoredObservationEvidence.from_stored(latest))
                         return "duplicate"
                     raise ObservationSequenceConflictError(
@@ -307,6 +324,12 @@ class DeviceRegistry:
                 session_id=session.session_id,
                 received_at_ms=received_at_ms,
                 payload=observation,
+            )
+            receipt = ObservationMessageReceipt.from_payload(
+                observation,
+                session_id=session.session_id,
+                received_at_ms=received_at_ms,
+                acknowledgement_status=status,
             )
             state.current_stream_id = observation.stream_id
             state.highest_sequence = observation.sequence
