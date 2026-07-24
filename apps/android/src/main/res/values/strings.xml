@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">سیمرغ</string>
+    <string name="status_title">وضعیت دستگاه</string>
+    <string name="connection_disconnected">اتصال به هسته برقرار نیست</string>
+    <string name="connection_hint">در مرحله بعد، ارتباط امن و پایدار با Simorgh Core اضافه می‌شود.</string>
+    <string name="protocol_label">نسخه پروتکل</string>
+    <string name="android_label">نسخه اندروید</string>
+    <string name="device_label">دستگاه</string>
+    <string name="capabilities_label">قابلیت‌های اعلام‌شده</string>
+    <string name="foundation_ready">پوسته اندروید آماده توسعه است</string>
+</resources>
