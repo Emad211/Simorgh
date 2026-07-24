@@ -22,6 +22,11 @@ enum class SelectorResolutionOutcome {
     INVALID_SELECTOR,
 }
 
+enum class SelectorResolutionMode {
+    ACTION_TARGET,
+    VERIFICATION,
+}
+
 data class SelectorCandidateScore(
     val node: AccessibilityNodeSnapshot,
     val score: Int,
@@ -60,6 +65,7 @@ object NodeSelectorMatcher {
     fun resolve(
         snapshot: AccessibilitySnapshot,
         selector: AndroidNodeSelector,
+        mode: SelectorResolutionMode = SelectorResolutionMode.ACTION_TARGET,
     ): SelectorResolution {
         val normalizedSelector = runCatching(selector::validated).getOrElse { error ->
             return SelectorResolution(
@@ -69,7 +75,7 @@ object NodeSelectorMatcher {
         }
 
         val candidates = snapshot.nodes.mapNotNull { node ->
-            scoreCandidate(snapshot, normalizedSelector, node)
+            scoreCandidate(snapshot, normalizedSelector, node, mode)
         }.sortedWith(
             compareByDescending<SelectorCandidateScore>(SelectorCandidateScore::score)
                 .thenBy { it.node.path }
@@ -116,8 +122,12 @@ object NodeSelectorMatcher {
         snapshot: AccessibilitySnapshot,
         selector: AndroidNodeSelector,
         node: AccessibilityNodeSnapshot,
+        mode: SelectorResolutionMode,
     ): SelectorCandidateScore? {
-        if (!node.visibleToUser || !node.enabled) {
+        if (!node.visibleToUser) {
+            return null
+        }
+        if (mode == SelectorResolutionMode.ACTION_TARGET && !node.enabled) {
             return null
         }
         val effectivePackage = node.packageName ?: snapshot.activePackage
@@ -202,7 +212,8 @@ object NodeSelectorMatcher {
             }
         }
 
-        if (signals.any { signal ->
+        if (
+            signals.any { signal ->
                 signal.field in selector.requiredFields && !signal.matched
             }
         ) {
@@ -221,9 +232,11 @@ object NodeSelectorMatcher {
                 add("package_name")
                 addAll(matchedSignals.map(ScoredSignal::name))
                 addAll(
-                    selector.requiredCapabilities.map { capability ->
-                        "capability_${capability.name.lowercase()}"
-                    },
+                    selector.requiredCapabilities
+                        .sortedBy(NodeCapability::name)
+                        .map { capability ->
+                            "capability_${capability.name.lowercase()}"
+                        },
                 )
             },
         )
