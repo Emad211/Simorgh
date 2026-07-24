@@ -212,17 +212,19 @@ class ObservationRefreshBroker:
                 )
 
             previous = record.acknowledgement
-            if previous is not None:
-                if record.terminal:
-                    if self._ack_statuses_equivalent(
-                        previous.status,
-                        acknowledgement.status,
-                    ):
-                        return record
-                    raise ObservationRefreshConflictError(
-                        "terminal refresh acknowledgement changed after completion"
-                    )
+            if record.terminal:
+                if previous is None:
+                    return record
+                if self._ack_statuses_equivalent(
+                    previous.status,
+                    acknowledgement.status,
+                ):
+                    return record
+                raise ObservationRefreshConflictError(
+                    "terminal refresh acknowledgement changed after completion"
+                )
 
+            if previous is not None:
                 if previous.status not in _ACCEPTED_ACK_STATUSES:
                     raise ObservationRefreshConflictError(
                         "non-terminal refresh has an invalid prior acknowledgement"
