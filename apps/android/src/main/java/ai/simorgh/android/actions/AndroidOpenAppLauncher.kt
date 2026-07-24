@@ -10,6 +10,9 @@ import android.net.Uri
 import android.os.Build
 import androidx.annotation.RequiresApi
 import ai.simorgh.android.device.BackgroundLaunchAccess
+import ai.simorgh.android.device.BackgroundLaunchPolicy
+import ai.simorgh.android.device.IntentSenderBackgroundGrant
+import ai.simorgh.android.device.SimorghAppVisibility
 
 enum class OpenAppLaunchStatus {
     ACCEPTED,
@@ -166,12 +169,29 @@ class AndroidOpenAppLauncher(
     @Suppress("DEPRECATION")
     private fun backgroundActivityOptions(): android.os.Bundle =
         ActivityOptions.makeBasic().apply {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                setPendingIntentBackgroundActivityStartMode(
-                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+            when (
+                BackgroundLaunchPolicy.intentSenderGrant(
+                    sdkInt = Build.VERSION.SDK_INT,
+                    appVisible = SimorghAppVisibility.isVisible(),
                 )
-            } else {
-                setPendingIntentBackgroundActivityLaunchAllowed(true)
+            ) {
+                IntentSenderBackgroundGrant.LEGACY_BOOLEAN ->
+                    setPendingIntentBackgroundActivityLaunchAllowed(true)
+
+                IntentSenderBackgroundGrant.ALLOWED ->
+                    setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+                    )
+
+                IntentSenderBackgroundGrant.ALLOW_IF_VISIBLE ->
+                    setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE,
+                    )
+
+                IntentSenderBackgroundGrant.ALLOW_ALWAYS ->
+                    setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS,
+                    )
             }
         }.toBundle()
 }
