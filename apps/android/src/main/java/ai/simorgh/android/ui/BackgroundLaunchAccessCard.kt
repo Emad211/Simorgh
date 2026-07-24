@@ -16,6 +16,7 @@ import ai.simorgh.android.R
 
 @Composable
 fun BackgroundLaunchAccessCard(
+    specialAccessRequired: Boolean,
     granted: Boolean,
     onOpenSettings: () -> Unit,
 ) {
@@ -30,19 +31,25 @@ fun BackgroundLaunchAccessCard(
             )
             Text(
                 text = stringResource(
-                    if (granted) {
-                        R.string.background_launch_granted
-                    } else {
-                        R.string.background_launch_missing
+                    when {
+                        !specialAccessRequired -> R.string.background_launch_legacy_ready
+                        granted -> R.string.background_launch_granted
+                        else -> R.string.background_launch_missing
                     },
                 ),
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                text = stringResource(R.string.background_launch_explanation),
+                text = stringResource(
+                    if (specialAccessRequired) {
+                        R.string.background_launch_explanation
+                    } else {
+                        R.string.background_launch_legacy_explanation
+                    },
+                ),
                 style = MaterialTheme.typography.bodyMedium,
             )
-            if (!granted) {
+            if (specialAccessRequired && !granted) {
                 OutlinedButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.fillMaxWidth(),
