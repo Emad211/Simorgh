@@ -240,11 +240,12 @@ class OpenAppActionExecutor(
             )
         }
 
+        val operation = command.operation as OpenAppOperation
         val existingState = UiPostconditionEvaluator.evaluate(
             snapshot = freshBefore,
             policy = command.verification,
         )
-        if (existingState.outcome == PredicateOutcome.SATISFIED) {
+        if (operation.uri == null && existingState.outcome == PredicateOutcome.SATISFIED) {
             return result(
                 command = command,
                 outcome = ActionOutcome.SUCCEEDED,
@@ -262,7 +263,6 @@ class OpenAppActionExecutor(
             )
         }
 
-        val operation = command.operation as OpenAppOperation
         val launchedAtMs = wallClockMillis().coerceAtLeast(revalidationTimeMs)
         val launch = launcher.launch(operation)
         if (!launch.accepted) {
