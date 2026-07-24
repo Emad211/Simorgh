@@ -8,6 +8,7 @@ import ai.simorgh.android.actions.AndroidActionResult
 import ai.simorgh.android.actions.AndroidVerificationPolicy
 import ai.simorgh.android.actions.ObservationPrecondition
 import ai.simorgh.android.actions.OpenAppOperation
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
