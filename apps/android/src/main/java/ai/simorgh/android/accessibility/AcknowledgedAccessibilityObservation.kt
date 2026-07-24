@@ -1,7 +1,6 @@
 package ai.simorgh.android.accessibility
 
 import java.io.Closeable
-import java.util.concurrent.CopyOnWriteArraySet
 
 data class AcknowledgedSnapshotReference(
     val snapshotId: String,
@@ -43,37 +42,49 @@ data class AcknowledgedAccessibilityObservation(
 }
 
 object AccessibilityAcknowledgementBus {
+    private val lock = Any()
     private val listeners =
-        CopyOnWriteArraySet<(AcknowledgedAccessibilityObservation?) -> Unit>()
-
-    @Volatile
+        linkedSetOf<(AcknowledgedAccessibilityObservation?) -> Unit>()
     private var latest: AcknowledgedAccessibilityObservation? = null
 
-    fun latest(): AcknowledgedAccessibilityObservation? = latest
+    fun latest(): AcknowledgedAccessibilityObservation? =
+        synchronized(lock) { latest }
 
     fun publish(observation: AcknowledgedAccessibilityObservation) {
-        latest = observation
-        listeners.forEach { listener -> listener(observation) }
+        synchronized(lock) {
+            latest = observation
+            listeners.forEach { listener -> listener(observation) }
+        }
     }
 
     /**
      * Invalidate executable evidence from the previous Core connection without breaking subscribers.
      */
     internal fun reset() {
-        latest = null
-        listeners.forEach { listener -> listener(null) }
+        synchronized(lock) {
+            latest = null
+            listeners.forEach { listener -> listener(null) }
+        }
     }
 
     fun subscribe(
         listener: (AcknowledgedAccessibilityObservation?) -> Unit,
     ): Closeable {
-        listeners.add(listener)
-        listener(latest)
-        return Closeable { listeners.remove(listener) }
+        synchronized(lock) {
+            listeners.add(listener)
+            listener(latest)
+        }
+        return Closeable {
+            synchronized(lock) {
+                listeners.remove(listener)
+            }
+        }
     }
 
     internal fun clearForTest() {
-        latest = null
-        listeners.clear()
+        synchronized(lock) {
+            latest = null
+            listeners.clear()
+        }
     }
 }
