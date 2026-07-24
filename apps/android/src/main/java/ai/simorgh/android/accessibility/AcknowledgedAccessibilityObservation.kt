@@ -7,7 +7,9 @@ data class AcknowledgedAccessibilityObservation(
     val streamId: String,
     val sequence: Long,
     val stateFingerprint: String,
-    val snapshot: AccessibilitySnapshot,
+    val snapshotId: String,
+    val capturedAtMs: Long,
+    val activePackage: String? = null,
     val acknowledgedAtMs: Long,
 )
 
@@ -31,8 +33,10 @@ object AccessibilityAcknowledgementBus {
         return Closeable { listeners.remove(listener) }
     }
 
-    internal fun clearForTest() {
+    internal fun reset() {
         latest = null
         listeners.clear()
     }
+
+    internal fun clearForTest() = reset()
 }
