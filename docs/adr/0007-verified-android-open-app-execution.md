@@ -5,47 +5,59 @@
 
 ## Context
 
-Simorgh's first real Android side effect is opening an application. Although this appears simple, three independent uncertainties make a fire-and-forget implementation unreliable:
+Simorgh's first real Android side effect is opening an application. A fire-and-forget implementation is unreliable because:
 
-1. Android restricts Activity launches from background processes.
+1. Android background Activity-launch policy varies by platform generation;
 2. the UI can change after Core observes it but before the phone executes the command;
-3. Android accepting a launch API does not prove that the requested application became visible.
+3. a Core connection can be invalidated between a local capture and the launch call;
+4. Android accepting a launch API does not prove that the requested application became visible;
+5. a process restart after an uncertain side effect must not repeat the launch.
 
-The executor must work from Android 7/API 24 through current Android releases, including Samsung One UI, without treating platform acceptance as success or repeating a launch when the desired state already exists.
+The executor must work from Android 7/API 24 through current Android releases, including Samsung One UI, without treating API acceptance as success or repeating a launch when the desired state already exists.
 
 ## Decision
 
-Simorgh will implement `open_app` as a single typed, evidence-bound vertical slice.
+Simorgh will implement `open_app` as one typed, evidence-bound vertical slice.
 
-### Runtime launch eligibility
+### Versioned launch eligibility
 
-A launch request is issued only when:
+The runtime policy is explicit and JVM-testable:
 
-- a Simorgh Activity is visible; or
-- the user granted `SYSTEM_ALERT_WINDOW`, checked through `Settings.canDrawOverlays`.
+- API 24–28: Simorgh does not impose an overlay prerequisite;
+- API 29+: launch is eligible only when a Simorgh Activity is visible or `SYSTEM_ALERT_WINDOW` is granted and confirmed through `Settings.canDrawOverlays`.
 
-A Foreground Service alone is not considered launch authorization. When neither condition holds, the result is blocked with `unsupported_capability`.
+A Foreground Service alone is not launch authorization on restricted platform versions. When the modern prerequisite is absent, the result is `blocked / unsupported_capability / attempts=0`.
 
 ### Versioned launch adapter
 
 - API 24–32: `PackageManager.getLaunchIntentForPackage` and an explicit new-task launch.
-- API 33+: `PackageManager.getLaunchIntentSenderForPackage`, launched through `Context.startIntentSender` with sender-side background-launch opt-in options.
-- Explicit URI: package-scoped `ACTION_VIEW`; URI requires a scheme.
+- API 33+: `PackageManager.getLaunchIntentSenderForPackage`, invoked through `Context.startIntentSender` with sender-side background-start options.
+- Explicit URI: package-scoped `ACTION_VIEW`; URI requires a non-empty scheme.
 
-### Evidence binding
+The API 33 adapter is isolated behind `@RequiresApi(33)`. `NameNotFoundException` and `SendIntentException` map to `target_not_found`.
 
-Before launch, Android requires:
+### Initial evidence binding
+
+Before fresh capture, Android requires:
 
 - a recent observation acknowledged by Core;
-- satisfaction of every declared observation precondition;
-- a newly captured local snapshot;
-- equality between the fresh snapshot's canonical fingerprint and the acknowledged fingerprint.
+- satisfaction of every declared observation precondition.
 
-A mismatch is a TOCTOU failure and blocks execution.
+### Fresh capture and TOCTOU protection
+
+Android requests a new local Accessibility snapshot and requires equality between its canonical projected fingerprint and the acknowledged fingerprint. A mismatch is a TOCTOU failure and blocks execution.
+
+When an active Accessibility root exists, root package and window identity override potentially stale event hints.
+
+### Launch-boundary revalidation
+
+After fresh capture and immediately before launch, Android reads the current Core acknowledgement again. It must still exist, satisfy all command preconditions, and match the fresh local fingerprint.
+
+This prevents a disconnect or Core-session replacement between capture and launch from leaving a stale local variable executable.
 
 ### Idempotency
 
-The complete verification policy is evaluated against the fresh pre-launch snapshot. If already satisfied, the operation succeeds with zero attempts and no Activity launch.
+The complete verification policy is evaluated against the fresh pre-launch snapshot. If it is already satisfied, the operation succeeds with zero attempts and no Activity launch.
 
 ### Success verification
 
@@ -53,72 +65,119 @@ After launch acceptance, Android requires:
 
 - one or more newer local snapshots satisfying all typed predicates;
 - the configured count of stable samples with one canonical fingerprint;
+- the newest locally captured state still being that satisfying state;
 - a newer Core acknowledgement for that fingerprint.
+
+The final local-state check and acknowledgement selection occur under the evidence monitor to close arrival-order races.
 
 Only then is the result `succeeded`.
 
 ### Evidence history
 
-The process retains bounded histories of local snapshots and Core acknowledgements so a fast transition or acknowledgement cannot be missed between polling iterations. Histories contain immutable already-redacted Accessibility data and are process-local.
+The process retains bounded histories:
 
-### Self-launch
+- 32 complete projected local snapshots;
+- 64 compact acknowledgement references.
 
-`open_app` cannot target Simorgh itself because Simorgh currently filters its own package from the observation pipeline. Internal navigation requires a separate explicit contract.
+Compact acknowledgements contain stream, sequence, fingerprint, snapshot ID, capture time, active package, and acknowledgement time. They do not duplicate full UI trees.
+
+### Reconnect evidence sessions
+
+Acknowledged evidence is invalidated on disconnect and on detected send failure. Subscribers remain installed. Publication and invalidation callbacks are serialized.
+
+After a new registered connection, fingerprint deduplication is reset and the latest projected state is resubmitted even when the visible UI did not change.
+
+### Simorgh self-state
+
+Opening Simorgh itself is supported through a minimal package-only projection, not by transmitting its internal UI:
+
+```text
+active_package = ai.simorgh.android
+active_window_id = null
+root_node_id = null
+windows = []
+nodes = []
+```
+
+The same projection is used by transport and local evidence. See ADR 0008.
+
+### Crash safety
+
+The encrypted write-ahead ledger from ADR 0006 is committed before handler ownership. If execution becomes uncertain after process death, Android produces a conservative blocked result and does not replay the launch.
 
 ## Consequences
 
 ### Positive
 
 - A successful result has independently observed evidence.
-- Background launch restrictions become typed and diagnosable.
-- Android version differences are isolated inside one adapter.
-- Stale plans cannot launch from a changed screen.
+- Android-version differences are explicit and testable.
+- Android 7–9 are not blocked by an unnecessary overlay requirement.
+- Modern background launch restrictions become typed and diagnosable.
+- Stale plans and invalidated Core sessions cannot cross the launch boundary.
 - Already-satisfied requests avoid needless task switching.
-- The implementation remains compatible with the crash-safe action ledger from ADR 0006.
-- The same observation and verification architecture can later support click, type, and scroll.
+- Simorgh can prove transitions into its own Activity without exposing internal fields.
+- Fast ACKs and UI transitions are not lost between polling iterations.
+- The same evidence architecture can later support click, type, and scroll.
 
 ### Negative
 
 - A launch can time out even when the target briefly appeared but no matching Core acknowledgement arrived.
-- The private always-on mode requires a user-granted special access for reliable background launches.
-- OEM behavior still requires physical-device validation.
-- Keeping short process-local histories consumes more memory than retaining only the latest observation.
-- The executor is intentionally slower than a direct `startActivity` call because it captures and verifies evidence.
+- Private always-on mode on Android 10+ normally needs user-granted overlay access when Simorgh is not visible.
+- OEM and lock-screen behavior still require physical validation.
+- Short histories consume more memory than a latest-only design.
+- Execution is intentionally slower than direct `startActivity` because it captures and verifies evidence.
+- Wall-clock skew remains a known limitation tracked in issue #23.
+- Core action-journal durability remains a separate requirement tracked in issue #22.
 
 ## Rejected alternatives
 
-### Treat `startActivity` return as success
+### Treat the Activity-start API return as success
 
-Rejected because Activity launch APIs are asynchronous and platform/OEM restrictions may suppress or redirect the visible transition.
+Rejected because launch APIs are asynchronous and platform/OEM behavior may suppress, redirect, or delay the visible transition.
 
-### Always launch, even when the target is already active
+### Always launch when the target is already active
 
 Rejected because it can reset navigation state, interrupt the user, or create unnecessary task transitions.
 
 ### Use only the last snapshot received by Core
 
-Rejected because the UI may change between observation and execution. A fresh local capture and fingerprint equality are required.
+Rejected because the UI may change between observation and execution.
+
+### Validate Core evidence only once
+
+Rejected because the connection can be invalidated after fresh capture but before the Activity-start call.
 
 ### Use only local post-action evidence
 
-Rejected because the final result would not be independently visible to Core and could be lost during transport races.
+Rejected because the final result would not be independently visible to Core.
 
-### Use only Core acknowledgement without stable local samples
+### Use only a Core acknowledgement without stable local samples
 
-Rejected because one transient frame can satisfy a predicate briefly without representing the settled UI state.
+Rejected because a transient frame can satisfy a predicate without representing settled UI state.
 
-### Assume a Foreground Service can launch Activities
+### Require overlay on every supported Android version
 
-Rejected because Android explicitly separates long-running visible services from background Activity launch eligibility.
+Rejected because Simorgh supports API 24–28, before the general Android 10 background Activity-start restrictions used by the modern policy.
+
+### Assume a Foreground Service authorizes modern Activity starts
+
+Rejected because Android separates long-running visible services from background Activity-launch eligibility.
+
+### Exclude every Simorgh self-snapshot
+
+Rejected because transitions into Simorgh would become unverifiable. A package-only projection provides sufficient evidence without exposing internal UI.
 
 ### Depend solely on package queries
 
-Rejected on API 33+ because `getLaunchIntentSenderForPackage` provides a front-door launch token not restricted by package visibility. The older API path remains necessary for API 24–32.
+Rejected on API 33+ because `getLaunchIntentSenderForPackage` provides a front-door launch token not restricted by ordinary package visibility. The older path remains necessary for API 24–32.
 
 ## Follow-up
 
-- complete CI and Android lint for API 24–36;
-- execute the physical validation protocol on the Samsung Galaxy A53;
+- complete fully green CI and lint for API 24–36;
+- execute the physical validation protocol on Samsung Galaxy A53;
 - add a deterministic fixture application for launch and postcondition tests;
-- record OEM-specific behavior for One UI background launch and battery modes;
-- implement `click_node` only after live node reacquisition and its own verification evidence are complete.
+- implement explicit fresh-observation handshake in issue #21;
+- implement durable Core action journal in issue #22;
+- implement clock normalization in issue #23;
+- record One UI background-launch, lock-screen, and battery-mode behavior;
+- implement `click_node` only after live node reacquisition and its own evidence are complete.
