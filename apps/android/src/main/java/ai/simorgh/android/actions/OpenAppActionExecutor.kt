@@ -190,6 +190,28 @@ class OpenAppActionExecutor(
             )
         }
 
+        val existingState = UiPostconditionEvaluator.evaluate(
+            snapshot = freshBefore,
+            policy = command.verification,
+        )
+        if (existingState.outcome == PredicateOutcome.SATISFIED) {
+            return result(
+                command = command,
+                outcome = ActionOutcome.SUCCEEDED,
+                failureCode = ActionFailureCode.NONE,
+                startedAtMs = startedAtMs,
+                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                attempts = 0,
+                before = acknowledgedBefore.toReference(),
+                after = acknowledgedBefore.toReference(),
+                predicates = existingState.evidence,
+                detail = (
+                    "declared postconditions already held in a fresh state matching the " +
+                        "latest Core-acknowledged fingerprint; launch was skipped"
+                    ).take(MAX_DETAIL_LENGTH),
+            )
+        }
+
         val operation = command.operation as OpenAppOperation
         val launchedAtMs = wallClockMillis().coerceAtLeast(startedAtMs)
         val launch = launcher.launch(operation)
@@ -239,7 +261,9 @@ class OpenAppActionExecutor(
             cancelled = execution.cancelled::get,
         )
         val finishedAtMs = wallClockMillis().coerceAtLeast(launchedAtMs)
-        val detail = "${launch.adapter}: ${launch.detail}; ${evidence.detail}".take(MAX_DETAIL_LENGTH)
+        val detail = (
+            "${launch.adapter}: ${launch.detail}; ${evidence.detail}"
+            ).take(MAX_DETAIL_LENGTH)
         return when (evidence.status) {
             PostActionEvidenceStatus.SATISFIED -> result(
                 command = command,
