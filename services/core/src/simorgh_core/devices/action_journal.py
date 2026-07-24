@@ -202,11 +202,7 @@ class ActionJournal(Protocol):
 
 
 def canonical_json(value: BaseModel | Mapping[str, object]) -> str:
-    payload: object
-    if isinstance(value, BaseModel):
-        payload = value.model_dump(mode="json")
-    else:
-        payload = dict(value)
+    payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else dict(value)
     return json.dumps(
         payload,
         ensure_ascii=False,
