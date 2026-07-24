@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import ai.simorgh.android.device.BackgroundLaunchAccess
@@ -77,8 +78,7 @@ class AndroidOpenAppLauncher(
 
     private fun launchWithLegacyIntent(packageName: String): OpenAppLaunchAttempt {
         val intent = packageManager.getLaunchIntentForPackage(packageName)
-            ?: return OpenAppLaunchAttempt(
-                status = OpenAppLaunchStatus.TARGET_NOT_FOUND,
+            ?: return targetNotFound(
                 adapter = "getLaunchIntentForPackage",
                 detail = "target package has no visible front-door activity",
             )
@@ -97,8 +97,7 @@ class AndroidOpenAppLauncher(
             detail = "Android accepted the activity launch request",
         )
     } catch (error: ActivityNotFoundException) {
-        OpenAppLaunchAttempt(
-            status = OpenAppLaunchStatus.TARGET_NOT_FOUND,
+        targetNotFound(
             adapter = adapter,
             detail = error.message.orEmpty().ifBlank { "target activity was not found" },
         )
@@ -111,7 +110,17 @@ class AndroidOpenAppLauncher(
     }
 
     private fun launchWithIntentSender(packageName: String): OpenAppLaunchAttempt {
-        val sender = packageManager.getLaunchIntentSenderForPackage(packageName)
+        val sender = try {
+            packageManager.getLaunchIntentSenderForPackage(packageName)
+        } catch (error: PackageManager.NameNotFoundException) {
+            return targetNotFound(
+                adapter = "getLaunchIntentSenderForPackage",
+                detail = error.message.orEmpty().ifBlank {
+                    "target package is unknown or has no front-door activity"
+                },
+            )
+        }
+
         return try {
             applicationContext.startIntentSender(
                 sender,
@@ -127,8 +136,7 @@ class AndroidOpenAppLauncher(
                 detail = "Android accepted the front-door IntentSender",
             )
         } catch (error: IntentSender.SendIntentException) {
-            OpenAppLaunchAttempt(
-                status = OpenAppLaunchStatus.TARGET_NOT_FOUND,
+            targetNotFound(
                 adapter = "getLaunchIntentSenderForPackage",
                 detail = error.message.orEmpty().ifBlank {
                     "target package is unknown or has no front-door activity"
@@ -144,6 +152,13 @@ class AndroidOpenAppLauncher(
             )
         }
     }
+
+    private fun targetNotFound(adapter: String, detail: String): OpenAppLaunchAttempt =
+        OpenAppLaunchAttempt(
+            status = OpenAppLaunchStatus.TARGET_NOT_FOUND,
+            adapter = adapter,
+            detail = detail,
+        )
 
     @Suppress("DEPRECATION")
     private fun backgroundActivityOptions(): android.os.Bundle? {
