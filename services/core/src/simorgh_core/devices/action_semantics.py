@@ -97,6 +97,10 @@ def validate_result_semantics(
         raise AndroidActionSemanticError("open_app result attempts must be zero or one")
     if result.outcome != ActionOutcome.SUCCEEDED:
         return result
+    if operation.uri is not None and result.attempts == 0:
+        raise AndroidActionSemanticError(
+            "successful open_app with uri requires one accepted launch attempt"
+        )
 
     before = result.before_observation
     after = result.after_observation
