@@ -91,8 +91,20 @@ class CoreWebSocketClient(
         if (encoded.toByteArray(Charsets.UTF_8).size > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
             return false
         }
+
         synchronized(lock) {
             val activeSocket = socket
+            if (envelope.type == DeviceProtocol.TYPE_OBSERVATION) {
+                if (!registered || stopped || activeSocket == null) {
+                    return false
+                }
+                val sent = activeSocket.send(encoded)
+                if (!sent) {
+                    activeSocket.cancel()
+                }
+                return sent
+            }
+
             if (registered && activeSocket != null) {
                 return activeSocket.send(encoded)
             }
@@ -101,26 +113,6 @@ class CoreWebSocketClient(
             }
             outboundQueue.addLast(encoded)
             return true
-        }
-    }
-
-    fun sendObservation(envelope: ProtocolEnvelope): ObservationSendResult {
-        val encoded = DeviceProtocol.encode(envelope)
-        if (encoded.toByteArray(Charsets.UTF_8).size > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
-            return ObservationSendResult.REJECTED_TOO_LARGE
-        }
-        val activeSocket = synchronized(lock) {
-            if (!registered || stopped) {
-                return ObservationSendResult.NOT_CONNECTED
-            }
-            socket
-        } ?: return ObservationSendResult.NOT_CONNECTED
-
-        return if (activeSocket.send(encoded)) {
-            ObservationSendResult.SENT
-        } else {
-            activeSocket.cancel()
-            ObservationSendResult.NOT_CONNECTED
         }
     }
 
