@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
+from simorgh_core.devices.action_capabilities import (
+    AndroidActionCapabilityRequirement,
+    UnsupportedAndroidOperationError,
+    missing_capabilities,
+    requirement_for_operation,
+)
 from simorgh_core.devices.actions import AndroidActionCommand, AndroidActionResult
 from simorgh_core.devices.protocol import (
     ActionCommandAckStatus,
@@ -18,6 +24,7 @@ from simorgh_core.devices.protocol import (
 from simorgh_core.devices.registry import DeviceSession, registry
 
 MAX_TERMINAL_ACTIONS = 256
+_MAX_SESSION_RESOLUTION_ATTEMPTS = 3
 _ACCEPTED_COMMAND_ACKS = frozenset({"accepted", "duplicate"})
 _ACCEPTED_CANCEL_ACKS = frozenset({"accepted", "duplicate"})
 
@@ -36,6 +43,45 @@ class DeviceActionBusyError(DeviceActionBrokerError):
 
 class DeviceActionNotFoundError(DeviceActionBrokerError):
     """Raised when an action identifier has never been dispatched."""
+
+
+class DeviceActionDeviceUnavailableError(DeviceActionBrokerError):
+    """Raised when no current connected device Session can own dispatch."""
+
+    def __init__(self, operation_kind: str, message: str = "device is not connected") -> None:
+        self.operation_kind = operation_kind
+        super().__init__(message)
+
+
+class DeviceActionUnsupportedOperationError(DeviceActionBrokerError):
+    """Raised when the action schema has no enabled execution-capability mapping."""
+
+    def __init__(self, operation_kind: str) -> None:
+        self.operation_kind = operation_kind
+        super().__init__(
+            f"Android operation {operation_kind!r} is not enabled for Core dispatch"
+        )
+
+
+class DeviceActionUnsupportedCapabilityError(DeviceActionBrokerError):
+    """Raised when the current Session lacks a required versioned capability."""
+
+    def __init__(
+        self,
+        *,
+        operation_kind: str,
+        required_capabilities: tuple[str, ...],
+        missing: tuple[str, ...],
+        available: tuple[str, ...],
+    ) -> None:
+        self.operation_kind = operation_kind
+        self.required_capabilities = required_capabilities
+        self.missing_capabilities = missing
+        self.available_capabilities = available
+        missing_text = ", ".join(missing)
+        super().__init__(
+            f"current device session lacks required capability: {missing_text}"
+        )
 
 
 class DeviceActionPhase(StrEnum):
@@ -87,7 +133,7 @@ class DeviceActionRecord:
 
 
 class DeviceActionBroker:
-    """Per-device single-flight action delivery with replay-safe terminal history."""
+    """Per-device single-flight action delivery with enforced capability negotiation."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -104,7 +150,14 @@ class DeviceActionBroker:
         if command.deadline_at_ms <= now_ms:
             raise DeviceActionBrokerError("action command is already expired")
 
+        requirement = self._requirement_for_command(command)
+        # Capability and connectivity are checked before constructing a deliverable envelope or
+        # reserving command/action identity in the broker.
+        initial_session = await registry.get(device_id)
+        self._require_compatible_session(initial_session, requirement)
+
         key = (device_id, command.action_id)
+        created = False
         async with self._lock:
             self._expire_locked(now_ms)
             command_owner = self._record_for_command_id_locked(
@@ -140,10 +193,23 @@ class DeviceActionBroker:
                     updated_at_ms=now_ms,
                 )
                 self._records[key] = record
+                created = True
 
-        session = await registry.get(device_id)
-        if session is not None:
-            await self._deliver(record, session)
+        if record.terminal:
+            return record
+
+        try:
+            await self._deliver_command_to_current_session(
+                record=record,
+                requirement=requirement,
+            )
+        except (
+            DeviceActionDeviceUnavailableError,
+            DeviceActionUnsupportedCapabilityError,
+        ):
+            if created:
+                await self._rollback_never_delivered_record(record)
+            raise
         return record
 
     async def redeliver(self, session: DeviceSession) -> None:
@@ -151,8 +217,42 @@ class DeviceActionBroker:
         async with self._lock:
             self._expire_locked(now_ms)
             record = self._active_record_for_device_locked(session.device_id)
-        if record is not None:
-            await self._deliver(record, session)
+        if record is None:
+            return
+
+        if record.phase == DeviceActionPhase.CANCELLING and record.cancel_envelope is not None:
+            await self._deliver(record=record, session=session, required_capabilities=())
+            return
+
+        try:
+            requirement = self._requirement_for_command(record.command)
+        except DeviceActionUnsupportedOperationError as exc:
+            await self._note_incompatible_redelivery(
+                record=record,
+                detail=str(exc),
+            )
+            return
+
+        missing = missing_capabilities(
+            requirement,
+            session.registration.capabilities,
+        )
+        if missing:
+            await self._note_incompatible_redelivery(
+                record=record,
+                detail=(
+                    "current replacement session lacks required capability: "
+                    + ", ".join(missing)
+                    + "; command was not redelivered"
+                ),
+            )
+            return
+
+        await self._deliver(
+            record=record,
+            session=session,
+            required_capabilities=tuple(sorted(requirement.required_capabilities)),
+        )
 
     async def record_command_ack(
         self,
@@ -330,7 +430,7 @@ class DeviceActionBroker:
 
         session = await registry.get(device_id)
         if session is not None:
-            await self._deliver(record, session)
+            await self._deliver(record=record, session=session, required_capabilities=())
         return record
 
     async def clear(self) -> None:
@@ -340,11 +440,50 @@ class DeviceActionBroker:
             self._records.clear()
             self._terminal_order.clear()
 
-    async def _deliver(self, record: DeviceActionRecord, session: DeviceSession) -> None:
+    async def _deliver_command_to_current_session(
+        self,
+        *,
+        record: DeviceActionRecord,
+        requirement: AndroidActionCapabilityRequirement,
+    ) -> None:
+        for _ in range(_MAX_SESSION_RESOLUTION_ATTEMPTS):
+            session = await registry.get(record.device_id)
+            self._require_compatible_session(session, requirement)
+            assert session is not None
+            if await self._deliver(
+                record=record,
+                session=session,
+                required_capabilities=tuple(sorted(requirement.required_capabilities)),
+            ):
+                return
+        raise DeviceActionDeviceUnavailableError(
+            requirement.operation_kind,
+            "device session changed repeatedly before action delivery",
+        )
+
+    async def _deliver(
+        self,
+        *,
+        record: DeviceActionRecord,
+        session: DeviceSession,
+        required_capabilities: tuple[str, ...],
+    ) -> bool:
         if record.terminal or record.command.deadline_at_ms <= int(time.time() * 1000):
-            return
+            return True
         if not await registry.is_current(session):
-            return
+            return False
+
+        missing = tuple(
+            sorted(set(required_capabilities) - set(session.registration.capabilities))
+        )
+        if missing:
+            raise DeviceActionUnsupportedCapabilityError(
+                operation_kind=record.command.operation.kind,
+                required_capabilities=required_capabilities,
+                missing=missing,
+                available=tuple(sorted(set(session.registration.capabilities))),
+            )
+
         envelope = (
             record.cancel_envelope
             if record.phase == DeviceActionPhase.CANCELLING
@@ -364,6 +503,71 @@ class DeviceActionBroker:
                 }:
                     record.phase = DeviceActionPhase.DELIVERED
                 record.updated_at_ms = now_ms
+        return True
+
+    async def _rollback_never_delivered_record(self, record: DeviceActionRecord) -> None:
+        key = (record.device_id, record.action_id)
+        async with self._lock:
+            current = self._records.get(key)
+            if (
+                current is record
+                and record.phase == DeviceActionPhase.QUEUED
+                and record.delivery_count == 0
+                and record.last_session_id is None
+                and record.command_ack is None
+                and record.result is None
+                and record.cancel_envelope is None
+            ):
+                self._records.pop(key, None)
+
+    async def _note_incompatible_redelivery(
+        self,
+        *,
+        record: DeviceActionRecord,
+        detail: str,
+    ) -> None:
+        key = (record.device_id, record.action_id)
+        now_ms = int(time.time() * 1000)
+        async with self._lock:
+            current = self._records.get(key)
+            if current is not record or record.terminal:
+                return
+            record.updated_at_ms = now_ms
+            record.detail = detail[:2_000]
+            # Only a command that has never crossed a device boundary can be rejected safely.
+            # Once delivery may have occurred, do not claim it was never executed; retain the
+            # record until a result arrives or its existing deadline expires.
+            if record.delivery_count == 0 and record.command_ack is None:
+                record.phase = DeviceActionPhase.REJECTED
+                self._remember_terminal_locked(key)
+
+    def _requirement_for_command(
+        self,
+        command: AndroidActionCommand,
+    ) -> AndroidActionCapabilityRequirement:
+        try:
+            return requirement_for_operation(command.operation)
+        except UnsupportedAndroidOperationError as exc:
+            raise DeviceActionUnsupportedOperationError(exc.operation_kind) from exc
+
+    def _require_compatible_session(
+        self,
+        session: DeviceSession | None,
+        requirement: AndroidActionCapabilityRequirement,
+    ) -> None:
+        if session is None:
+            raise DeviceActionDeviceUnavailableError(requirement.operation_kind)
+        available = tuple(sorted(set(session.registration.capabilities)))
+        missing = missing_capabilities(requirement, set(available))
+        if missing:
+            raise DeviceActionUnsupportedCapabilityError(
+                operation_kind=requirement.operation_kind,
+                required_capabilities=tuple(
+                    sorted(requirement.required_capabilities)
+                ),
+                missing=missing,
+                available=available,
+            )
 
     def _active_record_for_device_locked(
         self,
