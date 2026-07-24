@@ -15,6 +15,7 @@ import android.os.Looper
 import ai.simorgh.android.MainActivity
 import ai.simorgh.android.R
 import ai.simorgh.android.accessibility.AccessibilityObservationBus
+import ai.simorgh.android.accessibility.AccessibilitySnapshot
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.device.DeviceIdentityStore
 import ai.simorgh.android.protocol.DeviceObservationAckPayload
@@ -25,9 +26,16 @@ import ai.simorgh.android.transport.CoreConnectionConfig
 import ai.simorgh.android.transport.CoreConnectionListener
 import ai.simorgh.android.transport.CoreWebSocketClient
 import java.io.Closeable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class SimorghConnectionService : Service(), CoreConnectionListener {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val observationExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val latestObservation = AtomicReference<AccessibilitySnapshot?>(null)
+    private val observationDrainScheduled = AtomicBoolean(false)
 
     private lateinit var connectionStore: SecureConnectionStore
     private lateinit var connectionClient: CoreWebSocketClient
@@ -62,7 +70,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             if (snapshot.activePackage == packageName) {
                 return@subscribe
             }
-            observationPublisher.submit(snapshot)
+            enqueueLatestObservation(snapshot)
         }
     }
 
@@ -102,6 +110,8 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
 
     override fun onDestroy() {
         observationSubscription.close()
+        latestObservation.set(null)
+        observationExecutor.shutdownNow()
         observationPublisher.close()
         connectionClient.close()
         ConnectionStatusBus.publish(
@@ -140,6 +150,27 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             acknowledgement = acknowledgement,
             correlationId = correlationId,
         )
+    }
+
+    private fun enqueueLatestObservation(snapshot: AccessibilitySnapshot) {
+        latestObservation.set(snapshot)
+        if (observationDrainScheduled.compareAndSet(false, true)) {
+            observationExecutor.execute(::drainLatestObservations)
+        }
+    }
+
+    private fun drainLatestObservations() {
+        while (true) {
+            val snapshot = latestObservation.getAndSet(null) ?: break
+            observationPublisher.submit(snapshot)
+        }
+        observationDrainScheduled.set(false)
+        if (
+            latestObservation.get() != null &&
+            observationDrainScheduled.compareAndSet(false, true)
+        ) {
+            observationExecutor.execute(::drainLatestObservations)
+        }
     }
 
     private fun configFromIntent(intent: Intent): CoreConnectionConfig? {
