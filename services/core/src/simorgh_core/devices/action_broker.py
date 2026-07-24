@@ -11,6 +11,7 @@ from simorgh_core.devices.actions import AndroidActionCommand, AndroidActionResu
 from simorgh_core.devices.protocol import (
     ActionCommandAckStatus,
     ActionResultAckStatus,
+    DeviceActionCancelAckPayload,
     DeviceActionCommandAckPayload,
     ProtocolEnvelope,
 )
@@ -65,6 +66,8 @@ class DeviceActionRecord:
     delivery_count: int = 0
     last_session_id: UUID | None = None
     command_ack: DeviceActionCommandAckPayload | None = None
+    cancel_envelope: ProtocolEnvelope | None = None
+    cancel_ack: DeviceActionCancelAckPayload | None = None
     result: AndroidActionResult | None = None
     detail: str = ""
 
@@ -102,6 +105,15 @@ class DeviceActionBroker:
         key = (device_id, command.action_id)
         async with self._lock:
             self._expire_locked(now_ms)
+            command_owner = self._record_for_command_id_locked(
+                device_id=device_id,
+                command_id=command.command_id,
+            )
+            if command_owner is not None and command_owner.action_id != command.action_id:
+                raise DeviceActionConflictError(
+                    "command_id was reused for a different action_id"
+                )
+
             existing = self._records.get(key)
             if existing is not None:
                 self._require_same_command(existing, command)
@@ -155,17 +167,47 @@ class DeviceActionBroker:
                 raise DeviceActionNotFoundError("command acknowledgement references unknown action")
             self._require_current_session(record, session)
             self._require_ack_identity(record, envelope, acknowledgement)
-            previous = record.command_ack
-            if previous is not None and previous != acknowledgement:
-                raise DeviceActionConflictError(
-                    "action command acknowledgement changed after it was recorded"
-                )
+
+            if record.result is not None:
+                return record
+            if record.terminal and record.phase != DeviceActionPhase.EXPIRED:
+                return record
+
             record.command_ack = acknowledgement
             record.updated_at_ms = now_ms
             record.detail = acknowledgement.detail
             record.phase = self._phase_from_command_ack(acknowledgement.status)
             if record.terminal:
                 self._remember_terminal_locked(key)
+            return record
+
+    async def record_cancel_ack(
+        self,
+        *,
+        session: DeviceSession,
+        envelope: ProtocolEnvelope,
+        acknowledgement: DeviceActionCancelAckPayload,
+    ) -> DeviceActionRecord:
+        key = (session.device_id, acknowledgement.action_id)
+        now_ms = int(time.time() * 1000)
+        async with self._lock:
+            record = self._records.get(key)
+            if record is None:
+                raise DeviceActionNotFoundError("cancel acknowledgement references unknown action")
+            self._require_current_session(record, session)
+            if acknowledgement.command_id != record.command_id:
+                raise DeviceActionConflictError("cancel ack command_id does not match dispatch")
+            cancel_envelope = record.cancel_envelope
+            if cancel_envelope is None or envelope.correlation_id != cancel_envelope.message_id:
+                raise DeviceActionConflictError(
+                    "cancel ack correlation_id does not match cancel message_id"
+                )
+            record.cancel_ack = acknowledgement
+            record.updated_at_ms = now_ms
+            if acknowledgement.status == "completed" and record.result is not None:
+                return record
+            if acknowledgement.status == "not_found":
+                record.detail = "device did not have an active matching action"
             return record
 
     async def record_result(
@@ -230,38 +272,55 @@ class DeviceActionBroker:
                 raise DeviceActionNotFoundError("action not found")
             if record.terminal:
                 return record
-            cancel_envelope = ProtocolEnvelope.create(
-                message_type="device.action_cancel",
-                device_id=device_id,
-                correlation_id=record.command_envelope.message_id,
-                payload={
-                    "command_id": str(record.command_id),
-                    "action_id": str(record.action_id),
-                    "reason": reason[:1_000],
-                },
-            )
+            if record.cancel_envelope is None:
+                record.cancel_envelope = ProtocolEnvelope.create(
+                    message_type="device.action_cancel",
+                    device_id=device_id,
+                    correlation_id=record.command_envelope.message_id,
+                    payload={
+                        "command_id": str(record.command_id),
+                        "action_id": str(record.action_id),
+                        "reason": reason[:1_000],
+                    },
+                )
             record.phase = DeviceActionPhase.CANCELLING
             record.updated_at_ms = now_ms
             record.detail = reason[:1_000]
 
         session = await registry.get(device_id)
         if session is not None:
-            await session.send_envelope(cancel_envelope)
+            await self._deliver(record, session)
         return record
+
+    async def clear(self) -> None:
+        """Reset process-local state for deterministic tests."""
+
+        async with self._lock:
+            self._records.clear()
+            self._terminal_order.clear()
 
     async def _deliver(self, record: DeviceActionRecord, session: DeviceSession) -> None:
         if record.terminal or record.command.deadline_at_ms <= int(time.time() * 1000):
             return
         if not await registry.is_current(session):
             return
-        await session.send_envelope(record.command_envelope)
+        envelope = (
+            record.cancel_envelope
+            if record.phase == DeviceActionPhase.CANCELLING and record.cancel_envelope is not None
+            else record.command_envelope
+        )
+        await session.send_envelope(envelope)
         now_ms = int(time.time() * 1000)
         async with self._lock:
             current = self._records.get((record.device_id, record.action_id))
             if current is record and not record.terminal:
                 record.delivery_count += 1
                 record.last_session_id = session.session_id
-                record.phase = DeviceActionPhase.DELIVERED
+                if record.phase in {
+                    DeviceActionPhase.QUEUED,
+                    DeviceActionPhase.DELIVERED,
+                }:
+                    record.phase = DeviceActionPhase.DELIVERED
                 record.updated_at_ms = now_ms
 
     def _active_record_for_device_locked(self, device_id: UUID) -> DeviceActionRecord | None:
@@ -274,8 +333,23 @@ class DeviceActionBroker:
             None,
         )
 
+    def _record_for_command_id_locked(
+        self,
+        *,
+        device_id: UUID,
+        command_id: UUID,
+    ) -> DeviceActionRecord | None:
+        return next(
+            (
+                record
+                for (record_device_id, _), record in self._records.items()
+                if record_device_id == device_id and record.command_id == command_id
+            ),
+            None,
+        )
+
     def _expire_locked(self, now_ms: int) -> None:
-        for key, record in self._records.items():
+        for key, record in list(self._records.items()):
             if not record.terminal and record.command.deadline_at_ms <= now_ms:
                 record.phase = DeviceActionPhase.EXPIRED
                 record.updated_at_ms = now_ms
