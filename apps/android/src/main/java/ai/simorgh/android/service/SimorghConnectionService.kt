@@ -14,19 +14,25 @@ import android.os.IBinder
 import android.os.Looper
 import ai.simorgh.android.MainActivity
 import ai.simorgh.android.R
+import ai.simorgh.android.accessibility.AccessibilityObservationBus
 import ai.simorgh.android.device.DeviceCapabilities
 import ai.simorgh.android.device.DeviceIdentityStore
+import ai.simorgh.android.protocol.DeviceObservationAckPayload
+import ai.simorgh.android.transport.AccessibilityObservationPublisher
 import ai.simorgh.android.transport.ConnectionPhase
 import ai.simorgh.android.transport.ConnectionState
 import ai.simorgh.android.transport.CoreConnectionConfig
 import ai.simorgh.android.transport.CoreConnectionListener
 import ai.simorgh.android.transport.CoreWebSocketClient
+import java.io.Closeable
 
 class SimorghConnectionService : Service(), CoreConnectionListener {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var connectionStore: SecureConnectionStore
     private lateinit var connectionClient: CoreWebSocketClient
+    private lateinit var observationPublisher: AccessibilityObservationPublisher
+    private lateinit var observationSubscription: Closeable
     private lateinit var notificationManager: NotificationManager
 
     private var currentState: ConnectionState = ConnectionState.Disconnected
@@ -40,11 +46,24 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
         createNotificationChannel()
 
         val capabilities = DeviceCapabilities.current()
+        val deviceId = DeviceIdentityStore(this).getOrCreateDeviceId()
         connectionClient = CoreWebSocketClient(
-            deviceId = DeviceIdentityStore(this).getOrCreateDeviceId(),
+            deviceId = deviceId,
             capabilities = capabilities,
             listener = this,
         )
+        observationPublisher = AccessibilityObservationPublisher(
+            deviceId = deviceId,
+            sender = connectionClient::send,
+            listener = ::onProtocolEvent,
+        )
+        observationSubscription = AccessibilityObservationBus.subscribe { observerState ->
+            val snapshot = observerState.latestSnapshot ?: return@subscribe
+            if (snapshot.activePackage == packageName) {
+                return@subscribe
+            }
+            observationPublisher.submit(snapshot)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,6 +101,8 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        observationSubscription.close()
+        observationPublisher.close()
         connectionClient.close()
         ConnectionStatusBus.publish(
             ServiceConnectionSnapshot(
@@ -94,6 +115,7 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
     }
 
     override fun onStateChanged(state: ConnectionState) {
+        observationPublisher.setConnected(state.phase == ConnectionPhase.CONNECTED)
         mainHandler.post {
             currentState = state
             publishSnapshot()
@@ -108,6 +130,16 @@ class SimorghConnectionService : Service(), CoreConnectionListener {
             lastProtocolEvent = detail
             publishSnapshot()
         }
+    }
+
+    override fun onObservationAcknowledged(
+        acknowledgement: DeviceObservationAckPayload,
+        correlationId: String?,
+    ) {
+        observationPublisher.acknowledge(
+            acknowledgement = acknowledgement,
+            correlationId = correlationId,
+        )
     }
 
     private fun configFromIntent(intent: Intent): CoreConnectionConfig? {
