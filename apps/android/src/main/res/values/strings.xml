@@ -33,6 +33,7 @@
     <string name="accessibility_service_description">سیمرغ ساختار صفحه، متن‌های قابل‌مشاهده و کنترل‌های اپ فعال را برای ساخت Snapshot محدود و قابل‌بررسی می‌خواند. متن فیلدهای رمز عبور ذخیره نمی‌شود.</string>
     <string name="accessibility_title">مشاهده‌گر Accessibility</string>
     <string name="accessibility_disabled">سرویس مشاهده صفحه فعال نیست</string>
+    <string name="accessibility_enabled_waiting">سرویس فعال است و منتظر اتصال سیستم می‌ماند</string>
     <string name="accessibility_connected">سرویس مشاهده صفحه متصل است</string>
     <string name="accessibility_open_settings">بازکردن تنظیمات Accessibility</string>
     <string name="accessibility_active_package">اپ فعال</string>
