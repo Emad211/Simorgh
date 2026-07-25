@@ -20,9 +20,17 @@ from simorgh_core.agents.contracts import (
     RoutingState,
     SpecialistDefinition,
     TaskEnvelope,
+    UsageVector,
 )
 from simorgh_core.agents.invocations import stable_invocation_id
+from simorgh_core.agents.model_gateway import ModelGatewayError, ModelOutputContractError
 from simorgh_core.agents.registry import SpecialistRegistry
+from simorgh_core.agents.tracing import (
+    NullTraceSink,
+    TraceEventKind,
+    TraceSink,
+    trace_event,
+)
 
 _WHITESPACE = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^\w\u0600-\u06ff]+", flags=re.UNICODE)
@@ -67,14 +75,63 @@ class SpecialistRouter:
         registry: SpecialistRegistry,
         classifier: AgentClassifier | None = None,
         minimum_classifier_confidence_bps: int = 7_000,
+        trace_sink: TraceSink | None = None,
     ) -> None:
         if minimum_classifier_confidence_bps not in range(0, 10_001):
             raise ValueError("classifier confidence threshold must be in 0..10000")
         self._registry = registry
         self._classifier = classifier
         self._minimum_classifier_confidence_bps = minimum_classifier_confidence_bps
+        self._trace_sink = trace_sink or NullTraceSink()
 
     async def route(
+        self,
+        *,
+        task: TaskEnvelope,
+        budget: BudgetAccount,
+    ) -> RoutingDecision:
+        self._trace_sink.emit(
+            trace_event(
+                request_id=task.request_id,
+                kind=TraceEventKind.ROUTING_STARTED,
+                agent_id=_ROUTER_AGENT_ID,
+                agent_version=_ROUTER_VERSION,
+                metadata={
+                    "explicit_task_kind": task.explicit_task_kind is not None,
+                    "risk_class": task.risk_class.value,
+                    "freshness": task.freshness.value,
+                    "latency": task.latency.value,
+                    "execution_mode": task.execution_mode.value,
+                },
+            )
+        )
+        decision = await self._route_inner(task=task, budget=budget)
+        self._trace_sink.emit(
+            trace_event(
+                request_id=task.request_id,
+                kind=TraceEventKind.ROUTING_COMPLETED,
+                invocation_id=decision.classifier_invocation_id,
+                agent_id=decision.selected_agent_id or _ROUTER_AGENT_ID,
+                agent_version=decision.selected_agent_version or _ROUTER_VERSION,
+                routing_method=decision.method,
+                rule_id=(
+                    decision.matched_rule_ids[0]
+                    if len(decision.matched_rule_ids) == 1
+                    else None
+                ),
+                usage=UsageVector(model_calls=decision.model_calls),
+                outcome=decision.state.value,
+                reason=decision.reason,
+                metadata={
+                    "candidate_count": len(decision.candidate_agent_ids),
+                    "matched_rule_count": len(decision.matched_rule_ids),
+                    "confidence_bps": decision.confidence_bps,
+                },
+            )
+        )
+        return decision
+
+    async def _route_inner(
         self,
         *,
         task: TaskEnvelope,
@@ -111,30 +168,23 @@ class SpecialistRouter:
 
         scores = self._score_rules(task=task, candidates=candidates)
         positive = [score for score in scores if score.score > 0]
-        if positive:
-            positive.sort(
-                key=lambda score: (
-                    -score.score,
-                    score.definition.routing_priority,
-                    score.definition.agent_id,
-                )
+        selected_rule_score = self._resolve_rule_score(positive)
+        if selected_rule_score is not None:
+            confidence = min(9_900, 7_500 + selected_rule_score.score * 25)
+            return self._routed(
+                task=task,
+                definition=selected_rule_score.definition,
+                method=RoutingMethod.DETERMINISTIC_RULE,
+                confidence_bps=confidence,
+                candidate_ids=candidate_ids,
+                matched_rule_ids=selected_rule_score.rule_ids,
+                reason=(
+                    "deterministic lexical rules selected "
+                    f"{selected_rule_score.definition.agent_id!r} with score "
+                    f"{selected_rule_score.score} and priority "
+                    f"{selected_rule_score.definition.routing_priority}"
+                ),
             )
-            highest = positive[0]
-            tied = [score for score in positive if score.score == highest.score]
-            if len(tied) == 1:
-                confidence = min(9_900, 7_500 + highest.score * 25)
-                return self._routed(
-                    task=task,
-                    definition=highest.definition,
-                    method=RoutingMethod.DETERMINISTIC_RULE,
-                    confidence_bps=confidence,
-                    candidate_ids=candidate_ids,
-                    matched_rule_ids=highest.rule_ids,
-                    reason=(
-                        f"deterministic lexical rules selected {highest.definition.agent_id!r} "
-                        f"with score {highest.score}"
-                    ),
-                )
 
         if self._classifier is None:
             return RoutingDecision(
@@ -162,6 +212,7 @@ class SpecialistRouter:
             agent_version=_ROUTER_VERSION,
             operation="classify-primary-specialist",
         )
+        model_calls_before = budget.snapshot().committed.model_calls
         try:
             classification = await self._classifier.classify(
                 task=task,
@@ -170,16 +221,53 @@ class SpecialistRouter:
                 invocation_id=invocation_id,
             )
         except (BudgetExceededError, BudgetElapsedError, BudgetCancelledError) as exc:
-            return RoutingDecision(
-                request_id=task.request_id,
+            return self._classifier_failure(
+                task=task,
+                budget=budget,
+                model_calls_before=model_calls_before,
                 state=RoutingState.BUDGET_EXHAUSTED,
-                method=RoutingMethod.MODEL_CLASSIFIER,
-                candidate_agent_ids=candidate_ids,
-                classifier_invocation_id=invocation_id,
-                model_calls=1,
+                candidate_ids=candidate_ids,
+                invocation_id=invocation_id,
                 reason=f"semantic routing could not reserve or use budget: {exc}",
             )
+        except ModelOutputContractError as exc:
+            return self._classifier_failure(
+                task=task,
+                budget=budget,
+                model_calls_before=model_calls_before,
+                state=RoutingState.CONTRACT_INVALID,
+                candidate_ids=candidate_ids,
+                invocation_id=invocation_id,
+                reason=f"semantic classifier returned an invalid typed result: {exc}",
+            )
+        except ModelGatewayError as exc:
+            return self._classifier_failure(
+                task=task,
+                budget=budget,
+                model_calls_before=model_calls_before,
+                state=RoutingState.NEEDS_ESCALATION,
+                candidate_ids=candidate_ids,
+                invocation_id=invocation_id,
+                reason=f"semantic classifier provider is unavailable: {exc}",
+            )
+        except Exception as exc:
+            return self._classifier_failure(
+                task=task,
+                budget=budget,
+                model_calls_before=model_calls_before,
+                state=RoutingState.NEEDS_ESCALATION,
+                candidate_ids=candidate_ids,
+                invocation_id=invocation_id,
+                reason=(
+                    "semantic classifier failed closed with "
+                    f"{exc.__class__.__name__}"
+                ),
+            )
 
+        model_calls = self._model_call_delta(
+            budget=budget,
+            model_calls_before=model_calls_before,
+        )
         selected = next(
             (
                 definition
@@ -195,7 +283,7 @@ class SpecialistRouter:
                 method=RoutingMethod.MODEL_CLASSIFIER,
                 candidate_agent_ids=candidate_ids,
                 classifier_invocation_id=invocation_id,
-                model_calls=1,
+                model_calls=model_calls,
                 reason=(
                     "classifier selected an agent outside the eligible candidate set: "
                     f"{classification.selected_agent_id!r}"
@@ -209,7 +297,7 @@ class SpecialistRouter:
                 confidence_bps=classification.confidence_bps,
                 candidate_agent_ids=candidate_ids,
                 classifier_invocation_id=invocation_id,
-                model_calls=1,
+                model_calls=model_calls,
                 reason=(
                     f"classifier confidence {classification.confidence_bps}bps is below "
                     f"{self._minimum_classifier_confidence_bps}bps: {classification.reason}"
@@ -223,7 +311,7 @@ class SpecialistRouter:
             candidate_ids=candidate_ids,
             matched_rule_ids=(),
             classifier_invocation_id=invocation_id,
-            model_calls=1,
+            model_calls=model_calls,
             reason=classification.reason,
         )
 
@@ -246,7 +334,10 @@ class SpecialistRouter:
                 matches = sum(
                     1
                     for phrase in rule.phrases
-                    if normalize_routing_text(phrase) in normalized_text
+                    if normalized_phrase_present(
+                        text=normalized_text,
+                        phrase=normalize_routing_text(phrase),
+                    )
                 )
                 if matches:
                     score += rule.weight * matches
@@ -259,6 +350,20 @@ class SpecialistRouter:
                 )
             )
         return scores
+
+    @staticmethod
+    def _resolve_rule_score(positive: Sequence[_RuleScore]) -> _RuleScore | None:
+        if not positive:
+            return None
+        highest_score = max(score.score for score in positive)
+        score_tied = [score for score in positive if score.score == highest_score]
+        best_priority = min(score.definition.routing_priority for score in score_tied)
+        finalists = [
+            score
+            for score in score_tied
+            if score.definition.routing_priority == best_priority
+        ]
+        return finalists[0] if len(finalists) == 1 else None
 
     @staticmethod
     def _resolve_unique_priority(
@@ -283,6 +388,39 @@ class SpecialistRouter:
             normalized.startswith(prefix.casefold())
             for prefix in rule.locale_prefixes
         )
+
+    @staticmethod
+    def _classifier_failure(
+        *,
+        task: TaskEnvelope,
+        budget: BudgetAccount,
+        model_calls_before: int,
+        state: RoutingState,
+        candidate_ids: tuple[str, ...],
+        invocation_id: UUID,
+        reason: str,
+    ) -> RoutingDecision:
+        return RoutingDecision(
+            request_id=task.request_id,
+            state=state,
+            method=RoutingMethod.MODEL_CLASSIFIER,
+            candidate_agent_ids=candidate_ids,
+            classifier_invocation_id=invocation_id,
+            model_calls=SpecialistRouter._model_call_delta(
+                budget=budget,
+                model_calls_before=model_calls_before,
+            ),
+            reason=reason,
+        )
+
+    @staticmethod
+    def _model_call_delta(
+        *,
+        budget: BudgetAccount,
+        model_calls_before: int,
+    ) -> int:
+        committed = budget.snapshot().committed.model_calls
+        return min(1, max(0, committed - model_calls_before))
 
     @staticmethod
     def _routed(
@@ -332,3 +470,9 @@ def normalize_routing_text(value: str) -> str:
     normalized = normalized.casefold()
     normalized = _NON_WORD.sub(" ", normalized)
     return _WHITESPACE.sub(" ", normalized).strip()
+
+
+def normalized_phrase_present(*, text: str, phrase: str) -> bool:
+    if not phrase:
+        return False
+    return f" {phrase} " in f" {text} "
