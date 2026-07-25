@@ -1,5 +1,6 @@
 package ai.simorgh.android.accessibility
 
+import android.os.SystemClock
 import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.UUID
@@ -31,12 +32,14 @@ class AccessibilityTreeSnapshotBuilder(
         activePackageHint: String?,
         activeWindowIdHint: Int?,
         capturedAtMs: Long = System.currentTimeMillis(),
+        capturedAtElapsedRealtimeMs: Long = SystemClock.elapsedRealtime(),
         snapshotId: String = UUID.randomUUID().toString(),
     ): AccessibilitySnapshot {
         if (root == null) {
             return AccessibilitySnapshot(
                 snapshotId = snapshotId,
                 capturedAtMs = capturedAtMs,
+                capturedAtElapsedRealtimeMs = capturedAtElapsedRealtimeMs,
                 triggeringEventType = triggeringEventType,
                 activePackage = sanitize(activePackageHint),
                 activeWindowId = activeWindowIdHint,
@@ -125,6 +128,7 @@ class AccessibilityTreeSnapshotBuilder(
         return AccessibilitySnapshot(
             snapshotId = snapshotId,
             capturedAtMs = capturedAtMs,
+            capturedAtElapsedRealtimeMs = capturedAtElapsedRealtimeMs,
             triggeringEventType = triggeringEventType,
             activePackage = activePackage,
             activeWindowId = activeWindowId,
