@@ -1,6 +1,6 @@
 # ADR 0014: Crash-safe durable agent-task identity and routing recovery
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-25
 - Governing directive: `docs/SIMORGH_MASTER_DIRECTIVE.md`
 - Implementation issue: #36
@@ -227,7 +227,18 @@ Automated tests cover:
 - conservative reservation recovery;
 - elapsed-time restoration;
 - restored cancellation and budget exhaustion;
+- wall-clock rollback without reversing durable chronology;
 - full Core and Android CI.
+
+The accepted implementation was validated on exact PR head
+`60ffd02fed486e1c21a92845db8211762a89ac53` by CI run `30167192071`:
+
+- Core Ruff passed;
+- strict MyPy passed;
+- 187 Core tests passed with zero failures, errors or skips;
+- Android build, JVM tests and lint passed;
+- a debug APK artifact was generated;
+- no live model, connector or MCP call was used by CI.
 
 ## Follow-up
 
