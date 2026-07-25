@@ -53,17 +53,22 @@ def _budget(request_id) -> BudgetAccount:
     )
 
 
-def test_allowed_read_tool_is_budgeted_and_exact_retry_is_replayed() -> None:
-    request_id = uuid4()
-    request = ToolCallRequest(
+def _github_request(*, request_id=None, allowed=True) -> ToolCallRequest:
+    return ToolCallRequest(
         invocation_id=uuid4(),
-        request_id=request_id,
+        request_id=request_id or uuid4(),
         agent_id="github.read",
         agent_version="1.0.0",
         tool_id="github.search",
         connector_id="github",
+        allowed_data_sources=frozenset({"github"}) if allowed else frozenset(),
         arguments={"query": "Simorgh"},
     )
+
+
+def test_allowed_read_tool_is_budgeted_and_exact_retry_is_replayed() -> None:
+    request_id = uuid4()
+    request = _github_request(request_id=request_id)
     invoker = RecordingInvoker()
     trace_sink = InMemoryTraceSink()
     gateway = BudgetedToolGateway(
@@ -96,6 +101,33 @@ def test_allowed_read_tool_is_budgeted_and_exact_retry_is_replayed() -> None:
     assert "Emad211/Simorgh" not in encoded
 
 
+def test_task_data_source_must_allow_the_specialist_connector() -> None:
+    request = _github_request(allowed=False)
+    invoker = RecordingInvoker()
+    trace_sink = InMemoryTraceSink()
+    gateway = BudgetedToolGateway(
+        registry=default_specialist_registry(),
+        invoker=invoker,
+        invocation_store=InMemoryInvocationStore(),
+        trace_sink=trace_sink,
+    )
+
+    with pytest.raises(SpecialistPolicyError, match="task does not allow data source"):
+        asyncio.run(
+            gateway.invoke(
+                request=request,
+                budget=_budget(request.request_id),
+            )
+        )
+
+    assert invoker.calls == 0
+    events = trace_sink.for_request(request.request_id)
+    assert len(events) == 1
+    assert events[0].kind == TraceEventKind.TOOL_FAILED
+    assert events[0].outcome == "policy_blocked"
+    assert events[0].usage.tool_calls == 0
+
+
 def test_unlisted_tool_or_connector_is_rejected_before_invoker() -> None:
     request_id = uuid4()
     invoker = RecordingInvoker()
@@ -116,7 +148,8 @@ def test_unlisted_tool_or_connector_is_rejected_before_invoker() -> None:
                     agent_id="github.read",
                     agent_version="1.0.0",
                     tool_id="gmail.send",
-                    connector_id="gmail",
+                    connector_id="github",
+                    allowed_data_sources=frozenset({"github"}),
                     arguments={},
                 ),
                 budget=_budget(request_id),
@@ -134,6 +167,7 @@ def test_unlisted_tool_or_connector_is_rejected_before_invoker() -> None:
                     agent_version="1.0.0",
                     tool_id="github.search",
                     connector_id="gmail",
+                    allowed_data_sources=frozenset({"gmail"}),
                     arguments={},
                 ),
                 budget=_budget(request_id),
@@ -168,6 +202,7 @@ def test_planning_agent_cannot_execute_mutation_tool() -> None:
                     agent_version="1.0.0",
                     tool_id="github.fetch-file",
                     connector_id="github",
+                    allowed_data_sources=frozenset({"github"}),
                     effect=ToolEffect.MUTATION,
                     arguments={"path": "README.md"},
                 ),
