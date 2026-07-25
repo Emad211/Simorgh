@@ -56,6 +56,7 @@ def _registration(device_id: UUID) -> ProtocolEnvelope:
             capabilities=[
                 "device.action_transport.v1",
                 "android.open_app.execution.v1",
+                "android.core_clock.bounded_estimate.v1",
                 "android.accessibility.observe.platform",
             ],
         ),
