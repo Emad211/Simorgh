@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -68,7 +68,7 @@ class ReserveFailingInvocationStore(InMemoryInvocationStore):
     def reserve(
         self,
         *,
-        invocation_id,
+        invocation_id: UUID,
         usage: UsageVector,
     ) -> InvocationRecord:
         del invocation_id, usage
