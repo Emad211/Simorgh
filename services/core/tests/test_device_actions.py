@@ -68,6 +68,7 @@ def _registration(device_id: UUID) -> ProtocolEnvelope:
                 "android.accessibility.observe.platform",
                 "android.accessibility.gesture.platform",
                 "android.open_app.execution.v1",
+                "android.core_clock.bounded_estimate.v1",
             ],
         ),
     )
