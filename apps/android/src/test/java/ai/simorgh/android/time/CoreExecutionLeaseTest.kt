@@ -99,7 +99,7 @@ class CoreExecutionLeaseTest {
     }
 
     @Test
-    fun `uncertainty smaller than no remaining budget is rejected before lease creation`() {
+    fun `deadline overlapping the bounded interval is rejected as uncertainty`() {
         val clock = MutableCoreClock(
             reading = reading(5, 100, 10_000, 10_100, 100),
             elapsedMs = 100,
@@ -113,6 +113,25 @@ class CoreExecutionLeaseTest {
         assertTrue(start is CoreExecutionLeaseStart.Unavailable)
         assertEquals(
             CoreExecutionClockFailureKind.UNCERTAINTY,
+            (start as CoreExecutionLeaseStart.Unavailable).kind,
+        )
+    }
+
+    @Test
+    fun `deadline before the earliest possible Core time is definitely expired`() {
+        val clock = MutableCoreClock(
+            reading = reading(6, 100, 10_000, 10_100, 100),
+            elapsedMs = 100,
+        )
+
+        val start = clock.beginExecutionLease(
+            issuedAtCoreTimeMs = 8_000,
+            deadlineAtCoreTimeMs = 9_900,
+        )
+
+        assertTrue(start is CoreExecutionLeaseStart.Unavailable)
+        assertEquals(
+            CoreExecutionClockFailureKind.EXPIRED,
             (start as CoreExecutionLeaseStart.Unavailable).kind,
         )
     }
@@ -146,11 +165,11 @@ class CoreExecutionLeaseTest {
         override fun reading(): CoreClockReading = reading
 
         override fun deadlineBudget(deadlineCoreTimeMs: Long): CoreDeadlineBudget {
-            val centeredRemaining = deadlineCoreTimeMs - reading.estimatedCoreTimeMs
-            if (centeredRemaining <= reading.uncertaintyMs) {
+            val earliestRemaining = deadlineCoreTimeMs - reading.earliestCoreTimeMs
+            if (earliestRemaining <= 0) {
                 return CoreDeadlineBudget.Unavailable(
-                    kind = CoreDeadlineUnavailableReason.UNCERTAINTY,
-                    reason = "uncertainty consumes deadline",
+                    kind = CoreDeadlineUnavailableReason.EXPIRED,
+                    reason = "deadline definitely elapsed",
                     reading = reading,
                 )
             }
@@ -159,8 +178,8 @@ class CoreExecutionLeaseTest {
                 CoreDeadlineBudget.Available(guaranteed, reading)
             } else {
                 CoreDeadlineBudget.Unavailable(
-                    kind = CoreDeadlineUnavailableReason.EXPIRED,
-                    reason = "deadline elapsed",
+                    kind = CoreDeadlineUnavailableReason.UNCERTAINTY,
+                    reason = "uncertainty overlaps deadline",
                     reading = reading,
                 )
             }
