@@ -36,6 +36,19 @@ ActionJournalPhase = Literal[
     "cancelled",
 ]
 _TERMINAL_PHASES = frozenset({"completed", "rejected", "expired", "cancelled"})
+_ACCEPTED_ACK_STATUSES = frozenset({"accepted", "duplicate"})
+_ALLOWED_PHASE_TRANSITIONS: dict[str, frozenset[str]] = {
+    "queued": frozenset({"queued", "delivered", "cancelling", "rejected", "expired"}),
+    "delivered": frozenset(
+        {"delivered", "accepted", "cancelling", "completed", "cancelled", "rejected", "expired"}
+    ),
+    "accepted": frozenset({"accepted", "cancelling", "completed", "cancelled", "expired"}),
+    "cancelling": frozenset({"cancelling", "completed", "cancelled", "rejected", "expired"}),
+    "completed": frozenset({"completed"}),
+    "rejected": frozenset({"rejected"}),
+    "expired": frozenset({"expired", "completed", "cancelled"}),
+    "cancelled": frozenset({"cancelled"}),
+}
 
 
 class ActionJournalError(RuntimeError):
@@ -55,7 +68,7 @@ class ActionJournalSchemaError(ActionJournalError):
 
 
 class ActionJournalConflictError(ActionJournalError):
-    """Raised when durable command/action/envelope identity conflicts with existing state."""
+    """Raised when durable identity or state transition conflicts with existing state."""
 
 
 class ActionJournalEntryV1(BaseModel):
@@ -122,17 +135,31 @@ class ActionJournalEntryV1(BaseModel):
 
         if self.updated_at_ms < self.created_at_ms:
             raise ValueError("updated_at_ms cannot precede created_at_ms")
-        if self.delivery_count == 0 and self.last_session_id is not None:
-            raise ValueError("last_session_id requires at least one delivery")
-        if self.command_ack is not None:
-            if self.command_ack.command_id != self.command_id:
-                raise ValueError("command_ack command_id does not match command")
-            if self.command_ack.action_id != self.action_id:
-                raise ValueError("command_ack action_id does not match command")
+        if (self.delivery_count == 0) != (self.last_session_id is None):
+            raise ValueError("delivery_count and last_session_id must become present together")
 
+        self._validate_command_ack()
         self._validate_cancellation()
         self._validate_result()
+        self._validate_phase_shape()
         return self
+
+    def _validate_command_ack(self) -> None:
+        acknowledgement = self.command_ack
+        if acknowledgement is None:
+            return
+        if acknowledgement.command_id != self.command_id:
+            raise ValueError("command_ack command_id does not match command")
+        if acknowledgement.action_id != self.action_id:
+            raise ValueError("command_ack action_id does not match command")
+        if acknowledgement.status in _ACCEPTED_ACK_STATUSES:
+            if self.phase not in {"accepted", "cancelling", "completed", "cancelled", "expired"}:
+                raise ValueError("accepted command_ack is inconsistent with journal phase")
+        elif acknowledgement.status == "expired":
+            if self.phase != "expired":
+                raise ValueError("expired command_ack requires expired journal phase")
+        elif self.phase != "rejected":
+            raise ValueError("negative command_ack requires rejected journal phase")
 
     def _validate_cancellation(self) -> None:
         envelope = self.cancel_envelope
@@ -187,6 +214,42 @@ class ActionJournalEntryV1(BaseModel):
             raise ValueError("persisted result requires completed or cancelled phase")
         if (self.result_ack_status is None) != (self.result_ack_sent_at_ms is None):
             raise ValueError("result ACK status and timestamp must be present together")
+        if self.result_ack_status not in {None, "accepted", "duplicate"}:
+            raise ValueError("durable result ACK status must be accepted or duplicate")
+        if (
+            self.result_ack_sent_at_ms is not None
+            and self.result_ack_sent_at_ms > self.updated_at_ms
+        ):
+            raise ValueError("result ACK timestamp cannot exceed updated_at_ms")
+
+    def _validate_phase_shape(self) -> None:
+        if self.phase == "queued":
+            if self.delivery_count != 0 or self.command_ack is not None:
+                raise ValueError("queued phase cannot contain delivery or command ACK state")
+            if self.cancel_envelope is not None or self.result is not None:
+                raise ValueError("queued phase cannot contain cancellation or result state")
+        elif self.phase == "delivered":
+            if self.delivery_count == 0 or self.command_ack is not None:
+                raise ValueError("delivered phase requires delivery and no command ACK")
+            if self.result is not None:
+                raise ValueError("delivered phase cannot contain result state")
+        elif self.phase == "accepted":
+            if (
+                self.delivery_count == 0
+                or self.command_ack is None
+                or self.command_ack.status not in _ACCEPTED_ACK_STATUSES
+            ):
+                raise ValueError("accepted phase requires accepted or duplicate command ACK")
+            if self.result is not None:
+                raise ValueError("accepted phase cannot contain result state")
+        elif self.phase == "cancelling":
+            if self.cancel_envelope is None or self.result is not None:
+                raise ValueError("cancelling phase requires cancel envelope and no result")
+        elif self.phase in {"completed", "cancelled"}:
+            if self.result is None:
+                raise ValueError("completed or cancelled phase requires result state")
+        elif self.phase in {"rejected", "expired"} and self.result is not None:
+            raise ValueError("rejected or expired phase cannot contain result state")
 
 
 class ActionJournal(Protocol):
@@ -258,6 +321,58 @@ def new_journal_entry(
     )
 
 
+def validate_journal_transition(
+    existing: ActionJournalEntryV1,
+    candidate: ActionJournalEntryV1,
+) -> None:
+    """Reject rewrites of stable identity and non-monotonic durable state."""
+
+    if existing.device_id != candidate.device_id or existing.action_id != candidate.action_id:
+        raise ActionJournalConflictError("journal transition changed action ownership key")
+    if existing.command != candidate.command:
+        raise ActionJournalConflictError("durable action command content is immutable")
+    if existing.command_envelope != candidate.command_envelope:
+        raise ActionJournalConflictError("durable command envelope identity is immutable")
+    if existing.command_payload_sha256 != candidate.command_payload_sha256:
+        raise ActionJournalConflictError("durable command payload hash is immutable")
+    if existing.created_at_ms != candidate.created_at_ms:
+        raise ActionJournalConflictError("durable action created_at_ms is immutable")
+    if candidate.updated_at_ms < existing.updated_at_ms:
+        raise ActionJournalConflictError("durable action updated_at_ms cannot move backwards")
+    if candidate.delivery_count < existing.delivery_count:
+        raise ActionJournalConflictError("durable delivery_count cannot decrease")
+    if candidate.phase not in _ALLOWED_PHASE_TRANSITIONS[existing.phase]:
+        raise ActionJournalConflictError(
+            f"invalid durable action phase transition {existing.phase} -> {candidate.phase}"
+        )
+    if existing.command_ack is not None and candidate.command_ack != existing.command_ack:
+        raise ActionJournalConflictError("durable command acknowledgement is immutable")
+    if existing.cancel_envelope is not None and candidate.cancel_envelope != existing.cancel_envelope:
+        raise ActionJournalConflictError("durable cancel envelope is immutable")
+    if existing.cancel_ack is not None and candidate.cancel_ack != existing.cancel_ack:
+        raise ActionJournalConflictError("durable cancel acknowledgement is immutable")
+
+    if existing.result is not None:
+        if (
+            candidate.result != existing.result
+            or candidate.result_envelope_id != existing.result_envelope_id
+            or candidate.result_correlation_id != existing.result_correlation_id
+            or candidate.result_payload_sha256 != existing.result_payload_sha256
+        ):
+            raise ActionJournalConflictError("durable result identity and content are immutable")
+        if (
+            existing.result_ack_sent_at_ms is not None
+            and (
+                candidate.result_ack_sent_at_ms is None
+                or candidate.result_ack_sent_at_ms < existing.result_ack_sent_at_ms
+            )
+        ):
+            raise ActionJournalConflictError("durable result ACK timestamp cannot move backwards")
+    elif candidate.result_ack_status is not None or candidate.result_ack_sent_at_ms is not None:
+        if candidate.result is None:
+            raise ActionJournalConflictError("result ACK cannot precede durable result")
+
+
 class InMemoryActionJournal:
     """Strict in-memory implementation used by direct broker and storage tests."""
 
@@ -276,19 +391,21 @@ class InMemoryActionJournal:
         self._require_open()
         validated = ActionJournalEntryV1.model_validate(entry.model_dump(mode="json"))
         key = (validated.device_id, validated.action_id)
-        for candidate in self._entries.values():
+        existing = self._entries.get(key)
+        if existing is not None:
+            validate_journal_transition(existing, validated)
+
+        for candidate_key, candidate in self._entries.items():
+            if candidate_key == key:
+                continue
             if candidate.device_id == validated.device_id:
-                if (
-                    candidate.command_id == validated.command_id
-                    and candidate.action_id != validated.action_id
-                ):
+                if candidate.command_id == validated.command_id:
                     raise ActionJournalConflictError(
                         "command_id already belongs to another durable action"
                     )
                 if (
                     candidate.command_envelope.message_id
                     == validated.command_envelope.message_id
-                    and candidate.action_id != validated.action_id
                 ):
                     raise ActionJournalConflictError(
                         "command envelope message_id already belongs to another durable action"
@@ -296,7 +413,6 @@ class InMemoryActionJournal:
             if (
                 candidate.result_envelope_id is not None
                 and candidate.result_envelope_id == validated.result_envelope_id
-                and candidate.action_id != validated.action_id
             ):
                 raise ActionJournalConflictError(
                     "result envelope message_id already belongs to another durable action"
@@ -344,13 +460,18 @@ class SQLiteActionJournal:
     ) -> None:
         if max_terminal_records < 0:
             raise ValueError("max_terminal_records cannot be negative")
-        self._path = str(path)
+        raw_path = str(path)
+        self._path = (
+            ":memory:"
+            if raw_path == ":memory:"
+            else str(Path(raw_path).expanduser().resolve())
+        )
         self._max_terminal_records = max_terminal_records
         self._lock = threading.RLock()
         self._closed = False
 
         if self._path != ":memory:":
-            Path(self._path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
 
         connection: sqlite3.Connection | None = None
         try:
@@ -387,23 +508,7 @@ class SQLiteActionJournal:
             self._require_open()
             self._verify_database_integrity()
             try:
-                rows = self._connection.execute(
-                    """
-                    SELECT
-                        device_id,
-                        action_id,
-                        command_id,
-                        command_message_id,
-                        result_message_id,
-                        phase,
-                        terminal,
-                        updated_at_ms,
-                        payload_json,
-                        payload_sha256
-                    FROM action_records
-                    ORDER BY created_at_ms ASC, device_id ASC, action_id ASC
-                    """
-                ).fetchall()
+                rows = self._connection.execute(self._select_rows_sql()).fetchall()
             except sqlite3.DatabaseError as exc:
                 raise ActionJournalCorruptionError(
                     f"could not read action journal rows: {exc}"
@@ -418,6 +523,16 @@ class SQLiteActionJournal:
             payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
             try:
                 with self._transaction():
+                    existing_row = self._connection.execute(
+                        self._select_rows_sql(where_clause="WHERE device_id = ? AND action_id = ?"),
+                        (str(validated.device_id), str(validated.action_id)),
+                    ).fetchone()
+                    if existing_row is not None:
+                        validate_journal_transition(
+                            self._decode_row(existing_row),
+                            validated,
+                        )
+
                     self._connection.execute(
                         """
                         INSERT INTO action_records (
@@ -434,12 +549,9 @@ class SQLiteActionJournal:
                             payload_sha256
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(device_id, action_id) DO UPDATE SET
-                            command_id = excluded.command_id,
-                            command_message_id = excluded.command_message_id,
                             result_message_id = excluded.result_message_id,
                             phase = excluded.phase,
                             terminal = excluded.terminal,
-                            created_at_ms = excluded.created_at_ms,
                             updated_at_ms = excluded.updated_at_ms,
                             payload_json = excluded.payload_json,
                             payload_sha256 = excluded.payload_sha256
@@ -463,6 +575,8 @@ class SQLiteActionJournal:
                         ),
                     )
                     self._prune_terminal_locked()
+            except ActionJournalConflictError:
+                raise
             except sqlite3.IntegrityError as exc:
                 raise ActionJournalConflictError(
                     "durable action, command, or envelope identity conflicts with an existing row"
@@ -553,6 +667,26 @@ class SQLiteActionJournal:
                 """
             )
 
+    @staticmethod
+    def _select_rows_sql(*, where_clause: str = "") -> str:
+        return f"""
+            SELECT
+                device_id,
+                action_id,
+                command_id,
+                command_message_id,
+                result_message_id,
+                phase,
+                terminal,
+                created_at_ms,
+                updated_at_ms,
+                payload_json,
+                payload_sha256
+            FROM action_records
+            {where_clause}
+            ORDER BY created_at_ms ASC, device_id ASC, action_id ASC
+        """
+
     def _decode_row(self, row: sqlite3.Row) -> ActionJournalEntryV1:
         payload_json = str(row["payload_json"])
         expected_hash = str(row["payload_sha256"])
@@ -578,6 +712,7 @@ class SQLiteActionJournal:
             str(entry.result_envelope_id) if entry.result_envelope_id is not None else None,
             entry.phase,
             int(entry.terminal),
+            entry.created_at_ms,
             entry.updated_at_ms,
         )
         stored_identity = (
@@ -588,6 +723,7 @@ class SQLiteActionJournal:
             str(row["result_message_id"]) if row["result_message_id"] is not None else None,
             str(row["phase"]),
             int(row["terminal"]),
+            int(row["created_at_ms"]),
             int(row["updated_at_ms"]),
         )
         if row_identity != stored_identity:
