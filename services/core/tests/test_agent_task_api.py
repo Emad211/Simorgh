@@ -3,18 +3,26 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from simorgh_core.agents.api import agent_task_control_plane, agent_trace_sink
+from simorgh_core.agents.budget import BudgetSnapshot
 from simorgh_core.agents.contracts import (
     ExecutionMode,
     RiskClass,
     TaskBudget,
     TaskEnvelope,
     TaskKind,
+    UsageVector,
+)
+from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
+from simorgh_core.agents.task_store import (
+    SQLiteAgentTaskStore,
+    new_task_store_entry,
 )
 from simorgh_core.app import app
 from simorgh_core.config import get_settings
@@ -24,16 +32,35 @@ DEVICE_HEADERS = {"Authorization": "Bearer test-device-token"}
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setenv("SIMORGH_DEVICE_TOKEN", "test-device-token")
-    monkeypatch.setenv("SIMORGH_OPERATOR_TOKEN", "test-operator-token")
-    get_settings.cache_clear()
+def client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Iterator[TestClient]:
+    _configure_test_environment(monkeypatch, tmp_path)
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
     asyncio.run(agent_task_control_plane.clear_for_test())
     agent_trace_sink.clear()
     with TestClient(app) as test_client:
         yield test_client
     asyncio.run(agent_task_control_plane.clear_for_test())
     agent_trace_sink.clear()
+    get_settings.cache_clear()
+
+
+def _configure_test_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SIMORGH_DEVICE_TOKEN", "test-device-token")
+    monkeypatch.setenv("SIMORGH_OPERATOR_TOKEN", "test-operator-token")
+    monkeypatch.setenv(
+        "SIMORGH_ACTION_JOURNAL_PATH",
+        str(tmp_path / "action-journal.sqlite3"),
+    )
+    monkeypatch.setenv(
+        "SIMORGH_AGENT_TASK_STORE_PATH",
+        str(tmp_path / "agent-tasks.sqlite3"),
+    )
     get_settings.cache_clear()
 
 
@@ -224,3 +251,133 @@ def test_unknown_task_status_and_cancel_return_not_found(client: TestClient) -> 
 
     assert status_response.status_code == 404
     assert cancel_response.status_code == 404
+
+
+def test_exact_replay_survives_two_separate_core_lifespans(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_test_environment(monkeypatch, tmp_path)
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
+    agent_trace_sink.clear()
+    task = _task()
+    body = task.model_dump(mode="json")
+
+    with TestClient(app) as first_client:
+        first = first_client.post(
+            "/v1/agent-tasks",
+            headers=OPERATOR_HEADERS,
+            json=body,
+        )
+    assert first.status_code == 202
+    first_payload = first.json()
+    assert len(agent_trace_sink.for_request(task.request_id)) == 2
+
+    agent_trace_sink.clear()
+    get_settings.cache_clear()
+    with TestClient(app) as restarted_client:
+        replay = restarted_client.post(
+            "/v1/agent-tasks",
+            headers=OPERATOR_HEADERS,
+            json=body,
+        )
+
+    assert replay.status_code == 202
+    assert replay.json() == first_payload
+    assert agent_trace_sink.for_request(task.request_id) == ()
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
+    get_settings.cache_clear()
+
+
+def test_cancellation_survives_core_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_test_environment(monkeypatch, tmp_path)
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
+    task = _task()
+
+    with TestClient(app) as first_client:
+        submitted = first_client.post(
+            "/v1/agent-tasks",
+            headers=OPERATOR_HEADERS,
+            json=task.model_dump(mode="json"),
+        )
+        assert submitted.status_code == 202
+        cancelled = first_client.post(
+            f"/v1/agent-tasks/{task.request_id}/cancel",
+            headers=OPERATOR_HEADERS,
+            json={"reason": "لغو پایدار"},
+        )
+        assert cancelled.status_code == 202
+
+    get_settings.cache_clear()
+    with TestClient(app) as restarted_client:
+        status_response = restarted_client.get(
+            f"/v1/agent-tasks/{task.request_id}",
+            headers=OPERATOR_HEADERS,
+        )
+        duplicate_cancel = restarted_client.post(
+            f"/v1/agent-tasks/{task.request_id}/cancel",
+            headers=OPERATOR_HEADERS,
+            json={"reason": "نباید تغییر کند"},
+        )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["phase"] == "cancelled"
+    assert status_response.json()["cancel_reason"] == "لغو پایدار"
+    assert duplicate_cancel.json() == status_response.json()
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
+    get_settings.cache_clear()
+
+
+def test_interrupted_routing_recovers_unknown_at_application_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_test_environment(monkeypatch, tmp_path)
+    settings = get_settings()
+    task = _task()
+    store = SQLiteAgentTaskStore(settings.simorgh_agent_task_store_path)
+    store.upsert(
+        new_task_store_entry(
+            AgentTaskRecord(
+                request_id=task.request_id,
+                phase=AgentTaskPhase.ROUTING,
+                created_at_ms=task.received_at_ms,
+                updated_at_ms=task.received_at_ms,
+                task=task,
+                budget=BudgetSnapshot(
+                    request_id=task.request_id,
+                    limits=task.budget,
+                    committed=UsageVector(),
+                    reserved=UsageVector(),
+                    elapsed_ms=0,
+                    cancelled=False,
+                ),
+                detail="durable claim before simulated process crash",
+            )
+        )
+    )
+    store.close()
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
+    agent_trace_sink.clear()
+
+    with TestClient(app) as restarted_client:
+        recovered = restarted_client.get(
+            f"/v1/agent-tasks/{task.request_id}",
+            headers=OPERATOR_HEADERS,
+        )
+        replay = restarted_client.post(
+            "/v1/agent-tasks",
+            headers=OPERATOR_HEADERS,
+            json=task.model_dump(mode="json"),
+        )
+
+    assert recovered.status_code == 200
+    assert recovered.json()["phase"] == "unknown"
+    assert "automatic replay is blocked" in recovered.json()["detail"]
+    assert replay.json() == recovered.json()
+    assert agent_trace_sink.for_request(task.request_id) == ()
+    asyncio.run(agent_task_control_plane.reset_to_memory_store())
+    get_settings.cache_clear()
