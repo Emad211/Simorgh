@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from typing import Any
@@ -20,8 +21,11 @@ from simorgh_core.agents.contracts import (
     UsageVector,
 )
 from simorgh_core.agents.invocations import (
-    InMemoryInvocationStore,
+    InvocationEffect,
+    InvocationKind,
     InvocationStartKind,
+    InvocationStore,
+    InvocationStoreError,
     canonical_fingerprint,
 )
 from simorgh_core.agents.tracing import (
@@ -169,7 +173,7 @@ class BudgetedModelResult(BaseModel):
 
 
 class BudgetedModelGateway:
-    """One model call with pre-reservation, usage reconciliation, and safe replay."""
+    """One durable model call with pre-reservation and exact restart replay."""
 
     def __init__(
         self,
@@ -177,7 +181,7 @@ class BudgetedModelGateway:
         provider: ModelProvider,
         provider_id: str,
         catalog: ModelCatalog,
-        invocation_store: InMemoryInvocationStore,
+        invocation_store: InvocationStore,
         trace_sink: TraceSink | None = None,
     ) -> None:
         self._provider = provider
@@ -192,24 +196,7 @@ class BudgetedModelGateway:
         request: BudgetedModelRequest,
         budget: BudgetAccount,
     ) -> BudgetedModelResult:
-        try:
-            spec = self._catalog.select(
-                allowed_tiers=request.allowed_tiers,
-                minimum_tier=request.minimum_tier,
-            )
-            if spec.provider_id != self._provider_id:
-                raise ModelSelectionError(
-                    f"selected provider {spec.provider_id!r} is not available in this gateway"
-                )
-        except ModelSelectionError as exc:
-            self._emit(
-                request=request,
-                kind=TraceEventKind.MODEL_FAILED,
-                outcome="selection_failed",
-                reason=str(exc),
-            )
-            raise
-
+        spec = self._select_model(request)
         selected_output_limit = min(
             request.maximum_output_tokens,
             spec.maximum_output_tokens,
@@ -222,30 +209,31 @@ class BudgetedModelGateway:
                 "selected_output_limit": selected_output_limit,
             }
         )
-        started = self._invocations.begin(
-            invocation_id=request.invocation_id,
-            request_id=request.request_id,
-            agent_id=request.agent_id,
-            agent_version=request.agent_version,
-            operation=request.operation,
-            input_fingerprint=fingerprint,
-        )
-        if started.kind == InvocationStartKind.REPLAY:
-            payload = started.record.result_payload
-            if payload is None:
-                raise ModelOutputContractError(
-                    "completed model invocation has no result payload"
-                )
-            replayed = BudgetedModelResult.model_validate(payload)
-            self._emit(
-                request=request,
-                kind=TraceEventKind.INVOCATION_REPLAYED,
-                spec=spec,
-                cache=CacheDisposition.HIT,
-                outcome="completed",
-                reason="exact completed model invocation was replayed",
+        try:
+            started = self._invocations.begin(
+                invocation_id=request.invocation_id,
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                operation=request.operation,
+                input_fingerprint=fingerprint,
+                kind=InvocationKind.MODEL,
+                effect=InvocationEffect.READ_ONLY,
+                provider_id=spec.provider_id,
+                model_id=spec.model_id,
             )
-            return replayed.model_copy(update={"replayed": True})
+        except InvocationStoreError as exc:
+            raise ModelGatewayError(
+                "model invocation identity could not be durably claimed"
+            ) from exc
+
+        if started.kind == InvocationStartKind.REPLAY:
+            return self._replay_result(
+                request=request,
+                spec=spec,
+                payload=started.record.result_payload,
+                committed_usage=started.record.committed_usage,
+            )
         if started.kind == InvocationStartKind.IN_PROGRESS:
             self._emit(
                 request=request,
@@ -290,10 +278,11 @@ class BudgetedModelGateway:
                 usage=reserved_usage,
             )
         except BudgetError as exc:
-            self._invocations.fail(
+            self._record_failure(
                 invocation_id=request.invocation_id,
                 failure_code="budget_exhausted",
                 failure_detail=str(exc),
+                committed_usage=UsageVector(),
             )
             self._emit(
                 request=request,
@@ -304,13 +293,31 @@ class BudgetedModelGateway:
             )
             raise
 
+        try:
+            self._invocations.reserve(
+                invocation_id=request.invocation_id,
+                usage=reserved_usage,
+            )
+        except InvocationStoreError as exc:
+            budget.release(reservation.reservation_id)
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                outcome="invocation_store_failure",
+                reason="model call was not issued because durable reservation failed",
+            )
+            raise ModelGatewayError(
+                "model invocation could not be durably reserved"
+            ) from exc
+
         self._emit(
             request=request,
             kind=TraceEventKind.BUDGET_RESERVED,
             spec=spec,
             usage=reserved_usage,
             outcome="reserved",
-            reason="model call budget was reserved before provider invocation",
+            reason="model call budget and durable invocation usage were reserved",
         )
         self._emit(
             request=request,
@@ -328,14 +335,33 @@ class BudgetedModelGateway:
                 instructions=request.instructions,
                 max_output_tokens=selected_output_limit,
             )
-        except Exception as exc:
-            # A provider may have accepted the request before the local exception. Commit the
-            # conservative reservation rather than pretending a failed transport was free.
+        except asyncio.CancelledError:
             budget.commit_reserved(reservation.reservation_id)
-            self._invocations.fail(
+            self._mark_unknown(
+                invocation_id=request.invocation_id,
+                failure_code="provider_call_cancelled",
+                failure_detail=(
+                    "model provider coroutine was cancelled after durable reservation; "
+                    "completion is uncertain"
+                ),
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                usage=reserved_usage,
+                outcome="unknown",
+                reason="model provider coroutine was cancelled after reservation",
+                output_limit=selected_output_limit,
+            )
+            raise
+        except Exception as exc:
+            budget.commit_reserved(reservation.reservation_id)
+            self._record_failure(
                 invocation_id=request.invocation_id,
                 failure_code="provider_failure",
-                failure_detail=f"{exc.__class__.__name__}: {exc}",
+                failure_detail=exc.__class__.__name__,
+                committed_usage=reserved_usage,
             )
             self._emit(
                 request=request,
@@ -374,10 +400,11 @@ class BudgetedModelGateway:
                 actual_usage=actual_usage,
             )
         except BudgetError as exc:
-            self._invocations.fail(
+            self._record_failure(
                 invocation_id=request.invocation_id,
                 failure_code="budget_reconciliation_failed",
                 failure_detail=str(exc),
+                committed_usage=actual_usage,
             )
             self._emit(
                 request=request,
@@ -406,10 +433,11 @@ class BudgetedModelGateway:
                 f"the selected limit {selected_output_limit}"
             )
         if identity_failure is not None:
-            self._invocations.fail(
+            self._record_failure(
                 invocation_id=request.invocation_id,
                 failure_code="provider_contract_invalid",
                 failure_detail=identity_failure,
+                committed_usage=actual_usage,
             )
             self._emit(
                 request=request,
@@ -432,20 +460,134 @@ class BudgetedModelGateway:
             output_tokens=actual_output_tokens,
             cost_microusd=actual_usage.estimated_cost_microusd,
         )
-        self._invocations.complete(
-            invocation_id=request.invocation_id,
-            result_payload=result.model_dump(mode="json"),
-        )
+        try:
+            self._invocations.complete(
+                invocation_id=request.invocation_id,
+                result_payload=result.model_dump(mode="json"),
+                committed_usage=actual_usage,
+            )
+        except InvocationStoreError as exc:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                usage=actual_usage,
+                outcome="invocation_store_failure",
+                reason="model result could not be durably committed",
+                output_limit=selected_output_limit,
+            )
+            raise ModelGatewayError(
+                "model result could not be durably committed"
+            ) from exc
         self._emit(
             request=request,
             kind=TraceEventKind.MODEL_COMPLETED,
             spec=spec,
             usage=actual_usage,
             outcome="completed",
-            reason="model output passed provider identity and budget validation",
+            reason="model output passed identity, budget, and durable-store validation",
             output_limit=selected_output_limit,
         )
         return result
+
+    def _select_model(self, request: BudgetedModelRequest) -> ModelSpec:
+        try:
+            spec = self._catalog.select(
+                allowed_tiers=request.allowed_tiers,
+                minimum_tier=request.minimum_tier,
+            )
+            if spec.provider_id != self._provider_id:
+                raise ModelSelectionError(
+                    f"selected provider {spec.provider_id!r} is not available in this gateway"
+                )
+            return spec
+        except ModelSelectionError as exc:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                outcome="selection_failed",
+                reason=str(exc),
+            )
+            raise
+
+    def _replay_result(
+        self,
+        *,
+        request: BudgetedModelRequest,
+        spec: ModelSpec,
+        payload: dict[str, Any] | None,
+        committed_usage: UsageVector,
+    ) -> BudgetedModelResult:
+        if payload is None:
+            raise ModelOutputContractError(
+                "completed model invocation has no result payload"
+            )
+        replayed = BudgetedModelResult.model_validate(payload)
+        expected_usage = UsageVector(
+            model_calls=1,
+            input_tokens=replayed.input_tokens,
+            output_tokens=replayed.output_tokens,
+            estimated_cost_microusd=replayed.cost_microusd,
+        )
+        if replayed.invocation_id != request.invocation_id:
+            raise ModelOutputContractError(
+                "durable model result invocation identity does not match request"
+            )
+        if replayed.provider_id != spec.provider_id or replayed.model_id != spec.model_id:
+            raise ModelOutputContractError(
+                "durable model result target identity does not match selected model"
+            )
+        if committed_usage != expected_usage:
+            raise ModelOutputContractError(
+                "durable model result usage does not match invocation accounting"
+            )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.INVOCATION_REPLAYED,
+            spec=spec,
+            cache=CacheDisposition.HIT,
+            outcome="completed",
+            reason="exact completed model invocation was replayed from durable state",
+        )
+        return replayed.model_copy(update={"replayed": True})
+
+    def _record_failure(
+        self,
+        *,
+        invocation_id: UUID,
+        failure_code: str,
+        failure_detail: str,
+        committed_usage: UsageVector,
+    ) -> None:
+        try:
+            self._invocations.fail(
+                invocation_id=invocation_id,
+                failure_code=failure_code,
+                failure_detail=failure_detail,
+                committed_usage=committed_usage,
+            )
+        except InvocationStoreError as exc:
+            raise ModelGatewayError(
+                "model invocation failure could not be durably recorded"
+            ) from exc
+
+    def _mark_unknown(
+        self,
+        *,
+        invocation_id: UUID,
+        failure_code: str,
+        failure_detail: str,
+    ) -> None:
+        try:
+            self._invocations.mark_unknown(
+                invocation_id=invocation_id,
+                failure_code=failure_code,
+                failure_detail=failure_detail,
+            )
+        except InvocationStoreError as exc:
+            raise ModelGatewayError(
+                "model invocation uncertainty could not be durably recorded"
+            ) from exc
 
     def _emit(
         self,
@@ -569,7 +711,7 @@ def conservative_token_upper_bound(*values: str | None) -> int:
 
     return max(
         1,
-        sum(len(value.encode("utf-8")) for value in values if value is not None),
+        sum(len(value.encode()) for value in values if value is not None),
     )
 
 
