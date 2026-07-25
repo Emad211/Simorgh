@@ -56,6 +56,14 @@ class CoreExecutionLease internal constructor(
         return saturatingAdd(startedAtCoreTimeMs, elapsed).coerceAtLeast(0)
     }
 
+    /**
+     * True only when evidence was captured after lease creation and strictly before the initial
+     * conservative local deadline. ACK/network delay after capture does not invalidate it.
+     */
+    fun wasEvidenceCapturedBeforeDeadline(capturedAtElapsedRealtimeMs: Long): Boolean =
+        capturedAtElapsedRealtimeMs >= startedAtElapsedRealtimeMs &&
+            capturedAtElapsedRealtimeMs < deadlineAtElapsedRealtimeMs
+
     fun remainingBudget(requestedMilliseconds: Long): CoreExecutionBudget {
         if (requestedMilliseconds <= 0) {
             return CoreExecutionBudget.Unavailable(
