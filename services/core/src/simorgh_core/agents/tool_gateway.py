@@ -13,7 +13,18 @@ from simorgh_core.agents.invocations import (
     InvocationStartKind,
     canonical_fingerprint,
 )
-from simorgh_core.agents.registry import SpecialistPolicyError, SpecialistRegistry
+from simorgh_core.agents.registry import (
+    SpecialistPolicyError,
+    SpecialistRegistry,
+    SpecialistRegistryError,
+)
+from simorgh_core.agents.tracing import (
+    CacheDisposition,
+    NullTraceSink,
+    TraceEventKind,
+    TraceSink,
+    trace_event,
+)
 
 
 class ToolEffect(StrEnum):
@@ -78,10 +89,12 @@ class BudgetedToolGateway:
         registry: SpecialistRegistry,
         invoker: ToolInvoker,
         invocation_store: InMemoryInvocationStore,
+        trace_sink: TraceSink | None = None,
     ) -> None:
         self._registry = registry
         self._invoker = invoker
         self._invocations = invocation_store
+        self._trace_sink = trace_sink or NullTraceSink()
 
     async def invoke(
         self,
@@ -89,28 +102,38 @@ class BudgetedToolGateway:
         request: ToolCallRequest,
         budget: BudgetAccount,
     ) -> ToolCallResult:
-        definition = self._registry.get(request.agent_id)
-        if definition.version != request.agent_version:
-            raise SpecialistPolicyError(
-                "tool request agent version does not match the active specialist policy"
-            )
-        self._registry.require_tool(
-            agent_id=request.agent_id,
-            tool_id=request.tool_id,
-        )
-        self._registry.require_connector(
-            agent_id=request.agent_id,
-            connector_id=request.connector_id,
-        )
-        if request.effect == ToolEffect.MUTATION:
-            if definition.side_effect_policy != SideEffectPolicy.TYPED_EXECUTOR_ONLY:
-                raise ToolMutationBlockedError(
-                    "specialist policy does not permit mutation execution"
+        try:
+            definition = self._registry.get(request.agent_id)
+            if definition.version != request.agent_version:
+                raise SpecialistPolicyError(
+                    "tool request agent version does not match the active specialist policy"
                 )
-            raise ToolMutationBlockedError(
-                "control-plane foundation does not execute mutation tools; use a reviewed "
-                "typed executor boundary"
+            self._registry.require_tool(
+                agent_id=request.agent_id,
+                tool_id=request.tool_id,
             )
+            self._registry.require_connector(
+                agent_id=request.agent_id,
+                connector_id=request.connector_id,
+            )
+            if request.effect == ToolEffect.MUTATION:
+                if definition.side_effect_policy != SideEffectPolicy.TYPED_EXECUTOR_ONLY:
+                    raise ToolMutationBlockedError(
+                        "specialist policy does not permit mutation execution"
+                    )
+                raise ToolMutationBlockedError(
+                    "control-plane foundation does not execute mutation tools; use a reviewed "
+                    "typed executor boundary"
+                )
+        except (SpecialistRegistryError, ToolMutationBlockedError) as exc:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                cache=CacheDisposition.BYPASSED_POLICY,
+                outcome="policy_blocked",
+                reason=str(exc),
+            )
+            raise
 
         fingerprint = canonical_fingerprint(request)
         started = self._invocations.begin(
@@ -126,6 +149,13 @@ class BudgetedToolGateway:
             if payload is None:
                 raise ToolGatewayError("completed tool invocation has no result payload")
             replayed = ToolCallResult.model_validate(payload)
+            self._emit(
+                request=request,
+                kind=TraceEventKind.INVOCATION_REPLAYED,
+                cache=CacheDisposition.HIT,
+                outcome="completed",
+                reason="exact completed tool invocation was replayed",
+            )
             return replayed.model_copy(update={"replayed": True})
         if started.kind == InvocationStartKind.IN_PROGRESS:
             raise ToolInvocationInProgressError(
@@ -137,10 +167,11 @@ class BudgetedToolGateway:
                 or f"tool invocation ended in {started.record.state.value}"
             )
 
+        reserved_usage = UsageVector(tool_calls=1)
         try:
             reservation = budget.reserve(
                 kind=ReservationKind.TOOL,
-                usage=UsageVector(tool_calls=1),
+                usage=reserved_usage,
             )
         except BudgetError as exc:
             self._invocations.fail(
@@ -148,15 +179,35 @@ class BudgetedToolGateway:
                 failure_code="budget_exhausted",
                 failure_detail=str(exc),
             )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                outcome="budget_exhausted",
+                reason=str(exc),
+            )
             raise
 
+        self._emit(
+            request=request,
+            kind=TraceEventKind.BUDGET_RESERVED,
+            usage=reserved_usage,
+            outcome="reserved",
+            reason="one structured tool call was reserved before invocation",
+        )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.TOOL_STARTED,
+            cache=CacheDisposition.MISS,
+            outcome="started",
+            reason="approved structured tool invocation started",
+        )
         try:
             payload = await self._invoker.invoke(
                 tool_id=request.tool_id,
                 arguments=request.arguments,
             )
         except Exception as exc:
-            # The remote tool may have received a read request before transport failed. Keep the
+            # The remote tool may have received the read request before transport failed. Keep the
             # call accounted and do not automatically issue another invocation identity.
             budget.commit_reserved(reservation.reservation_id)
             self._invocations.fail(
@@ -164,11 +215,42 @@ class BudgetedToolGateway:
                 failure_code="tool_failure",
                 failure_detail=f"{exc.__class__.__name__}: {exc}",
             )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=reserved_usage,
+                outcome="tool_failure",
+                reason=f"structured tool failed closed with {exc.__class__.__name__}",
+            )
             raise ToolGatewayError("structured tool invocation failed") from exc
 
-        budget.reconcile(
-            reservation_id=reservation.reservation_id,
-            actual_usage=UsageVector(tool_calls=1),
+        actual_usage = UsageVector(tool_calls=1)
+        try:
+            budget.reconcile(
+                reservation_id=reservation.reservation_id,
+                actual_usage=actual_usage,
+            )
+        except BudgetError as exc:
+            self._invocations.fail(
+                invocation_id=request.invocation_id,
+                failure_code="budget_reconciliation_failed",
+                failure_detail=str(exc),
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=actual_usage,
+                outcome="budget_reconciliation_failed",
+                reason=str(exc),
+            )
+            raise
+
+        self._emit(
+            request=request,
+            kind=TraceEventKind.BUDGET_RECONCILED,
+            usage=actual_usage,
+            outcome="reconciled",
+            reason="structured tool usage was reconciled",
         )
         result = ToolCallResult(
             invocation_id=request.invocation_id,
@@ -180,4 +262,40 @@ class BudgetedToolGateway:
             invocation_id=request.invocation_id,
             result_payload=result.model_dump(mode="json"),
         )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.TOOL_COMPLETED,
+            usage=actual_usage,
+            outcome="completed",
+            reason="structured tool result passed the typed gateway",
+        )
         return result
+
+    def _emit(
+        self,
+        *,
+        request: ToolCallRequest,
+        kind: TraceEventKind,
+        cache: CacheDisposition = CacheDisposition.NOT_APPLICABLE,
+        usage: UsageVector | None = None,
+        outcome: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        self._trace_sink.emit(
+            trace_event(
+                request_id=request.request_id,
+                invocation_id=request.invocation_id,
+                kind=kind,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                tool_id=request.tool_id,
+                cache=cache,
+                usage=usage,
+                outcome=outcome,
+                reason=reason,
+                metadata={
+                    "connector_id": request.connector_id,
+                    "effect": request.effect.value,
+                },
+            )
+        )
