@@ -8,7 +8,11 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from simorgh_core import __version__
-from simorgh_core.agents.api import router as agent_task_router
+from simorgh_core.agents.api import (
+    agent_task_control_plane,
+    router as agent_task_router,
+)
+from simorgh_core.agents.task_store import SQLiteAgentTaskStore
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_api import router as device_action_router
 from simorgh_core.devices.action_broker import action_broker
@@ -23,23 +27,33 @@ from simorgh_core.providers.avalai import AvalAIProvider, MissingAvalAICredentia
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    journal = SQLiteActionJournal(
+    action_journal = SQLiteActionJournal(
         settings.simorgh_action_journal_path,
         max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
     )
+    task_store = SQLiteAgentTaskStore(
+        settings.simorgh_agent_task_store_path,
+        max_terminal_records=settings.simorgh_agent_task_store_max_terminal_records,
+    )
     try:
         await action_broker.configure_journal(
-            journal,
+            action_journal,
             max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
         )
+        await agent_task_control_plane.configure_store(task_store)
     except BaseException:
-        journal.close()
+        task_store.close()
+        action_journal.close()
         raise
 
     try:
         yield
     finally:
-        await action_broker.reset_to_memory_journal()
+        try:
+            await agent_task_control_plane.reset_to_memory_store()
+        finally:
+            task_store.close()
+            await action_broker.reset_to_memory_journal()
 
 
 app = FastAPI(
