@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from simorgh_core import __version__
 from simorgh_core.agents.api import agent_task_control_plane
 from simorgh_core.agents.api import router as agent_task_router
+from simorgh_core.agents.invocation_store import (
+    SQLiteInvocationStore,
+    invocation_store_registry,
+)
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_api import router as device_action_router
@@ -27,7 +31,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     action_journal: SQLiteActionJournal | None = None
     task_store: SQLiteAgentTaskStore | None = None
+    invocation_store: SQLiteInvocationStore | None = None
     action_journal_configured = False
+    task_store_configured = False
+    invocation_store_configured = False
     try:
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
@@ -39,14 +46,26 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 settings.simorgh_agent_task_store_max_terminal_records
             ),
         )
+        invocation_store = SQLiteInvocationStore(
+            settings.simorgh_invocation_store_path,
+        )
         await action_broker.configure_journal(
             action_journal,
             max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
         )
         action_journal_configured = True
         await agent_task_control_plane.configure_store(task_store)
+        task_store_configured = True
+        invocation_store_registry.configure(invocation_store)
+        invocation_store_configured = True
     except BaseException:
-        if task_store is not None:
+        if invocation_store_configured:
+            invocation_store_registry.reset_to_memory()
+        elif invocation_store is not None:
+            invocation_store.close()
+        if task_store_configured:
+            await agent_task_control_plane.reset_to_memory_store()
+        elif task_store is not None:
             task_store.close()
         if action_journal_configured:
             await action_broker.reset_to_memory_journal()
@@ -58,10 +77,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            await agent_task_control_plane.reset_to_memory_store()
+            invocation_store_registry.reset_to_memory()
         finally:
-            task_store.close()
-            await action_broker.reset_to_memory_journal()
+            try:
+                await agent_task_control_plane.reset_to_memory_store()
+            finally:
+                await action_broker.reset_to_memory_journal()
 
 
 app = FastAPI(
