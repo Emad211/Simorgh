@@ -40,6 +40,7 @@ class TraceEventKind(StrEnum):
     MODEL_FAILED = "model_failed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
+    TOOL_FAILED = "tool_failed"
     ESCALATION = "escalation"
     TERMINAL = "terminal"
 
