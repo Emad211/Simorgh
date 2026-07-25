@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from simorgh_core.agents.budget import BudgetAccount, BudgetSnapshot
+from simorgh_core.agents.budget import BudgetSnapshot
 from simorgh_core.agents.contracts import (
     ExecutionMode,
     RiskClass,
@@ -15,6 +15,7 @@ from simorgh_core.agents.invocations import (
     InMemoryInvocationStore,
     InvocationEffect,
     InvocationKind,
+    InvocationRecord,
     canonical_fingerprint,
 )
 from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
@@ -83,7 +84,7 @@ def _unknown_model_invocation(
     task: TaskEnvelope,
     *,
     usage: UsageVector,
-):
+) -> InvocationRecord:
     store = InMemoryInvocationStore(wall_clock_millis=lambda: 2_000)
     invocation_id = uuid4()
     store.begin(
