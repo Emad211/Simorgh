@@ -62,6 +62,7 @@ class AccessibilityActionEvidenceSourceTest {
             val fresh = baseline.copy(
                 snapshotId = FRESH_SNAPSHOT_ID,
                 capturedAtMs = 1_000,
+                capturedAtElapsedRealtimeMs = 1_000,
             )
             AccessibilityObservationBus.publish(
                 AccessibilityObserverState(
@@ -125,6 +126,7 @@ class AccessibilityActionEvidenceSourceTest {
             val second = first.copy(
                 snapshotId = SECOND_POST_SNAPSHOT_ID,
                 capturedAtMs = 2_020,
+                capturedAtElapsedRealtimeMs = 2_020,
             )
             publishLocal(second)
             AccessibilityAcknowledgementBus.publish(
@@ -182,6 +184,7 @@ class AccessibilityActionEvidenceSourceTest {
             val second = first.copy(
                 snapshotId = SECOND_POST_SNAPSHOT_ID,
                 capturedAtMs = 2_020,
+                capturedAtElapsedRealtimeMs = 2_020,
             )
             val regressed = snapshot(
                 id = REGRESSED_SNAPSHOT_ID,
@@ -231,6 +234,7 @@ class AccessibilityActionEvidenceSourceTest {
     ): AccessibilitySnapshot = AccessibilitySnapshot(
         snapshotId = id,
         capturedAtMs = capturedAtMs,
+        capturedAtElapsedRealtimeMs = capturedAtMs,
         activePackage = activePackage,
         activeWindowId = 1,
         windows = emptyList(),
