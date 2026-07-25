@@ -1,5 +1,6 @@
 package ai.simorgh.android.actions
 
+import android.os.SystemClock
 import ai.simorgh.android.accessibility.AccessibilityAcknowledgementBus
 import ai.simorgh.android.accessibility.AccessibilityCaptureController
 import ai.simorgh.android.accessibility.AccessibilityObservationBus
@@ -20,7 +21,7 @@ interface OpenAppEvidenceSource : Closeable {
 
     fun awaitVerifiedObservation(
         before: AcknowledgedAccessibilityObservation,
-        launchedAtMs: Long,
+        launchedAtElapsedRealtimeMs: Long,
         policy: AndroidVerificationPolicy,
         timeoutMillis: Long,
         cancelled: () -> Boolean,
@@ -46,9 +47,11 @@ data class PostActionEvidenceResult(
 class AccessibilityActionEvidenceSource(
     private val captureRequester: () -> Boolean = AccessibilityCaptureController::requestCapture,
     private val snapshotProjector: (AccessibilitySnapshot) -> AccessibilitySnapshot = { it },
-    private val wallClockMillis: () -> Long = System::currentTimeMillis,
+    /** Legacy synthetic-clock override retained for existing deterministic JVM fixtures. */
+    private val wallClockMillis: (() -> Long)? = null,
     private val monotonicNanos: () -> Long = System::nanoTime,
     private val pollIntervalMillis: Long = DEFAULT_POLL_INTERVAL_MILLIS,
+    private val monotonicMillis: () -> Long = SystemClock::elapsedRealtime,
 ) : OpenAppEvidenceSource {
     private val monitor = Object()
     private val localHistory = ArrayDeque<AccessibilitySnapshot>()
@@ -98,7 +101,7 @@ class AccessibilityActionEvidenceSource(
     ): AccessibilitySnapshot? {
         require(timeoutMillis > 0)
         val baselineId = synchronized(monitor) { localHistory.peekLast()?.snapshotId }
-        val requestedAtMs = wallClockMillis()
+        val requestedAtElapsedRealtimeMs = elapsedRealtimeMs()
         if (!captureRequester()) {
             return null
         }
@@ -108,7 +111,7 @@ class AccessibilityActionEvidenceSource(
             synchronized(monitor) {
                 val candidate = localHistory.lastOrNull { snapshot ->
                     snapshot.snapshotId != baselineId &&
-                        snapshot.capturedAtMs >= requestedAtMs
+                        snapshot.capturedAtElapsedRealtimeMs >= requestedAtElapsedRealtimeMs
                 }
                 if (candidate != null) {
                     return candidate
@@ -125,7 +128,7 @@ class AccessibilityActionEvidenceSource(
 
     override fun awaitVerifiedObservation(
         before: AcknowledgedAccessibilityObservation,
-        launchedAtMs: Long,
+        launchedAtElapsedRealtimeMs: Long,
         policy: AndroidVerificationPolicy,
         timeoutMillis: Long,
         cancelled: () -> Boolean,
@@ -159,7 +162,7 @@ class AccessibilityActionEvidenceSource(
                 if (
                     !processedSnapshotIds.add(local.snapshotId) ||
                     local.snapshotId == before.snapshotId ||
-                    local.capturedAtMs < launchedAtMs
+                    local.capturedAtElapsedRealtimeMs < launchedAtElapsedRealtimeMs
                 ) {
                     return@forEach
                 }
@@ -188,7 +191,7 @@ class AccessibilityActionEvidenceSource(
                 val verified = synchronized(monitor) {
                     verifiedResultLocked(
                         before = before,
-                        launchedAtMs = launchedAtMs,
+                        launchedAtElapsedRealtimeMs = launchedAtElapsedRealtimeMs,
                         policy = policy,
                         processedSnapshotIds = processedSnapshotIds,
                         stableFingerprint = stableFingerprint,
@@ -264,7 +267,7 @@ class AccessibilityActionEvidenceSource(
 
     private fun verifiedResultLocked(
         before: AcknowledgedAccessibilityObservation,
-        launchedAtMs: Long,
+        launchedAtElapsedRealtimeMs: Long,
         policy: AndroidVerificationPolicy,
         processedSnapshotIds: Set<String>,
         stableFingerprint: String,
@@ -273,7 +276,7 @@ class AccessibilityActionEvidenceSource(
         if (
             latestLocal.snapshotId !in processedSnapshotIds ||
             latestLocal.snapshotId == before.snapshotId ||
-            latestLocal.capturedAtMs < launchedAtMs ||
+            latestLocal.capturedAtElapsedRealtimeMs < launchedAtElapsedRealtimeMs ||
             AccessibilitySnapshotFingerprint.calculate(latestLocal) != stableFingerprint
         ) {
             return null
@@ -285,7 +288,7 @@ class AccessibilityActionEvidenceSource(
         }
 
         val qualifyingAcknowledgement = acknowledgementHistory.lastOrNull { evidence ->
-            evidence.capturedAtMs >= launchedAtMs &&
+            evidence.capturedAtElapsedRealtimeMs >= launchedAtElapsedRealtimeMs &&
                 evidence.snapshotId != before.snapshotId &&
                 (
                     evidence.streamId != before.streamId ||
@@ -326,6 +329,9 @@ class AccessibilityActionEvidenceSource(
             acknowledgementHistory.removeFirst()
         }
     }
+
+    private fun elapsedRealtimeMs(): Long =
+        (wallClockMillis ?: monotonicMillis).invoke().coerceAtLeast(0)
 
     private fun deadlineAfter(timeoutMillis: Long): Long {
         val timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
