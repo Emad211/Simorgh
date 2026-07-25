@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Protocol
+from collections.abc import Callable, Mapping, Protocol
 from enum import StrEnum
 from threading import RLock
 from uuid import UUID, uuid4
@@ -137,6 +137,7 @@ def trace_event(
     agent_id: str | None = None,
     agent_version: str | None = None,
     routing_method: RoutingMethod | None = None,
+    rule_id: str | None = None,
     provider_id: str | None = None,
     model_id: str | None = None,
     tool_id: str | None = None,
@@ -145,7 +146,7 @@ def trace_event(
     outcome: str | None = None,
     reason: str | None = None,
     metadata: Mapping[str, TraceScalar] | None = None,
-    wall_clock_millis: callable[[], int] | None = None,
+    wall_clock_millis: Callable[[], int] | None = None,
 ) -> TraceEvent:
     now = wall_clock_millis or (lambda: int(time.time() * 1_000))
     return TraceEvent(
@@ -156,6 +157,7 @@ def trace_event(
         agent_id=agent_id,
         agent_version=agent_version,
         routing_method=routing_method,
+        rule_id=rule_id,
         provider_id=provider_id,
         model_id=model_id,
         tool_id=tool_id,
