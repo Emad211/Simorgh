@@ -96,9 +96,11 @@ class AgentTaskControlPlane:
                 self._store = previous_store
                 self._states = previous_states
                 raise
+            if previous_store is not store:
+                previous_store.close()
 
     async def reset_to_memory_store(self) -> None:
-        """Detach runtime durability without modifying the previous on-disk store."""
+        """Detach runtime durability without modifying prior on-disk contents."""
 
         with self._lock:
             if any(
@@ -108,8 +110,10 @@ class AgentTaskControlPlane:
                 raise AgentTaskStoreUnavailableError(
                     "cannot reset agent task store while routing is active"
                 )
+            previous_store = self._store
             self._store = InMemoryAgentTaskStore()
             self._states = {}
+            previous_store.close()
 
     async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:
         fingerprint = _task_fingerprint(task)
@@ -178,7 +182,9 @@ class AgentTaskControlPlane:
                     request_id=task.request_id,
                     phase=AgentTaskPhase.UNKNOWN,
                     created_at_ms=current.record.created_at_ms,
-                    updated_at_ms=self._now_ms(),
+                    updated_at_ms=self._next_record_time(
+                        current.record.updated_at_ms
+                    ),
                     task=task,
                     budget=stabilized_account.snapshot(),
                     detail=(
@@ -207,7 +213,9 @@ class AgentTaskControlPlane:
                 request_id=task.request_id,
                 phase=DECISION_PHASES[decision.state],
                 created_at_ms=current.record.created_at_ms,
-                updated_at_ms=self._now_ms(),
+                updated_at_ms=self._next_record_time(
+                    current.record.updated_at_ms
+                ),
                 task=task,
                 routing_decision=decision,
                 budget=stabilized_account.snapshot(),
@@ -251,7 +259,7 @@ class AgentTaskControlPlane:
                 request_id=request_id,
                 phase=AgentTaskPhase.CANCELLED,
                 created_at_ms=state.record.created_at_ms,
-                updated_at_ms=self._now_ms(),
+                updated_at_ms=self._next_record_time(state.record.updated_at_ms),
                 task=state.task,
                 routing_decision=state.record.routing_decision,
                 budget=state.account.snapshot(),
@@ -354,6 +362,9 @@ class AgentTaskControlPlane:
 
     def _now_ms(self) -> int:
         return max(0, int(self._wall_clock_millis()))
+
+    def _next_record_time(self, previous_updated_at_ms: int) -> int:
+        return max(previous_updated_at_ms, self._now_ms())
 
 
 def _effective_budget(*, task: TaskEnvelope, now_ms: int) -> TaskBudget:
