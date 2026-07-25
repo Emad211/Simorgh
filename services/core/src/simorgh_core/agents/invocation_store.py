@@ -8,11 +8,12 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, NoReturn
 from uuid import UUID
 
 from simorgh_core.agents.contracts import UsageVector
 from simorgh_core.agents.invocations import (
+    InMemoryInvocationStore,
     InvocationConflictError,
     InvocationEffect,
     InvocationKind,
@@ -28,7 +29,6 @@ from simorgh_core.agents.invocations import (
     InvocationStoreError,
     InvocationStoreSchemaError,
     InvocationStoreUnhealthyError,
-    InMemoryInvocationStore,
     canonical_fingerprint,
     canonical_json,
     require_same_invocation_identity,
@@ -231,16 +231,15 @@ class SQLiteInvocationStore:
         self,
         *,
         invocation_id: UUID,
-        result_payload: dict[str, object],
+        result_payload: dict[str, Any],
         committed_usage: UsageVector = _ZERO_USAGE,
     ) -> InvocationRecord:
-        result_dict = dict(result_payload)
-        result_hash = canonical_fingerprint(result_dict)
+        result_hash = canonical_fingerprint(result_payload)
         with self._lock:
             existing = self._require_record_locked(invocation_id)
             if existing.state == InvocationPhase.COMPLETED:
                 if (
-                    existing.result_payload != result_dict
+                    existing.result_payload != result_payload
                     or existing.committed_usage != committed_usage
                 ):
                     raise InvocationConflictError(
@@ -259,7 +258,7 @@ class SQLiteInvocationStore:
                 state=InvocationPhase.COMPLETED,
                 reserved_usage=_ZERO_USAGE,
                 committed_usage=committed_usage,
-                result_payload=result_dict,
+                result_payload=result_payload,
                 result_payload_sha256=result_hash,
                 failure_code=None,
                 failure_detail=None,
@@ -591,7 +590,7 @@ class SQLiteInvocationStore:
                     (str(existing.invocation_id),),
                 ).fetchone()
                 if current_row is None:
-                    raise InvocationStoreCorruptionError(
+                    self._latch_corruption_locked(
                         "durable invocation disappeared during transition"
                     )
                 current = self._decode_row(current_row)
@@ -753,7 +752,7 @@ class SQLiteInvocationStore:
         self,
         message: str,
         exc: sqlite3.DatabaseError,
-    ) -> None:
+    ) -> NoReturn:
         failure = InvocationStoreCorruptionError(message)
         if self._failure is None:
             self._failure = failure
@@ -763,7 +762,7 @@ class SQLiteInvocationStore:
         self,
         message: str,
         exc: BaseException | None = None,
-    ) -> None:
+    ) -> NoReturn:
         failure = InvocationStoreCorruptionError(message)
         if self._failure is None:
             self._failure = failure
@@ -895,22 +894,20 @@ def validate_invocation_transition(
         existing=existing.committed_usage,
         candidate=candidate.committed_usage,
     )
-    if existing.result_payload is not None:
-        if (
-            candidate.result_payload != existing.result_payload
-            or candidate.result_payload_sha256 != existing.result_payload_sha256
-        ):
-            raise InvocationConflictError(
-                "durable invocation result content is immutable"
-            )
-    if existing.failure_code is not None:
-        if (
-            candidate.failure_code != existing.failure_code
-            or candidate.failure_detail != existing.failure_detail
-        ):
-            raise InvocationConflictError(
-                "durable invocation terminal failure metadata is immutable"
-            )
+    if existing.result_payload is not None and (
+        candidate.result_payload != existing.result_payload
+        or candidate.result_payload_sha256 != existing.result_payload_sha256
+    ):
+        raise InvocationConflictError(
+            "durable invocation result content is immutable"
+        )
+    if existing.failure_code is not None and (
+        candidate.failure_code != existing.failure_code
+        or candidate.failure_detail != existing.failure_detail
+    ):
+        raise InvocationConflictError(
+            "durable invocation terminal failure metadata is immutable"
+        )
 
 
 def _terminal_usage(
