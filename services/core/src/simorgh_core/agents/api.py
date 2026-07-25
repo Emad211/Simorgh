@@ -10,10 +10,12 @@ from simorgh_core.agents.control_plane import (
     AgentTaskConflictError,
     AgentTaskControlPlane,
     AgentTaskNotFoundError,
-    AgentTaskRecord,
+    AgentTaskRoutingUnknownError,
+    AgentTaskStoreUnavailableError,
 )
 from simorgh_core.agents.defaults import default_specialist_registry
 from simorgh_core.agents.router import SpecialistRouter
+from simorgh_core.agents.task_state import AgentTaskRecord
 from simorgh_core.agents.tracing import InMemoryTraceSink
 from simorgh_core.devices.action_api import OperatorDependency
 
@@ -33,6 +35,16 @@ class AgentTaskCancelRequest(BaseModel):
     reason: str = Field(default="operator requested cancellation", max_length=1_000)
 
 
+def _store_unavailable(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "agent_task_store_unavailable",
+            "message": str(exc),
+        },
+    )
+
+
 @router.post(
     "",
     response_model=AgentTaskRecord,
@@ -46,6 +58,17 @@ async def submit_agent_task(
         return await agent_task_control_plane.submit(task)
     except AgentTaskConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except AgentTaskRoutingUnknownError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "agent_task_routing_unknown",
+                "message": str(exc),
+                "request_id": str(task.request_id),
+            },
+        ) from exc
+    except AgentTaskStoreUnavailableError as exc:
+        raise _store_unavailable(exc) from exc
 
 
 @router.get("/{request_id}", response_model=AgentTaskRecord)
@@ -57,6 +80,8 @@ async def get_agent_task(
         return await agent_task_control_plane.get(request_id)
     except AgentTaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AgentTaskStoreUnavailableError as exc:
+        raise _store_unavailable(exc) from exc
 
 
 @router.post(
@@ -76,3 +101,5 @@ async def cancel_agent_task(
         )
     except AgentTaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AgentTaskStoreUnavailableError as exc:
+        raise _store_unavailable(exc) from exc
