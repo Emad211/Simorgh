@@ -104,7 +104,7 @@ class CoreClockEstimatorTest {
     }
 
     @Test
-    fun `deadline fails closed when uncertainty consumes remaining budget`() {
+    fun `deadline uncertainty and definite expiry remain distinct`() {
         val clocks = MutableClocks(elapsedMs = 0, wallMs = 10_000)
         val estimator = estimator(clocks)
         estimator.beginGeneration(5)
@@ -118,13 +118,15 @@ class CoreClockEstimatorTest {
         )
 
         val reading = requireNotNull(estimator.reading())
-        val unsafe = estimator.deadlineBudget(
-            reading.estimatedCoreTimeMs + reading.uncertaintyMs,
-        )
-        assertTrue(unsafe is CoreDeadlineBudget.Unavailable)
-        assertTrue(
-            (unsafe as CoreDeadlineBudget.Unavailable).reason.contains("uncertainty"),
-        )
+        val uncertain = estimator.deadlineBudget(reading.latestCoreTimeMs)
+        assertTrue(uncertain is CoreDeadlineBudget.Unavailable)
+        uncertain as CoreDeadlineBudget.Unavailable
+        assertEquals(CoreDeadlineUnavailableReason.UNCERTAINTY, uncertain.kind)
+
+        val expired = estimator.deadlineBudget(reading.earliestCoreTimeMs)
+        assertTrue(expired is CoreDeadlineBudget.Unavailable)
+        expired as CoreDeadlineBudget.Unavailable
+        assertEquals(CoreDeadlineUnavailableReason.EXPIRED, expired.kind)
 
         val safe = estimator.deadlineBudget(reading.latestCoreTimeMs + 2_000)
         assertTrue(safe is CoreDeadlineBudget.Available)
