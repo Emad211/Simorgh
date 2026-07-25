@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
@@ -9,8 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from simorgh_core.agents.budget import BudgetAccount, BudgetError, ReservationKind
 from simorgh_core.agents.contracts import SideEffectPolicy, UsageVector
 from simorgh_core.agents.invocations import (
-    InMemoryInvocationStore,
+    InvocationEffect,
+    InvocationKind,
     InvocationStartKind,
+    InvocationStore,
+    InvocationStoreError,
     canonical_fingerprint,
 )
 from simorgh_core.agents.registry import (
@@ -90,14 +94,14 @@ class ToolCallResult(BaseModel):
 
 
 class BudgetedToolGateway:
-    """Enforce task and specialist policy, budget, and exact read replay."""
+    """Enforce policy, durable reservation, and exact read-tool replay."""
 
     def __init__(
         self,
         *,
         registry: SpecialistRegistry,
         invoker: ToolInvoker,
-        invocation_store: InMemoryInvocationStore,
+        invocation_store: InvocationStore,
         trace_sink: TraceSink | None = None,
     ) -> None:
         self._registry = registry
@@ -111,6 +115,198 @@ class BudgetedToolGateway:
         request: ToolCallRequest,
         budget: BudgetAccount,
     ) -> ToolCallResult:
+        self._require_policy(request)
+        request_payload = request.model_dump(mode="json")
+        request_payload["allowed_data_sources"] = sorted(request.allowed_data_sources)
+        fingerprint = canonical_fingerprint(request_payload)
+        try:
+            started = self._invocations.begin(
+                invocation_id=request.invocation_id,
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                operation=f"tool:{request.tool_id}",
+                input_fingerprint=fingerprint,
+                kind=InvocationKind.TOOL,
+                effect=InvocationEffect.READ_ONLY,
+                tool_id=request.tool_id,
+                connector_id=request.connector_id,
+            )
+        except InvocationStoreError as exc:
+            raise ToolGatewayError(
+                "tool invocation identity could not be durably claimed"
+            ) from exc
+
+        if started.kind == InvocationStartKind.REPLAY:
+            return self._replay_result(
+                request=request,
+                payload=started.record.result_payload,
+                committed_usage=started.record.committed_usage,
+            )
+        if started.kind == InvocationStartKind.IN_PROGRESS:
+            raise ToolInvocationInProgressError(
+                f"tool invocation {request.invocation_id} is already in progress"
+            )
+        if started.kind == InvocationStartKind.TERMINAL:
+            raise ToolInvocationTerminalError(
+                started.record.failure_detail
+                or f"tool invocation ended in {started.record.state.value}"
+            )
+
+        reserved_usage = UsageVector(tool_calls=1)
+        try:
+            reservation = budget.reserve(
+                kind=ReservationKind.TOOL,
+                usage=reserved_usage,
+            )
+        except BudgetError as exc:
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="budget_exhausted",
+                failure_detail=str(exc),
+                committed_usage=UsageVector(),
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                outcome="budget_exhausted",
+                reason=str(exc),
+            )
+            raise
+
+        try:
+            self._invocations.reserve(
+                invocation_id=request.invocation_id,
+                usage=reserved_usage,
+            )
+        except InvocationStoreError as exc:
+            budget.release(reservation.reservation_id)
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                outcome="invocation_store_failure",
+                reason="tool was not issued because durable reservation failed",
+            )
+            raise ToolGatewayError(
+                "tool invocation could not be durably reserved"
+            ) from exc
+
+        self._emit(
+            request=request,
+            kind=TraceEventKind.BUDGET_RESERVED,
+            usage=reserved_usage,
+            outcome="reserved",
+            reason="tool budget and durable invocation usage were reserved",
+        )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.TOOL_STARTED,
+            cache=CacheDisposition.MISS,
+            outcome="started",
+            reason="approved structured read tool invocation started",
+        )
+        try:
+            payload = await self._invoker.invoke(
+                tool_id=request.tool_id,
+                arguments=request.arguments,
+            )
+        except asyncio.CancelledError:
+            budget.commit_reserved(reservation.reservation_id)
+            self._mark_unknown(
+                invocation_id=request.invocation_id,
+                failure_code="tool_call_cancelled",
+                failure_detail=(
+                    "tool coroutine was cancelled after durable reservation; "
+                    "completion is uncertain"
+                ),
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=reserved_usage,
+                outcome="unknown",
+                reason="tool coroutine was cancelled after reservation",
+            )
+            raise
+        except Exception as exc:
+            budget.commit_reserved(reservation.reservation_id)
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="tool_failure",
+                failure_detail=exc.__class__.__name__,
+                committed_usage=reserved_usage,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=reserved_usage,
+                outcome="tool_failure",
+                reason=f"structured tool failed closed with {exc.__class__.__name__}",
+            )
+            raise ToolGatewayError("structured tool invocation failed") from exc
+
+        actual_usage = UsageVector(tool_calls=1)
+        try:
+            budget.reconcile(
+                reservation_id=reservation.reservation_id,
+                actual_usage=actual_usage,
+            )
+        except BudgetError as exc:
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="budget_reconciliation_failed",
+                failure_detail=str(exc),
+                committed_usage=actual_usage,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=actual_usage,
+                outcome="budget_reconciliation_failed",
+                reason=str(exc),
+            )
+            raise
+
+        self._emit(
+            request=request,
+            kind=TraceEventKind.BUDGET_RECONCILED,
+            usage=actual_usage,
+            outcome="reconciled",
+            reason="structured tool usage was reconciled",
+        )
+        result = ToolCallResult(
+            invocation_id=request.invocation_id,
+            tool_id=request.tool_id,
+            connector_id=request.connector_id,
+            payload=payload,
+        )
+        try:
+            self._invocations.complete(
+                invocation_id=request.invocation_id,
+                result_payload=result.model_dump(mode="json"),
+                committed_usage=actual_usage,
+            )
+        except InvocationStoreError as exc:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=actual_usage,
+                outcome="invocation_store_failure",
+                reason="tool result could not be durably committed",
+            )
+            raise ToolGatewayError(
+                "tool result could not be durably committed"
+            ) from exc
+        self._emit(
+            request=request,
+            kind=TraceEventKind.TOOL_COMPLETED,
+            usage=actual_usage,
+            outcome="completed",
+            reason="structured tool result passed policy, budget, and durable validation",
+        )
+        return result
+
+    def _require_policy(self, request: ToolCallRequest) -> None:
         try:
             definition = self._registry.get(request.agent_id)
             if definition.version != request.agent_version:
@@ -148,143 +344,78 @@ class BudgetedToolGateway:
             )
             raise
 
-        request_payload = request.model_dump(mode="json")
-        request_payload["allowed_data_sources"] = sorted(request.allowed_data_sources)
-        fingerprint = canonical_fingerprint(request_payload)
-        started = self._invocations.begin(
-            invocation_id=request.invocation_id,
-            request_id=request.request_id,
-            agent_id=request.agent_id,
-            agent_version=request.agent_version,
-            operation=f"tool:{request.tool_id}",
-            input_fingerprint=fingerprint,
-        )
-        if started.kind == InvocationStartKind.REPLAY:
-            payload = started.record.result_payload
-            if payload is None:
-                raise ToolGatewayError("completed tool invocation has no result payload")
-            replayed = ToolCallResult.model_validate(payload)
-            self._emit(
-                request=request,
-                kind=TraceEventKind.INVOCATION_REPLAYED,
-                cache=CacheDisposition.HIT,
-                outcome="completed",
-                reason="exact completed tool invocation was replayed",
+    def _replay_result(
+        self,
+        *,
+        request: ToolCallRequest,
+        payload: dict[str, Any] | None,
+        committed_usage: UsageVector,
+    ) -> ToolCallResult:
+        if payload is None:
+            raise ToolGatewayError("completed tool invocation has no result payload")
+        replayed = ToolCallResult.model_validate(payload)
+        expected_usage = UsageVector(tool_calls=1)
+        if replayed.invocation_id != request.invocation_id:
+            raise ToolGatewayError(
+                "durable tool result invocation identity does not match request"
             )
-            return replayed.model_copy(update={"replayed": True})
-        if started.kind == InvocationStartKind.IN_PROGRESS:
-            raise ToolInvocationInProgressError(
-                f"tool invocation {request.invocation_id} is already in progress"
+        if (
+            replayed.tool_id != request.tool_id
+            or replayed.connector_id != request.connector_id
+        ):
+            raise ToolGatewayError(
+                "durable tool result target identity does not match request"
             )
-        if started.kind == InvocationStartKind.TERMINAL:
-            raise ToolInvocationTerminalError(
-                started.record.failure_detail
-                or f"tool invocation ended in {started.record.state.value}"
+        if committed_usage != expected_usage:
+            raise ToolGatewayError(
+                "durable tool result usage does not match invocation accounting"
             )
-
-        reserved_usage = UsageVector(tool_calls=1)
-        try:
-            reservation = budget.reserve(
-                kind=ReservationKind.TOOL,
-                usage=reserved_usage,
-            )
-        except BudgetError as exc:
-            self._invocations.fail(
-                invocation_id=request.invocation_id,
-                failure_code="budget_exhausted",
-                failure_detail=str(exc),
-            )
-            self._emit(
-                request=request,
-                kind=TraceEventKind.TOOL_FAILED,
-                outcome="budget_exhausted",
-                reason=str(exc),
-            )
-            raise
-
         self._emit(
             request=request,
-            kind=TraceEventKind.BUDGET_RESERVED,
-            usage=reserved_usage,
-            outcome="reserved",
-            reason="one structured tool call was reserved before invocation",
-        )
-        self._emit(
-            request=request,
-            kind=TraceEventKind.TOOL_STARTED,
-            cache=CacheDisposition.MISS,
-            outcome="started",
-            reason="approved structured tool invocation started",
-        )
-        try:
-            payload = await self._invoker.invoke(
-                tool_id=request.tool_id,
-                arguments=request.arguments,
-            )
-        except Exception as exc:
-            # The remote tool may have received the read request before transport failed. Keep the
-            # call accounted and do not automatically issue another invocation identity.
-            budget.commit_reserved(reservation.reservation_id)
-            self._invocations.fail(
-                invocation_id=request.invocation_id,
-                failure_code="tool_failure",
-                failure_detail=f"{exc.__class__.__name__}: {exc}",
-            )
-            self._emit(
-                request=request,
-                kind=TraceEventKind.TOOL_FAILED,
-                usage=reserved_usage,
-                outcome="tool_failure",
-                reason=f"structured tool failed closed with {exc.__class__.__name__}",
-            )
-            raise ToolGatewayError("structured tool invocation failed") from exc
-
-        actual_usage = UsageVector(tool_calls=1)
-        try:
-            budget.reconcile(
-                reservation_id=reservation.reservation_id,
-                actual_usage=actual_usage,
-            )
-        except BudgetError as exc:
-            self._invocations.fail(
-                invocation_id=request.invocation_id,
-                failure_code="budget_reconciliation_failed",
-                failure_detail=str(exc),
-            )
-            self._emit(
-                request=request,
-                kind=TraceEventKind.TOOL_FAILED,
-                usage=actual_usage,
-                outcome="budget_reconciliation_failed",
-                reason=str(exc),
-            )
-            raise
-
-        self._emit(
-            request=request,
-            kind=TraceEventKind.BUDGET_RECONCILED,
-            usage=actual_usage,
-            outcome="reconciled",
-            reason="structured tool usage was reconciled",
-        )
-        result = ToolCallResult(
-            invocation_id=request.invocation_id,
-            tool_id=request.tool_id,
-            connector_id=request.connector_id,
-            payload=payload,
-        )
-        self._invocations.complete(
-            invocation_id=request.invocation_id,
-            result_payload=result.model_dump(mode="json"),
-        )
-        self._emit(
-            request=request,
-            kind=TraceEventKind.TOOL_COMPLETED,
-            usage=actual_usage,
+            kind=TraceEventKind.INVOCATION_REPLAYED,
+            cache=CacheDisposition.HIT,
             outcome="completed",
-            reason="structured tool result passed the typed gateway",
+            reason="exact completed tool invocation was replayed from durable state",
         )
-        return result
+        return replayed.model_copy(update={"replayed": True})
+
+    def _record_failure(
+        self,
+        *,
+        invocation_id: UUID,
+        failure_code: str,
+        failure_detail: str,
+        committed_usage: UsageVector,
+    ) -> None:
+        try:
+            self._invocations.fail(
+                invocation_id=invocation_id,
+                failure_code=failure_code,
+                failure_detail=failure_detail,
+                committed_usage=committed_usage,
+            )
+        except InvocationStoreError as exc:
+            raise ToolGatewayError(
+                "tool invocation failure could not be durably recorded"
+            ) from exc
+
+    def _mark_unknown(
+        self,
+        *,
+        invocation_id: UUID,
+        failure_code: str,
+        failure_detail: str,
+    ) -> None:
+        try:
+            self._invocations.mark_unknown(
+                invocation_id=invocation_id,
+                failure_code=failure_code,
+                failure_detail=failure_detail,
+            )
+        except InvocationStoreError as exc:
+            raise ToolGatewayError(
+                "tool invocation uncertainty could not be durably recorded"
+            ) from exc
 
     def _emit(
         self,
