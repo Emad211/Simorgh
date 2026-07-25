@@ -175,7 +175,9 @@ def test_planning_agent_cannot_execute_mutation_tool() -> None:
             )
         )
     assert invoker.calls == 0
-    event = trace_sink.for_request(request_id).single()
+    events = trace_sink.for_request(request_id)
+    assert len(events) == 1
+    event = events[0]
     assert event.kind == TraceEventKind.TOOL_FAILED
     assert event.outcome == "policy_blocked"
     assert event.usage.tool_calls == 0
