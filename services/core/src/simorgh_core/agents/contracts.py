@@ -318,8 +318,12 @@ class RoutingDecision(BaseModel):
                 raise ValueError("routed decision requires selected agent, version, and method")
         elif selected or versioned:
             raise ValueError("non-routed decision cannot select an agent")
-        if self.method == RoutingMethod.MODEL_CLASSIFIER and self.model_calls != 1:
-            raise ValueError("model-classified route requires exactly one model call")
-        if self.method != RoutingMethod.MODEL_CLASSIFIER and self.model_calls != 0:
-            raise ValueError("deterministic route cannot report model calls")
+        if self.method == RoutingMethod.MODEL_CLASSIFIER:
+            if self.classifier_invocation_id is None:
+                raise ValueError("model-classifier decision requires classifier invocation identity")
+        else:
+            if self.model_calls != 0:
+                raise ValueError("deterministic route cannot report model calls")
+            if self.classifier_invocation_id is not None:
+                raise ValueError("deterministic route cannot carry classifier invocation identity")
         return self
