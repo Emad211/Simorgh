@@ -5,7 +5,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import cast
 from uuid import UUID
 
 from starlette.websockets import WebSocketDisconnect
@@ -21,7 +20,6 @@ from simorgh_core.devices.action_journal import (
     ActionJournalCorruptionError,
     ActionJournalEntryV1,
     ActionJournalError,
-    ActionJournalPhase,
     InMemoryActionJournal,
     canonical_sha256,
     new_journal_entry,
@@ -861,7 +859,7 @@ class DeviceActionBroker:
             device_id=record.device_id,
             command=record.command,
             command_envelope=record.command_envelope,
-            phase=cast(ActionJournalPhase, record.phase.value),
+            phase=record.phase.value,
             created_at_ms=record.created_at_ms,
             updated_at_ms=record.updated_at_ms,
             delivery_count=record.delivery_count,
