@@ -33,6 +33,8 @@ foreign_keys = ON
 busy_timeout = 5000 ms
 ```
 
+One active Core process owns one task-store path. Multi-process leader election and a distributed lease are not part of this increment.
+
 Each row stores:
 
 - stable `request_id`;
@@ -40,7 +42,7 @@ Each row stores:
 - current typed phase;
 - terminal marker;
 - immutable creation time;
-- monotonic update time in Core epoch metadata;
+- non-decreasing update time;
 - canonical JSON of a versioned `AgentTaskStoreEntryV1`;
 - SHA-256 of that canonical payload.
 
@@ -72,6 +74,8 @@ It does not invoke the Router, classifier, model or tool again.
 
 The same request ID with different task content is a conflict.
 
+This replay guarantee applies while the terminal record remains inside configured retention. A compact long-lived request tombstone is deferred; terminal pruning must not be described as indefinite replay protection.
+
 ### Interrupted routing
 
 A persisted `routing` phase found during Core startup means the previous process ended after claiming the task but before durably recording a routing result.
@@ -90,16 +94,18 @@ The task is not automatically routed again because a classifier or future extern
 
 ### Budget recovery
 
-Budget reservation identities are process-local. When a durable budget snapshot contains unresolved reserved usage during recovery, the reservation is conservatively converted to committed usage.
+Budget reservation identities are process-local. When a durable budget snapshot already contains unresolved reserved usage, recovery converts that usage conservatively to committed usage.
 
 This means:
 
-- external work that might already have occurred is not treated as free;
+- persisted uncertain usage is not treated as free;
 - the reservation is not recreated;
 - the recovered task cannot silently regain that budget;
 - over-limit recovery truthfully marks the budget exhausted.
 
 Persisted elapsed time becomes an offset for the new process's monotonic timer.
+
+This task-store increment persists admission and terminal routing snapshots. It does not journal every intermediate model/tool reservation while an external call is in flight. Therefore a crash during such a call yields `unknown`, but exact provider-cost recovery requires the durable invocation store in Phase 1 Step 1.2.
 
 ### Cancellation and expiry
 
@@ -108,8 +114,11 @@ Cancellation and expiry are durable task phases.
 - cancellation is idempotent;
 - cancellation cannot be reversed;
 - the first cancellation reason is immutable;
+- a cancelled record requires a cancelled budget snapshot;
 - a restored cancelled budget rejects all future reservations;
 - an already-expired task is stored without entering Router/model/tool paths.
+
+Python coroutine cancellation is not silently converted into an ordinary routing error. The task is durably marked `unknown`, then `CancelledError` continues to propagate.
 
 ### State transitions
 
@@ -125,7 +134,7 @@ expired → expired
 
 Task content, fingerprint, creation time, routing decision, first cancellation reason and budget limits are immutable.
 
-Committed usage and elapsed time cannot decrease.
+Committed usage and elapsed time cannot decrease. Wall-clock rollback cannot reverse durable task chronology.
 
 Later specialist-execution phases require a new schema/ADR rather than overloading these transitions silently.
 
@@ -133,7 +142,7 @@ Later specialist-execution phases require a new schema/ADR rather than overloadi
 
 Only terminal records are pruned. Nonterminal `routing` claims are never removed by terminal retention.
 
-Terminal retention is bounded by configuration and removes the oldest terminal records first.
+Terminal retention is bounded by configuration and removes the oldest terminal records first. The store is operational state, not an indefinite audit archive.
 
 ### Startup and shutdown
 
@@ -152,21 +161,26 @@ Core shutdown detaches the durable task store only after active request handling
 
 - unsupported schema: startup fails closed;
 - database or payload corruption: startup/read fails closed;
-- immutable identity conflict: HTTP 409 at the task API;
+- immutable new-task identity conflict: HTTP 409 at the task API;
 - unavailable durable store: HTTP 503;
 - unexpected failure after durable routing claim: task becomes `unknown`, API returns typed 503;
-- no fallback to volatile execution after a durable-store failure.
+- a durable transition conflict is treated as an unhealthy store/control-plane condition, not as a user conflict;
+- the first durable operation failure latches the control plane unhealthy;
+- after the latch, submit/status/cancel cannot serve stale in-memory state;
+- successful explicit store reconfiguration or process restart is required to clear the latch;
+- there is no fallback to volatile execution after a durable-store failure.
 
 ## Consequences
 
 ### Positive
 
 - task identity and status survive restart;
-- exact replay does not duplicate routing/model cost;
+- exact replay inside retention does not duplicate routing/model cost;
 - cancellation and expiry survive restart;
 - interrupted work is reported honestly;
 - future Voice, Scheduling, Channels and Work Graph have a native durable task edge;
 - corrupt or changed state cannot be silently accepted;
+- stale in-memory records are unavailable after a durable write failure;
 - Android and agent-task durability remain domain-isolated;
 - ordinary CI can exercise all behavior without a live provider.
 
@@ -176,8 +190,11 @@ Core shutdown detaches the durable task store only after active request handling
 - startup can fail because of schema or integrity problems;
 - `unknown` tasks require explicit future recovery tooling;
 - SQLite writes add latency before routing;
-- terminal retention means the task store is not a permanent audit archive;
-- invocation/result durability is still a separate follow-up step;
+- terminal retention bounds replay protection unless a later tombstone is retained;
+- one store path supports one active Core process only;
+- task text is stored as part of `TaskEnvelope` and requires caller-side data minimization;
+- the database is integrity-checked but not application-level encrypted;
+- exact in-flight provider cost and invocation recovery remain separate follow-up work;
 - process-local traces are not yet a durable audit log.
 
 ## Rejected alternatives
@@ -198,13 +215,17 @@ Rejected because identities, phases, recovery and retention differ, and coupling
 
 Rejected because cancellation, budget, routing result and operator status would remain unavailable.
 
-### Treat unresolved reservations as released after restart
+### Treat persisted unresolved reservations as released after restart
 
 Rejected because an external system may already have accepted the call.
 
 ### Fall back to in-memory mode when SQLite fails
 
 Rejected because it would silently discard the promised durability boundary.
+
+### Continue serving old in-memory records after a write failure
+
+Rejected because the memory record and durable authority may disagree.
 
 ### Resume model/tool execution from serialized Python stack state
 
@@ -219,26 +240,22 @@ Automated tests cover:
 - same ID/different content conflict;
 - durable cancellation;
 - interrupted routing recovery to `unknown` without Router invocation;
+- coroutine cancellation propagation;
+- durable-operation failure latching;
+- stale in-memory read/replay rejection after storage failure;
 - unsupported schema;
 - payload hash corruption;
 - indexed-column tampering;
 - invalid phase transition;
 - terminal pruning without removing routing claims;
-- conservative reservation recovery;
+- conservative restoration of persisted reservations;
 - elapsed-time restoration;
 - restored cancellation and budget exhaustion;
 - wall-clock rollback without reversing durable chronology;
-- full Core and Android CI.
+- byte-exact reconstruction of the governing source directive;
+- full Core and Android CI with fake/local dependencies only.
 
-The accepted implementation was validated on exact PR head
-`60ffd02fed486e1c21a92845db8211762a89ac53` by CI run `30167192071`:
-
-- Core Ruff passed;
-- strict MyPy passed;
-- 187 Core tests passed with zero failures, errors or skips;
-- Android build, JVM tests and lint passed;
-- a debug APK artifact was generated;
-- no live model, connector or MCP call was used by CI.
+Exact accepted Head and CI evidence are recorded in PR #37 and the merge commit rather than hard-coded here, so documentation edits cannot make the ADR's validation SHA stale.
 
 ## Follow-up
 
