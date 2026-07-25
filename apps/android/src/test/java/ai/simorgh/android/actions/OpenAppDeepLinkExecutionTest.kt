@@ -24,10 +24,12 @@ class OpenAppDeepLinkExecutionTest {
         val fresh = beforeSnapshot.copy(
             snapshotId = FRESH_SNAPSHOT_ID,
             capturedAtMs = NOW_MS,
+            capturedAtElapsedRealtimeMs = NOW_MS,
         )
         val afterSnapshot = beforeSnapshot.copy(
             snapshotId = AFTER_SNAPSHOT_ID,
             capturedAtMs = NOW_MS + 100,
+            capturedAtElapsedRealtimeMs = NOW_MS + 100,
         )
         val after = acknowledged(sequence = 5, snapshot = afterSnapshot)
         val policy = verificationPolicy()
@@ -155,6 +157,7 @@ class OpenAppDeepLinkExecutionTest {
         return AccessibilitySnapshot(
             snapshotId = id,
             capturedAtMs = capturedAtMs,
+            capturedAtElapsedRealtimeMs = capturedAtMs,
             activePackage = TARGET_PACKAGE,
             activeWindowId = 1,
             rootNodeId = node.nodeId,
@@ -191,7 +194,7 @@ class OpenAppDeepLinkExecutionTest {
 
         override fun awaitVerifiedObservation(
             before: AcknowledgedAccessibilityObservation,
-            launchedAtMs: Long,
+            launchedAtElapsedRealtimeMs: Long,
             policy: AndroidVerificationPolicy,
             timeoutMillis: Long,
             cancelled: () -> Boolean,
