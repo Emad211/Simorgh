@@ -40,9 +40,7 @@ def test_master_directive_source_archive_reconstructs_exact_uploaded_bytes() -> 
     original = gzip.decompress(compressed)
     assert len(original) == _SOURCE_BYTES
     assert hashlib.sha256(original).hexdigest() == _SOURCE_SHA256
-    assert original.startswith(
-        "# دستور معماری و توسعهٔ سیمرغ".encode("utf-8")
-    )
+    assert original.startswith("# دستور معماری و توسعهٔ سیمرغ".encode())
     assert original.rstrip().endswith(
-        "از Hermes و OpenClaw بهتر خواهد شد.".encode("utf-8")
+        "از Hermes و OpenClaw بهتر خواهد شد.".encode()
     )
