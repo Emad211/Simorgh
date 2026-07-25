@@ -24,6 +24,8 @@ data class AccessibilitySnapshotLimits(
 
 class AccessibilityTreeSnapshotBuilder(
     private val limits: AccessibilitySnapshotLimits = AccessibilitySnapshotLimits(),
+    private val wallClockMillis: () -> Long = System::currentTimeMillis,
+    private val monotonicMillis: () -> Long = SystemClock::elapsedRealtime,
 ) {
     fun build(
         root: AccessibilityNodeReader?,
@@ -31,8 +33,8 @@ class AccessibilityTreeSnapshotBuilder(
         triggeringEventType: Int?,
         activePackageHint: String?,
         activeWindowIdHint: Int?,
-        capturedAtMs: Long = System.currentTimeMillis(),
-        capturedAtElapsedRealtimeMs: Long = SystemClock.elapsedRealtime(),
+        capturedAtMs: Long = wallClockMillis().coerceAtLeast(0),
+        capturedAtElapsedRealtimeMs: Long = monotonicMillis().coerceAtLeast(0),
         snapshotId: String = UUID.randomUUID().toString(),
     ): AccessibilitySnapshot {
         if (root == null) {
