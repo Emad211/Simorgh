@@ -4,18 +4,27 @@ This directory is the source of truth for runtime contracts, architecture decisi
 
 Documentation changes are part of the implementation. A state-changing capability is not complete until its contract, failure semantics, verification model, and test/physical-validation boundary are documented.
 
+## Governing architecture and implementation order
+
+- [`SIMORGH_MASTER_DIRECTIVE.md`](SIMORGH_MASTER_DIRECTIVE.md) — authoritative mission, native authority, Hermes/OpenClaw usage boundaries, security defaults, implementation order and change control.
+- [`IMPLEMENTATION_MASTER_PLAN.md`](IMPLEMENTATION_MASTER_PLAN.md) — gated step-by-step roadmap, tests and merge criteria from durable runtime through Skills, Memory, Work Graph, Gateway, Voice, Android operations, Delegation and Self-Improvement.
+
+The implementation order is authoritative. A later product surface must not bypass unfinished native durability, policy, budget, cancellation or verification boundaries.
+
 ## Specialist agents and personal colleague runtime
 
 - [`AGENT_RUNTIME.md`](AGENT_RUNTIME.md) — Persian-first deterministic routing, specialist policy, budgets, idempotency, submit/status/cancel API, model/tool gateways, traces and current limitations.
+- [`AGENT_TASK_STORE.md`](AGENT_TASK_STORE.md) — durable SQLite task identity, replay, cancellation, crash recovery, integrity, retention, backup and incident handling.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current specialist-control-plane increment routes one typed task to one primary owner. It does not yet execute the specialist or an external mutation.
+The current specialist runtime selects one primary owner. PR #37 adds durable task identity and routing state, but specialist execution and typed results remain subsequent Phase 1 steps.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous requests require clarification unless an explicitly configured one-call classifier has sufficient budget.
 
-Follow-up increments:
+Current roadmap dependencies:
 
-- issue #31 — Persian Voice, local wake word and conversational audio;
+- issue #36 — complete durable native runtime and one GitHub read workflow;
+- issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
 - issue #34 — durable Personal Work Graph and proactive specialist crew.
@@ -69,7 +78,8 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0010 — enforced Android action capability negotiation;
 - ADR 0011 — durable Core Android action journal;
 - ADR 0012 — bounded Core clock normalization on Android;
-- ADR 0013 — native specialist-agent runtime and deterministic cost governance.
+- ADR 0013 — native specialist-agent runtime and deterministic cost governance;
+- ADR 0014 — crash-safe durable agent-task identity and routing recovery.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
@@ -80,7 +90,7 @@ An ADR records why a design was selected, its consequences, rejected alternative
 - `SIMORGH_OPERATOR_TOKEN` authenticates trusted action, refresh and specialist-task APIs.
 - Provider, operator, and device credentials are not interchangeable.
 - Accessibility snapshots and refresh messages never carry model-provider credentials.
-- The Core action journal contains operational action state but never stores provider keys or device/operator bearer tokens.
+- Android action and agent-task stores contain operational state but never provider keys or device/operator bearer tokens.
 - Clock probes contain protocol identity and timing metadata only; they never contain credentials.
 - Agent traces reject configured secret/raw-content metadata and never include prompts or tool arguments by default.
 - Future MCP credentials remain Core-side secret references and are never copied into specialist tasks or Android payloads.
@@ -104,7 +114,7 @@ For specialist-agent changes, distinguish:
 
 1. pure contract, registry and deterministic routing tests;
 2. fake provider/tool budget and replay tests with zero external spending;
-3. authenticated API tests;
+3. authenticated API and restart/recovery tests;
 4. optional live-provider staging validation under an explicit budget;
 5. separately reviewed connector and mutation-executor validation.
 
@@ -112,15 +122,17 @@ For specialist-agent changes, distinguish:
 
 - Observation refresh is safe to recreate after Core restart because it has no external side effect.
 - Android action execution has an encrypted device-side write-ahead ledger.
-- Core persists action identity, delivery uncertainty, cancellation, result identity, and ACK bookkeeping in a versioned SQLite journal.
-- A command that may already have crossed the Android boundary is not blindly redispatched after Core restart.
+- Core persists Android action identity, delivery uncertainty, cancellation, result identity, and ACK bookkeeping in a versioned SQLite journal.
+- Core persists agent task identity, routing state, cancellation and expiry in a separate versioned SQLite store.
+- A routing claim interrupted by Core restart becomes `unknown`; it is not automatically routed again.
+- A command or provider/tool invocation that may already have crossed an external boundary is not blindly redispatched after restart.
 - An exact Android result persisted before ACK can be acknowledged as duplicate after restart.
 - New `open_app` commands require a stable bounded Core clock estimate and fail closed when uncertainty consumes the remaining deadline.
 - Local observation age, capture ordering, launch ordering, and action duration use `SystemClock.elapsedRealtime()` rather than the adjustable phone wall clock.
 - Each physical WebSocket reconnect creates a new clock generation; an old estimate cannot authorize a launch on the new socket.
 - The complete observation registry is still process-local; a successful UI result not validated before Core restart may lack old evidence and must fail closed.
-- Specialist task and invocation stores are currently process-local and do not yet claim crash recovery.
-- Model/tool usage is reserved before invocation and reconciled afterwards.
+- Agent invocation identities and traces remain process-local until later Phase 1 steps.
+- Model/tool usage is reserved before invocation and reconciled afterwards; unresolved recovery reservations are conservatively committed.
 - Deterministic routing and execution-critical Android infrastructure remain model-free.
 - Planning output is not permission, current-state evidence or proof of side-effect completion.
 
