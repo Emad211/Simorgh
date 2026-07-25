@@ -77,9 +77,9 @@ class CoreClockEstimatorTest {
         )
 
         val reading = requireNotNull(outcome.reading)
-        assertEquals(1_150, reading.earliestCoreTimeMs)
+        assertEquals(1_170, reading.earliestCoreTimeMs)
         assertEquals(1_210, reading.latestCoreTimeMs)
-        assertEquals(30, reading.uncertaintyMs)
+        assertEquals(20, reading.uncertaintyMs)
         assertEquals(2, reading.sampleCount)
     }
 
