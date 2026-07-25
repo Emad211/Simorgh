@@ -34,7 +34,8 @@ Requirements:
 - the filesystem must survive process and host restarts;
 - only the private Core account should have access;
 - do not place the journal in a temporary container layer unless that layer is mounted persistently;
-- preserve enough free space for the database and its SQLite sidecar files.
+- preserve enough free space for the database and its SQLite sidecar files;
+- terminal retention must be at least `1` so the most recent result remains replayable when an ACK is lost.
 
 A relative path is resolved to an absolute path at startup. `~` is expanded.
 
@@ -189,11 +190,12 @@ This does **not** prove Android received or processed the ACK. If delivery was l
 
 - every non-terminal record is retained;
 - terminal history is bounded by `SIMORGH_ACTION_JOURNAL_MAX_TERMINAL_RECORDS`;
+- the configured value must be in `1..100000`;
 - pruning happens in the same transaction as terminal upsert;
 - oldest terminal records are removed first;
 - an active action is never pruned.
 
-A value of `0` retains no terminal history after each terminal transaction, but active ownership still remains durable until terminal transition.
+The default of `256` is intentionally much larger than the one-device single-flight window. Reducing it increases the chance that an extremely delayed result replay no longer has terminal history in Core.
 
 ## Backup and restore
 
