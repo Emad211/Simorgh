@@ -97,12 +97,16 @@ class OpenAppActionExecutor(
             val started = execution.startedAtCoreTimeMs.get()
                 .takeIf { value -> value >= 0 }
                 ?: fallback
+            val finished = execution.lease.get()
+                ?.coreTimeNowMs()
+                ?.coerceAtLeast(started)
+                ?: fallback.coerceAtLeast(started)
             result(
                 command = command,
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.INTERNAL_ERROR,
                 startedAtMs = started,
-                finishedAtMs = fallback.coerceAtLeast(started),
+                finishedAtMs = finished,
                 attempts = if (launchAccepted) 1 else 0,
                 detail = (
                     "open_app executor failed with ${error.javaClass.simpleName}; " +
@@ -155,6 +159,7 @@ class OpenAppActionExecutor(
                 )
             }
         }
+        execution.lease.set(lease)
         val startedAtMs = lease.startedAtCoreTimeMs
             .coerceAtLeast(command.issuedAtMs)
             .coerceAtLeast(0)
@@ -644,6 +649,7 @@ class OpenAppActionExecutor(
         val actionId: String,
         val cancelled: AtomicBoolean = AtomicBoolean(false),
         val startedAtCoreTimeMs: AtomicLong = AtomicLong(UNSET_CORE_TIME),
+        val lease: AtomicReference<CoreExecutionLease?> = AtomicReference(null),
     )
 
     private companion object {
