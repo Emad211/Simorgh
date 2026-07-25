@@ -20,6 +20,7 @@ class ModelProvider(Protocol):
         input_text: str,
         model: str | None = None,
         instructions: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> ModelOutput: ...
 
     async def list_models(self) -> list[str]: ...
