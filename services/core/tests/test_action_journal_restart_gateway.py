@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from simorgh_core.app import app
@@ -137,7 +138,7 @@ def _failed_result(command: AndroidActionCommand) -> AndroidActionResult:
 
 
 def test_core_restart_accepts_orphaned_result_without_reexecuting_command(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SIMORGH_DEVICE_TOKEN", "test-device-token")
     monkeypatch.setenv("SIMORGH_OPERATOR_TOKEN", "test-operator-token")
@@ -145,29 +146,28 @@ def test_core_restart_accepts_orphaned_result_without_reexecuting_command(
     command = _command()
     command_envelope: ProtocolEnvelope
 
-    with TestClient(app) as first_client:
-        with first_client.websocket_connect(
-            "/v1/devices/ws",
-            headers=DEVICE_HEADERS,
-        ) as first_socket:
-            _register(first_socket, device_id, suffix="before")
-            response = _dispatch(
-                first_client,
-                device_id=device_id,
-                command=command,
-            )
-            assert response.status_code == 202
-            command_envelope = ProtocolEnvelope.model_validate_json(
-                first_socket.receive_text()
-            )
-            assert command_envelope.type == "device.action_command"
-            _send_command_ack(
-                first_socket,
-                device_id=device_id,
-                command=command,
-                command_envelope=command_envelope,
-                status="accepted",
-            )
+    with TestClient(app) as first_client, first_client.websocket_connect(
+        "/v1/devices/ws",
+        headers=DEVICE_HEADERS,
+    ) as first_socket:
+        _register(first_socket, device_id, suffix="before")
+        response = _dispatch(
+            first_client,
+            device_id=device_id,
+            command=command,
+        )
+        assert response.status_code == 202
+        command_envelope = ProtocolEnvelope.model_validate_json(
+            first_socket.receive_text()
+        )
+        assert command_envelope.type == "device.action_command"
+        _send_command_ack(
+            first_socket,
+            device_id=device_id,
+            command=command,
+            command_envelope=command_envelope,
+            status="accepted",
+        )
 
     stable_result = _failed_result(command)
     stable_result_envelope = ProtocolEnvelope(
@@ -179,53 +179,52 @@ def test_core_restart_accepts_orphaned_result_without_reexecuting_command(
         payload=stable_result.model_dump(mode="json"),
     )
 
-    with TestClient(app) as restarted_client:
-        with restarted_client.websocket_connect(
-            "/v1/devices/ws",
-            headers=DEVICE_HEADERS,
-        ) as restarted_socket:
-            _register(restarted_socket, device_id, suffix="after")
+    with TestClient(app) as restarted_client, restarted_client.websocket_connect(
+        "/v1/devices/ws",
+        headers=DEVICE_HEADERS,
+    ) as restarted_socket:
+        _register(restarted_socket, device_id, suffix="after")
 
-            # The recovered accepted command is not sent again. A heartbeat must be the next
-            # round trip after registration.
-            _heartbeat_round_trip(restarted_socket, device_id=device_id, sequence=20)
+        # The recovered accepted command is not sent again. A heartbeat must be the next
+        # round trip after registration.
+        _heartbeat_round_trip(restarted_socket, device_id=device_id, sequence=20)
 
-            restarted_socket.send_text(stable_result_envelope.model_dump_json())
-            result_ack_envelope = ProtocolEnvelope.model_validate_json(
-                restarted_socket.receive_text()
-            )
-            result_ack = DeviceActionResultAckPayload.model_validate(
-                result_ack_envelope.payload
-            )
-            assert result_ack_envelope.type == "device.action_result_ack"
-            assert result_ack_envelope.correlation_id == stable_result_envelope.message_id
-            assert result_ack.status == "accepted"
+        restarted_socket.send_text(stable_result_envelope.model_dump_json())
+        result_ack_envelope = ProtocolEnvelope.model_validate_json(
+            restarted_socket.receive_text()
+        )
+        result_ack = DeviceActionResultAckPayload.model_validate(
+            result_ack_envelope.payload
+        )
+        assert result_ack_envelope.type == "device.action_result_ack"
+        assert result_ack_envelope.correlation_id == stable_result_envelope.message_id
+        assert result_ack.status == "accepted"
 
-            completed = restarted_client.get(
-                f"/v1/devices/{device_id}/actions/{command.action_id}",
-                headers=OPERATOR_HEADERS,
-            )
-            assert completed.status_code == 200
-            assert completed.json()["phase"] == "completed"
-            assert completed.json()["result"]["outcome"] == "failed"
+        completed = restarted_client.get(
+            f"/v1/devices/{device_id}/actions/{command.action_id}",
+            headers=OPERATOR_HEADERS,
+        )
+        assert completed.status_code == 200
+        assert completed.json()["phase"] == "completed"
+        assert completed.json()["result"]["outcome"] == "failed"
 
-            next_command = _command()
-            next_response = _dispatch(
-                restarted_client,
-                device_id=device_id,
-                command=next_command,
-            )
-            assert next_response.status_code == 202
-            next_envelope = ProtocolEnvelope.model_validate_json(
-                restarted_socket.receive_text()
-            )
-            assert next_envelope.type == "device.action_command"
-            assert AndroidActionCommand.model_validate(next_envelope.payload) == next_command
+        next_command = _command()
+        next_response = _dispatch(
+            restarted_client,
+            device_id=device_id,
+            command=next_command,
+        )
+        assert next_response.status_code == 202
+        next_envelope = ProtocolEnvelope.model_validate_json(
+            restarted_socket.receive_text()
+        )
+        assert next_envelope.type == "device.action_command"
+        assert AndroidActionCommand.model_validate(next_envelope.payload) == next_command
 
-            _send_command_ack(
-                restarted_socket,
-                device_id=device_id,
-                command=next_command,
-                command_envelope=next_envelope,
-                status="rejected",
-            )
+        _send_command_ack(
+            restarted_socket,
+            device_id=device_id,
+            command=next_command,
+            command_envelope=next_envelope,
+            status="rejected",
+        )
