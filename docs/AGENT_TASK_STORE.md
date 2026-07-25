@@ -15,6 +15,8 @@ The path may be `:memory:` only for isolated tests. Production and daily local u
 
 The configured terminal retention must be positive. Retention affects terminal task records only.
 
+One active Simorgh Core process must own one task-store path. PR #37 does not yet implement a distributed lease or multi-process leader election.
+
 ## SQLite guarantees
 
 The production store enables:
@@ -60,14 +62,15 @@ first cancellation reason when present
 bounded operational detail
 ```
 
-It must not contain:
+The `TaskEnvelope` includes the user's task text. Callers must submit references and typed projections instead of embedding complete email bodies, notification bodies, documents, audio or Accessibility trees. The current generic task API cannot independently prove that a caller followed this data-minimization rule.
+
+The store must not contain:
 
 - AvalAI or other provider credentials;
 - operator/device bearer tokens;
 - raw trace events;
-- model prompts or private model output;
-- raw connector payloads;
-- raw email, notification, audio or Accessibility content;
+- model prompts or private model output beyond the explicit task text;
+- raw connector responses;
 - Android action-journal state.
 
 ## Task phases
@@ -121,6 +124,8 @@ same request_id + different canonical task
 
 The existing `decision_id`, creation time, cost and phase remain unchanged.
 
+This replay guarantee applies while the terminal record remains inside configured retention. PR #37 does not yet retain a compact tombstone after terminal payload pruning. A later retention design must preserve request-identity safety without keeping private payloads indefinitely.
+
 ## Restart recovery
 
 At Core startup, all rows are integrity-checked and loaded.
@@ -141,18 +146,16 @@ A future explicit recovery API may inspect and supersede unknown work. It must n
 
 `BudgetSnapshot.reserved` is process-local uncertainty. Reservation IDs are not reconstructed after restart.
 
-Recovery converts unresolved reserved usage to committed usage:
+When a persisted snapshot contains unresolved usage, recovery converts it conservatively:
 
 ```text
 recovered committed = previous committed + previous reserved
 recovered reserved  = zero
 ```
 
-This is intentionally conservative. A provider or tool may already have accepted work before the crash.
+This prevents already-persisted uncertain usage from becoming free or reservable again. The previous elapsed time becomes an offset for the new process's monotonic elapsed timer. A restored cancelled account remains cancelled, and a restored over-limit account remains exhausted.
 
-The previous elapsed time becomes an offset for the new process's monotonic elapsed timer.
-
-A restored cancelled account remains cancelled. A restored over-limit account remains exhausted.
+Important current boundary: Step 1 persists the task at routing admission and at routing completion/failure. It does not yet persist every intermediate model/tool reservation while a call is in flight. Therefore a process crash during an external classifier call produces an honest `unknown` task, but the task record alone may not contain complete provider-cost uncertainty. Durable invocation and reservation journaling in Phase 1 Step 1.2 is required before exact external-call cost recovery can be claimed.
 
 ## Cancellation
 
@@ -165,6 +168,8 @@ Cancellation is persisted before it is returned to the caller.
 - cancellation cannot be reversed by task resubmission.
 
 The current step has no long-running specialist execution yet. Later Phase 1 steps will propagate the same cancellation identity into specialist/model/tool invocations.
+
+Coroutine cancellation is distinct from user task cancellation. If the routing coroutine is cancelled after durable admission, the task is recorded as `unknown` and Python's `CancelledError` continues to propagate to the caller.
 
 ## Expiry
 
@@ -202,6 +207,8 @@ Core fails closed on:
 - immutable identity changes;
 - backward timestamps or usage;
 - invalid phase transition.
+
+The first durable operation failure latches the task control plane as unhealthy. After that latch, submit, status and cancellation operations return storage-unavailable errors instead of serving potentially stale in-memory state. Only successful explicit store reconfiguration or process restart clears the latch.
 
 The task API returns no volatile fallback result after a durable-store failure.
 
@@ -269,18 +276,25 @@ Automated coverage includes:
 - changed-content conflict;
 - cancellation restart persistence;
 - routing-to-unknown crash recovery;
+- propagation of coroutine cancellation;
+- durable-write failure latching;
+- rejection of stale in-memory reads after storage failure;
 - hash and indexed-column tampering;
 - unsupported schema;
 - transition rules;
 - bounded terminal pruning;
-- conservative budget restoration.
+- conservative restoration of persisted budget snapshots.
 
 ## Current limitations
 
 - specialist execution is not implemented in this step;
-- invocation identities are still process-local until Phase 1 Step 1.2;
+- invocation identities and intermediate reservations remain process-local until Phase 1 Step 1.2;
+- exact provider/tool cost recovery during a mid-call crash is not yet available;
 - traces are process-local;
 - `unknown` has no operator recovery endpoint yet;
 - no task-result artifact is stored yet;
+- replay protection currently ends when a terminal record is pruned;
+- one task-store path supports one active Core process only;
+- the SQLite payload is integrity-checked but not application-level encrypted;
 - terminal pruning is count-based rather than age/size based;
 - no online backup or Doctor command exists yet.
