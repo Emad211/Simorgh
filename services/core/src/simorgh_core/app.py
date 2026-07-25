@@ -16,6 +16,7 @@ from simorgh_core.agents.invocation_store import (
 )
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
 from simorgh_core.config import Settings, get_settings
+from simorgh_core.devices.action_api import OperatorDependency
 from simorgh_core.devices.action_api import router as device_action_router
 from simorgh_core.devices.action_broker import action_broker
 from simorgh_core.devices.action_journal import SQLiteActionJournal
@@ -23,7 +24,6 @@ from simorgh_core.devices.gateway import router as device_router
 from simorgh_core.devices.observation_refresh_api import (
     router as observation_refresh_router,
 )
-from simorgh_core.providers.avalai import AvalAIProvider, MissingAvalAICredentialsError
 
 
 @asynccontextmanager
@@ -118,16 +118,6 @@ class TextGenerationRequest(BaseModel):
     model: str | None = None
 
 
-class TextGenerationResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    output: str
-    model: str
-    provider: str
-    request_id: str | None = None
-    usage: dict[str, object] | None = None
-
-
 @app.get("/health", response_model=HealthResponse)
 async def health(settings: SettingsDependency) -> HealthResponse:
     return HealthResponse(
@@ -140,28 +130,19 @@ async def health(settings: SettingsDependency) -> HealthResponse:
     )
 
 
-@app.post("/v1/model/text", response_model=TextGenerationResponse)
-async def generate_text(
+@app.post("/v1/model/text", status_code=status.HTTP_410_GONE)
+async def generate_text_disabled(
     payload: TextGenerationRequest,
-    settings: SettingsDependency,
-) -> TextGenerationResponse:
-    try:
-        provider = AvalAIProvider(settings)
-    except MissingAvalAICredentialsError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-
-    result = await provider.generate_text(
-        input_text=payload.input,
-        instructions=payload.instructions,
-        model=payload.model,
-    )
-    return TextGenerationResponse(
-        output=result.text,
-        model=result.model,
-        provider=result.provider,
-        request_id=result.request_id,
-        usage=result.usage,
+    _: OperatorDependency,
+) -> None:
+    del payload
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "ungoverned_model_endpoint_disabled",
+            "message": (
+                "Direct model generation is disabled until it is bound to an explicit "
+                "model catalog, durable invocation identity, and pre-reserved cost budget."
+            ),
+        },
     )
