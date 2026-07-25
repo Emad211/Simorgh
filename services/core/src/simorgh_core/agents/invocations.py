@@ -699,7 +699,12 @@ def validated_record_copy(
     **updates: Any,
 ) -> InvocationRecord:
     candidate = record.model_copy(update=updates)
-    return InvocationRecord.model_validate(candidate.model_dump(mode="json"))
+    try:
+        return InvocationRecord.model_validate(candidate.model_dump(mode="json"))
+    except ValueError as exc:
+        raise InvocationStateError(
+            "invocation state update failed typed validation"
+        ) from exc
 
 
 def _terminal_usage(
