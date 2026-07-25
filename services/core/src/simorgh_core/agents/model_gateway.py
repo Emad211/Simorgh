@@ -24,6 +24,13 @@ from simorgh_core.agents.invocations import (
     InvocationStartKind,
     canonical_fingerprint,
 )
+from simorgh_core.agents.tracing import (
+    CacheDisposition,
+    NullTraceSink,
+    TraceEventKind,
+    TraceSink,
+    trace_event,
+)
 from simorgh_core.providers.base import ModelOutput, ModelProvider
 
 _MICROUSD_PER_USD = 1_000_000
@@ -171,11 +178,13 @@ class BudgetedModelGateway:
         provider_id: str,
         catalog: ModelCatalog,
         invocation_store: InMemoryInvocationStore,
+        trace_sink: TraceSink | None = None,
     ) -> None:
         self._provider = provider
         self._provider_id = provider_id
         self._catalog = catalog
         self._invocations = invocation_store
+        self._trace_sink = trace_sink or NullTraceSink()
 
     async def generate(
         self,
@@ -183,14 +192,23 @@ class BudgetedModelGateway:
         request: BudgetedModelRequest,
         budget: BudgetAccount,
     ) -> BudgetedModelResult:
-        spec = self._catalog.select(
-            allowed_tiers=request.allowed_tiers,
-            minimum_tier=request.minimum_tier,
-        )
-        if spec.provider_id != self._provider_id:
-            raise ModelSelectionError(
-                f"selected provider {spec.provider_id!r} is not available in this gateway"
+        try:
+            spec = self._catalog.select(
+                allowed_tiers=request.allowed_tiers,
+                minimum_tier=request.minimum_tier,
             )
+            if spec.provider_id != self._provider_id:
+                raise ModelSelectionError(
+                    f"selected provider {spec.provider_id!r} is not available in this gateway"
+                )
+        except ModelSelectionError as exc:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                outcome="selection_failed",
+                reason=str(exc),
+            )
+            raise
 
         selected_output_limit = min(
             request.maximum_output_tokens,
@@ -219,12 +237,34 @@ class BudgetedModelGateway:
                     "completed model invocation has no result payload"
                 )
             replayed = BudgetedModelResult.model_validate(payload)
+            self._emit(
+                request=request,
+                kind=TraceEventKind.INVOCATION_REPLAYED,
+                spec=spec,
+                cache=CacheDisposition.HIT,
+                outcome="completed",
+                reason="exact completed model invocation was replayed",
+            )
             return replayed.model_copy(update={"replayed": True})
         if started.kind == InvocationStartKind.IN_PROGRESS:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                outcome="in_progress",
+                reason="model invocation identity is already in progress",
+            )
             raise ModelInvocationInProgressError(
                 f"model invocation {request.invocation_id} is already in progress"
             )
         if started.kind == InvocationStartKind.TERMINAL:
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                outcome="terminal",
+                reason="model invocation identity is already terminal",
+            )
             raise ModelInvocationTerminalError(
                 started.record.failure_detail
                 or f"model invocation ended in {started.record.state.value}"
@@ -255,8 +295,32 @@ class BudgetedModelGateway:
                 failure_code="budget_exhausted",
                 failure_detail=str(exc),
             )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                outcome="budget_exhausted",
+                reason=str(exc),
+            )
             raise
 
+        self._emit(
+            request=request,
+            kind=TraceEventKind.BUDGET_RESERVED,
+            spec=spec,
+            usage=reserved_usage,
+            outcome="reserved",
+            reason="model call budget was reserved before provider invocation",
+        )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.MODEL_STARTED,
+            spec=spec,
+            cache=CacheDisposition.MISS,
+            outcome="started",
+            reason="cheapest policy-sufficient model invocation started",
+            output_limit=selected_output_limit,
+        )
         try:
             output = await self._provider.generate_text(
                 input_text=request.input_text,
@@ -272,6 +336,15 @@ class BudgetedModelGateway:
                 invocation_id=request.invocation_id,
                 failure_code="provider_failure",
                 failure_detail=f"{exc.__class__.__name__}: {exc}",
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                usage=reserved_usage,
+                outcome="provider_failure",
+                reason=f"model provider failed closed with {exc.__class__.__name__}",
+                output_limit=selected_output_limit,
             )
             raise ModelGatewayError("model provider invocation failed") from exc
 
@@ -306,13 +379,54 @@ class BudgetedModelGateway:
                 failure_code="budget_reconciliation_failed",
                 failure_detail=str(exc),
             )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                usage=actual_usage,
+                outcome="budget_reconciliation_failed",
+                reason=str(exc),
+                output_limit=selected_output_limit,
+            )
             raise
+
+        self._emit(
+            request=request,
+            kind=TraceEventKind.BUDGET_RECONCILED,
+            spec=spec,
+            usage=actual_usage,
+            outcome="reconciled",
+            reason="provider-reported or conservative model usage was reconciled",
+            output_limit=selected_output_limit,
+        )
+        identity_failure = provider_identity_failure(output=output, spec=spec)
+        if actual_output_tokens > selected_output_limit:
+            identity_failure = (
+                f"provider reported {actual_output_tokens} output tokens above "
+                f"the selected limit {selected_output_limit}"
+            )
+        if identity_failure is not None:
+            self._invocations.fail(
+                invocation_id=request.invocation_id,
+                failure_code="provider_contract_invalid",
+                failure_detail=identity_failure,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                usage=actual_usage,
+                outcome="provider_contract_invalid",
+                reason=identity_failure,
+                output_limit=selected_output_limit,
+            )
+            raise ModelOutputContractError(identity_failure)
 
         result = BudgetedModelResult(
             invocation_id=request.invocation_id,
             text=output.text,
-            provider_id=output.provider,
-            model_id=output.model,
+            provider_id=spec.provider_id,
+            model_id=spec.model_id,
             provider_request_id=output.request_id,
             input_tokens=actual_input_tokens,
             output_tokens=actual_output_tokens,
@@ -322,7 +436,52 @@ class BudgetedModelGateway:
             invocation_id=request.invocation_id,
             result_payload=result.model_dump(mode="json"),
         )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.MODEL_COMPLETED,
+            spec=spec,
+            usage=actual_usage,
+            outcome="completed",
+            reason="model output passed provider identity and budget validation",
+            output_limit=selected_output_limit,
+        )
         return result
+
+    def _emit(
+        self,
+        *,
+        request: BudgetedModelRequest,
+        kind: TraceEventKind,
+        spec: ModelSpec | None = None,
+        cache: CacheDisposition = CacheDisposition.NOT_APPLICABLE,
+        usage: UsageVector | None = None,
+        outcome: str | None = None,
+        reason: str | None = None,
+        output_limit: int | None = None,
+    ) -> None:
+        metadata: dict[str, str | int | bool | None] = {
+            "operation": request.operation,
+        }
+        if spec is not None:
+            metadata["tier"] = spec.tier.value
+        if output_limit is not None:
+            metadata["output_limit"] = output_limit
+        self._trace_sink.emit(
+            trace_event(
+                request_id=request.request_id,
+                invocation_id=request.invocation_id,
+                kind=kind,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                provider_id=spec.provider_id if spec is not None else self._provider_id,
+                model_id=spec.model_id if spec is not None else None,
+                cache=cache,
+                usage=usage,
+                outcome=outcome,
+                reason=reason,
+                metadata=metadata,
+            )
+        )
 
 
 class BudgetedAgentClassifier:
@@ -429,6 +588,20 @@ def estimate_cost_microusd(
         _PRICE_DENOMINATOR,
     )
     return min(_MICROUSD_PER_USD * 1_000_000, input_cost + output_cost)
+
+
+def provider_identity_failure(*, output: ModelOutput, spec: ModelSpec) -> str | None:
+    if output.provider != spec.provider_id:
+        return (
+            f"provider identity {output.provider!r} does not match selected "
+            f"provider {spec.provider_id!r}"
+        )
+    if output.model != spec.model_id:
+        return (
+            f"provider model identity {output.model!r} does not match selected "
+            f"model {spec.model_id!r}"
+        )
+    return None
 
 
 def usage_value(output: ModelOutput, key: str, *, fallback: int) -> int:
