@@ -71,6 +71,8 @@ class AgentTaskRecord(BaseModel):
         elif self.phase == AgentTaskPhase.CANCELLED:
             if self.cancel_reason is None:
                 raise ValueError("cancelled task requires a cancel reason")
+            if not self.budget.cancelled:
+                raise ValueError("cancelled task requires a cancelled budget snapshot")
         elif self.phase in {AgentTaskPhase.EXPIRED, AgentTaskPhase.UNKNOWN}:
             if self.routing_decision is not None:
                 raise ValueError(
@@ -85,6 +87,9 @@ class AgentTaskRecord(BaseModel):
             if DECISION_PHASES[decision.state] != self.phase:
                 raise ValueError("record phase does not match routing decision state")
 
-        if self.phase != AgentTaskPhase.CANCELLED and self.cancel_reason is not None:
-            raise ValueError("non-cancelled task cannot contain a cancel reason")
+        if self.phase != AgentTaskPhase.CANCELLED:
+            if self.cancel_reason is not None:
+                raise ValueError("non-cancelled task cannot contain a cancel reason")
+            if self.budget.cancelled:
+                raise ValueError("non-cancelled task cannot contain a cancelled budget")
         return self
