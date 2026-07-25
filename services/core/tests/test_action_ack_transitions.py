@@ -9,6 +9,10 @@ from fastapi.testclient import TestClient
 
 from simorgh_core.app import app
 from simorgh_core.config import get_settings
+from simorgh_core.devices.action_capabilities import (
+    CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+    OPEN_APP_EXECUTION_CAPABILITY,
+)
 from simorgh_core.devices.actions import (
     ActivePackageEqualsPredicate,
     AndroidActionCommand,
@@ -51,7 +55,8 @@ def _register(websocket, device_id: UUID) -> None:
             support_tier="FULL",
             capabilities=[
                 "device.action_transport.v1",
-                "android.open_app.execution.v1",
+                OPEN_APP_EXECUTION_CAPABILITY,
+                CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
             ],
         ),
     )
