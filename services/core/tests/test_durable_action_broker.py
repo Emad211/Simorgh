@@ -16,7 +16,10 @@ from simorgh_core.devices.action_broker import (
     DeviceActionJournalUnavailableError,
     DeviceActionPhase,
 )
-from simorgh_core.devices.action_capabilities import OPEN_APP_EXECUTION_CAPABILITY
+from simorgh_core.devices.action_capabilities import (
+    CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+    OPEN_APP_EXECUTION_CAPABILITY,
+)
 from simorgh_core.devices.action_journal import (
     ActionJournalCorruptionError,
     ActionJournalEntryV1,
@@ -84,6 +87,7 @@ def _registration() -> DeviceRegistrationPayload:
         capabilities=[
             "device.action_transport.v1",
             OPEN_APP_EXECUTION_CAPABILITY,
+            CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
         ],
     )
 

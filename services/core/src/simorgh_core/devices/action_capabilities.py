@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from simorgh_core.devices.actions import AndroidOperation, OpenAppOperation
 
 OPEN_APP_EXECUTION_CAPABILITY = "android.open_app.execution.v1"
+CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY = "android.core_clock.bounded_estimate.v1"
 
 
 class UnsupportedAndroidOperationError(ValueError):
@@ -26,16 +27,22 @@ class AndroidActionCapabilityRequirement:
 def requirement_for_operation(
     operation: AndroidOperation,
 ) -> AndroidActionCapabilityRequirement:
-    """Return the explicit versioned capability required for one live operation.
+    """Return all versioned capabilities required for one enabled operation.
 
-    This mapping is intentionally exhaustive only for operations whose side-effect executor is
-    enabled. A contract type existing in the schema does not imply that Core may dispatch it.
+    The shared action schema is intentionally broader than the live executor surface. A command
+    may cross the device boundary only when the current Android Session advertises both its
+    operation executor and the bounded Core-clock semantics used by deadline enforcement.
     """
 
     if isinstance(operation, OpenAppOperation):
         return AndroidActionCapabilityRequirement(
             operation_kind=operation.kind,
-            required_capabilities=frozenset({OPEN_APP_EXECUTION_CAPABILITY}),
+            required_capabilities=frozenset(
+                {
+                    OPEN_APP_EXECUTION_CAPABILITY,
+                    CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+                }
+            ),
         )
 
     raise UnsupportedAndroidOperationError(operation.kind)

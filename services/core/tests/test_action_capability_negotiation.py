@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 
 from simorgh_core.app import app
 from simorgh_core.config import get_settings
-from simorgh_core.devices.action_capabilities import OPEN_APP_EXECUTION_CAPABILITY
+from simorgh_core.devices.action_capabilities import (
+    CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+    OPEN_APP_EXECUTION_CAPABILITY,
+)
 from simorgh_core.devices.actions import (
     ActivePackageEqualsPredicate,
     AndroidActionCommand,
@@ -28,6 +31,12 @@ from simorgh_core.devices.protocol import (
 DEVICE_HEADERS = {"Authorization": "Bearer test-device-token"}
 OPERATOR_HEADERS = {"Authorization": "Bearer test-operator-token"}
 TARGET_PACKAGE = "com.example.target"
+REQUIRED_OPEN_APP_CAPABILITIES = sorted(
+    {
+        OPEN_APP_EXECUTION_CAPABILITY,
+        CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+    }
+)
 
 
 @pytest.fixture
@@ -185,7 +194,11 @@ def test_missing_execution_capability_returns_typed_error_and_sends_no_command(
 ) -> None:
     device_id = uuid4()
     command = _open_app_command()
-    capabilities = ["device.action_transport.v1", "android.action.contract.v1"]
+    capabilities = [
+        "device.action_transport.v1",
+        "android.action.contract.v1",
+        CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+    ]
 
     with client.websocket_connect("/v1/devices/ws", headers=DEVICE_HEADERS) as websocket:
         _register(
@@ -200,10 +213,44 @@ def test_missing_execution_capability_returns_typed_error_and_sends_no_command(
         detail = response.json()["detail"]
         assert detail["code"] == "unsupported_device_capability"
         assert detail["operation_kind"] == "open_app"
-        assert detail["required_capabilities"] == [OPEN_APP_EXECUTION_CAPABILITY]
+        assert detail["required_capabilities"] == REQUIRED_OPEN_APP_CAPABILITIES
         assert detail["missing_capabilities"] == [OPEN_APP_EXECUTION_CAPABILITY]
         assert detail["available_capabilities"] == sorted(capabilities)
         _assert_only_heartbeat_ack(websocket, device_id, sequence=1)
+
+    assert _get_action(client, device_id, command.action_id).status_code == 404
+
+
+def test_missing_bounded_clock_capability_returns_typed_error_and_sends_no_command(
+    client: TestClient,
+) -> None:
+    device_id = uuid4()
+    command = _open_app_command()
+    capabilities = [
+        "device.action_transport.v1",
+        "android.action.contract.v1",
+        OPEN_APP_EXECUTION_CAPABILITY,
+    ]
+
+    with client.websocket_connect("/v1/devices/ws", headers=DEVICE_HEADERS) as websocket:
+        _register(
+            websocket,
+            device_id,
+            capabilities=capabilities,
+            fingerprint_suffix="missing-bounded-clock",
+        )
+        response = _dispatch(client, device_id, command)
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "unsupported_device_capability"
+        assert detail["operation_kind"] == "open_app"
+        assert detail["required_capabilities"] == REQUIRED_OPEN_APP_CAPABILITIES
+        assert detail["missing_capabilities"] == [
+            CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY
+        ]
+        assert detail["available_capabilities"] == sorted(capabilities)
+        _assert_only_heartbeat_ack(websocket, device_id, sequence=7)
 
     assert _get_action(client, device_id, command.action_id).status_code == 404
 
@@ -230,7 +277,7 @@ def test_same_identifiers_can_dispatch_after_device_registers_compatible_session
             device_id,
             capabilities=[
                 "device.action_transport.v1",
-                OPEN_APP_EXECUTION_CAPABILITY,
+                *REQUIRED_OPEN_APP_CAPABILITIES,
             ],
             fingerprint_suffix="compatible",
         )
@@ -252,7 +299,7 @@ def test_latest_replacement_session_capabilities_are_authoritative(
         _register(
             old_socket,
             device_id,
-            capabilities=[OPEN_APP_EXECUTION_CAPABILITY],
+            capabilities=REQUIRED_OPEN_APP_CAPABILITIES,
             fingerprint_suffix="old-compatible",
         )
 
@@ -282,7 +329,7 @@ def test_pending_command_is_not_redelivered_to_downgraded_session(
         _register(
             first_socket,
             device_id,
-            capabilities=[OPEN_APP_EXECUTION_CAPABILITY],
+            capabilities=REQUIRED_OPEN_APP_CAPABILITIES,
             fingerprint_suffix="before-downgrade",
         )
         response = _dispatch(client, device_id, command)
@@ -316,7 +363,7 @@ def test_accepted_action_is_not_reexecuted_after_capability_downgrade(
         _register(
             first_socket,
             device_id,
-            capabilities=[OPEN_APP_EXECUTION_CAPABILITY],
+            capabilities=REQUIRED_OPEN_APP_CAPABILITIES,
             fingerprint_suffix="accepted-before-downgrade",
         )
         assert _dispatch(client, device_id, command).status_code == 202
@@ -354,7 +401,7 @@ def test_schema_operation_without_live_executor_returns_typed_422(
         _register(
             websocket,
             device_id,
-            capabilities=[OPEN_APP_EXECUTION_CAPABILITY],
+            capabilities=REQUIRED_OPEN_APP_CAPABILITIES,
             fingerprint_suffix="unsupported-operation",
         )
         response = _dispatch(client, device_id, command)

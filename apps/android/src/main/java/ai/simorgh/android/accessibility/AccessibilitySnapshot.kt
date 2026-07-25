@@ -2,6 +2,7 @@ package ai.simorgh.android.accessibility
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 data class ScreenBounds(
@@ -96,6 +97,15 @@ data class AccessibilitySnapshot(
     val snapshotId: String,
     @SerialName("captured_at_ms")
     val capturedAtMs: Long,
+    /**
+     * Local-only monotonic capture time. It is deliberately excluded from serialization and
+     * canonical state fingerprints so the wire contract remains schema 1.0.
+     *
+     * The default preserves deterministic JVM fixtures whose wall and monotonic test clocks use
+     * one synthetic scale. Production builders always pass `SystemClock.elapsedRealtime()`.
+     */
+    @Transient
+    val capturedAtElapsedRealtimeMs: Long = capturedAtMs,
     @SerialName("triggering_event_type")
     val triggeringEventType: Int? = null,
     @SerialName("active_package")

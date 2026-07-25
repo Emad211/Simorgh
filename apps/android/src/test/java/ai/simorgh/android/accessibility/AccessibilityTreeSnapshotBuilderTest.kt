@@ -24,7 +24,7 @@ class AccessibilityTreeSnapshotBuilderTest {
             children = listOf(child),
         )
 
-        val snapshot = AccessibilityTreeSnapshotBuilder().build(
+        val snapshot = builder().build(
             root = root,
             windows = emptyList(),
             triggeringEventType = 32,
@@ -35,6 +35,7 @@ class AccessibilityTreeSnapshotBuilderTest {
         )
 
         assertEquals("snapshot-1", snapshot.snapshotId)
+        assertEquals(654_321, snapshot.capturedAtElapsedRealtimeMs)
         assertEquals("com.example", snapshot.activePackage)
         assertEquals(2, snapshot.nodes.size)
         assertEquals("سلام دنیا", snapshot.nodes[0].text)
@@ -54,7 +55,7 @@ class AccessibilityTreeSnapshotBuilderTest {
             className = "android.widget.FrameLayout",
         )
 
-        val snapshot = AccessibilityTreeSnapshotBuilder().build(
+        val snapshot = builder().build(
             root = root,
             windows = emptyList(),
             triggeringEventType = 32,
@@ -81,7 +82,7 @@ class AccessibilityTreeSnapshotBuilderTest {
             editable = true,
         )
 
-        val node = AccessibilityTreeSnapshotBuilder().build(
+        val node = builder().build(
             root = root,
             windows = emptyList(),
             triggeringEventType = null,
@@ -104,7 +105,7 @@ class AccessibilityTreeSnapshotBuilderTest {
             FakeNode(text = "child-$index")
         }
         val root = FakeNode(children = children)
-        val builder = AccessibilityTreeSnapshotBuilder(
+        val builder = builder(
             AccessibilitySnapshotLimits(maxNodes = 2),
         )
 
@@ -128,7 +129,7 @@ class AccessibilityTreeSnapshotBuilderTest {
     fun `depth limit prevents unbounded descent`() {
         val child = FakeNode(text = "child")
         val root = FakeNode(children = listOf(child))
-        val builder = AccessibilityTreeSnapshotBuilder(
+        val builder = builder(
             AccessibilitySnapshotLimits(maxDepth = 0),
         )
 
@@ -147,6 +148,14 @@ class AccessibilityTreeSnapshotBuilderTest {
         assertTrue(root.closed)
         assertFalse(child.closed)
     }
+
+    private fun builder(
+        limits: AccessibilitySnapshotLimits = AccessibilitySnapshotLimits(),
+    ): AccessibilityTreeSnapshotBuilder = AccessibilityTreeSnapshotBuilder(
+        limits = limits,
+        wallClockMillis = { 123_456 },
+        monotonicMillis = { 654_321 },
+    )
 
     private class FakeNode(
         override val windowId: Int = 1,

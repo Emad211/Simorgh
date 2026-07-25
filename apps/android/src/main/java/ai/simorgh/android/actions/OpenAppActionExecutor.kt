@@ -2,19 +2,41 @@ package ai.simorgh.android.actions
 
 import ai.simorgh.android.accessibility.AccessibilitySnapshotFingerprint
 import ai.simorgh.android.accessibility.AcknowledgedAccessibilityObservation
+import ai.simorgh.android.time.CoreClock
+import ai.simorgh.android.time.CoreClockBus
+import ai.simorgh.android.time.CoreExecutionBudget
+import ai.simorgh.android.time.CoreExecutionClockFailureKind
+import ai.simorgh.android.time.CoreExecutionLease
+import ai.simorgh.android.time.CoreExecutionLeaseStart
+import ai.simorgh.android.time.LegacyWallClockCoreClock
+import ai.simorgh.android.time.beginExecutionLease
 import java.io.Closeable
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class OpenAppActionExecutor(
     private val launcher: OpenAppLauncher,
     private val evidenceSource: OpenAppEvidenceSource,
-    private val wallClockMillis: () -> Long = System::currentTimeMillis,
+    private val coreClock: CoreClock = CoreClockBus,
     private val executor: ExecutorService = Executors.newSingleThreadExecutor(),
 ) : AndroidActionHandler, Closeable {
+    /** Compatibility constructor for deterministic fixtures that supply one synthetic epoch. */
+    constructor(
+        launcher: OpenAppLauncher,
+        evidenceSource: OpenAppEvidenceSource,
+        wallClockMillis: () -> Long,
+        executor: ExecutorService = Executors.newSingleThreadExecutor(),
+    ) : this(
+        launcher = launcher,
+        evidenceSource = evidenceSource,
+        coreClock = LegacyWallClockCoreClock(wallClockMillis),
+        executor = executor,
+    )
+
     private val active = AtomicReference<ActiveExecution?>(null)
 
     override fun submit(
@@ -71,13 +93,20 @@ class OpenAppActionExecutor(
         return try {
             execute(command, execution) { launchAccepted = true }
         } catch (error: Exception) {
-            val now = wallClockMillis().coerceAtLeast(0)
+            val fallback = safeCoreTime(command)
+            val started = execution.startedAtCoreTimeMs.get()
+                .takeIf { value -> value >= 0 }
+                ?: fallback
+            val finished = execution.lease.get()
+                ?.coreTimeNowMs()
+                ?.coerceAtLeast(started)
+                ?: fallback.coerceAtLeast(started)
             result(
                 command = command,
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.INTERNAL_ERROR,
-                startedAtMs = now,
-                finishedAtMs = now,
+                startedAtMs = started,
+                finishedAtMs = finished,
                 attempts = if (launchAccepted) 1 else 0,
                 detail = (
                     "open_app executor failed with ${error.javaClass.simpleName}; " +
@@ -92,19 +121,56 @@ class OpenAppActionExecutor(
         execution: ActiveExecution,
         markLaunchAccepted: () -> Unit,
     ): AndroidActionResult {
-        val startedAtMs = wallClockMillis().coerceAtLeast(0)
         if (execution.cancelled.get()) {
-            return cancelledResult(command, startedAtMs, attempts = 0)
-        }
-        if (startedAtMs >= command.deadlineAtMs) {
-            return result(
+            val now = safeCoreTime(command)
+            return cancelledResult(
                 command = command,
-                outcome = ActionOutcome.BLOCKED,
-                failureCode = ActionFailureCode.EXPIRED,
-                startedAtMs = startedAtMs,
-                finishedAtMs = startedAtMs,
+                startedAtMs = now,
+                finishedAtMs = now,
                 attempts = 0,
-                detail = "open_app command deadline elapsed before execution",
+            )
+        }
+
+        val lease = when (
+            val start = coreClock.beginExecutionLease(
+                issuedAtCoreTimeMs = command.issuedAtMs,
+                deadlineAtCoreTimeMs = command.deadlineAtMs,
+            )
+        ) {
+            is CoreExecutionLeaseStart.Available -> start.lease
+            is CoreExecutionLeaseStart.Unavailable -> {
+                val timestamp = start.fallbackCoreTimeMs
+                    .coerceAtLeast(command.issuedAtMs)
+                    .coerceAtLeast(0)
+                return result(
+                    command = command,
+                    outcome = ActionOutcome.BLOCKED,
+                    failureCode = if (start.kind == CoreExecutionClockFailureKind.EXPIRED) {
+                        ActionFailureCode.EXPIRED
+                    } else {
+                        ActionFailureCode.PRECONDITION_FAILED
+                    },
+                    startedAtMs = timestamp,
+                    finishedAtMs = timestamp,
+                    attempts = 0,
+                    detail = (
+                        "Core clock could not authorize open_app execution: ${start.detail}"
+                        ).take(MAX_DETAIL_LENGTH),
+                )
+            }
+        }
+        execution.lease.set(lease)
+        val startedAtMs = lease.startedAtCoreTimeMs
+            .coerceAtLeast(command.issuedAtMs)
+            .coerceAtLeast(0)
+        execution.startedAtCoreTimeMs.set(startedAtMs)
+
+        if (execution.cancelled.get()) {
+            return cancelledResult(
+                command = command,
+                startedAtMs = startedAtMs,
+                finishedAtMs = finishedAt(lease, startedAtMs),
+                attempts = 0,
             )
         }
 
@@ -114,14 +180,14 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.PRECONDITION_FAILED,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 detail = "no Accessibility observation acknowledged by Core is available",
             )
         val initialPreconditionFailure = validatePrecondition(
             command = command,
             observation = initiallyAcknowledged,
-            nowMs = startedAtMs,
+            nowElapsedRealtimeMs = coreClock.elapsedRealtimeMs(),
         )
         if (initialPreconditionFailure != null) {
             return result(
@@ -129,27 +195,26 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.PRECONDITION_FAILED,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = initiallyAcknowledged.toReference(),
                 detail = initialPreconditionFailure,
             )
         }
 
-        val captureBudget = remainingBudget(
-            command = command,
-            requestedMillis = PRE_LAUNCH_CAPTURE_TIMEOUT_MILLIS,
-        )
-        if (captureBudget <= 0) {
-            return result(
+        val captureBudget = when (
+            val budget = lease.remainingBudget(PRE_LAUNCH_CAPTURE_TIMEOUT_MILLIS)
+        ) {
+            is CoreExecutionBudget.Available -> budget.milliseconds
+            is CoreExecutionBudget.Unavailable -> return executionBoundaryFailure(
                 command = command,
-                outcome = ActionOutcome.BLOCKED,
-                failureCode = ActionFailureCode.EXPIRED,
+                lease = lease,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
                 attempts = 0,
                 before = initiallyAcknowledged.toReference(),
-                detail = "no deadline budget remained for a fresh pre-launch observation",
+                budget = budget,
+                boundary = "fresh pre-launch observation",
+                launchAccepted = false,
             )
         }
         val freshBefore = evidenceSource.requestFreshLocalSnapshot(
@@ -160,6 +225,7 @@ class OpenAppActionExecutor(
             return cancelledResult(
                 command = command,
                 startedAtMs = startedAtMs,
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = initiallyAcknowledged.toReference(),
             )
@@ -170,7 +236,7 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.OBSERVATION_TIMEOUT,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = initiallyAcknowledged.toReference(),
                 detail = "fresh pre-launch Accessibility snapshot was unavailable",
@@ -183,7 +249,7 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.PRECONDITION_FAILED,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = initiallyAcknowledged.toReference(),
                 detail = "UI changed after the last Core-acknowledged observation",
@@ -196,16 +262,15 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.PRECONDITION_FAILED,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = initiallyAcknowledged.toReference(),
                 detail = "Core acknowledgement was invalidated before the launch boundary",
             )
-        val revalidationTimeMs = wallClockMillis().coerceAtLeast(startedAtMs)
         val currentPreconditionFailure = validatePrecondition(
             command = command,
             observation = currentlyAcknowledged,
-            nowMs = revalidationTimeMs,
+            nowElapsedRealtimeMs = coreClock.elapsedRealtimeMs(),
         )
         if (currentPreconditionFailure != null) {
             return result(
@@ -213,7 +278,7 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.PRECONDITION_FAILED,
                 startedAtMs = startedAtMs,
-                finishedAtMs = revalidationTimeMs,
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = currentlyAcknowledged.toReference(),
                 detail = "pre-launch evidence revalidation failed: $currentPreconditionFailure",
@@ -225,7 +290,7 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.BLOCKED,
                 failureCode = ActionFailureCode.PRECONDITION_FAILED,
                 startedAtMs = startedAtMs,
-                finishedAtMs = revalidationTimeMs,
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = currentlyAcknowledged.toReference(),
                 detail = "current Core acknowledgement no longer matches the fresh local state",
@@ -235,8 +300,23 @@ class OpenAppActionExecutor(
             return cancelledResult(
                 command = command,
                 startedAtMs = startedAtMs,
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = currentlyAcknowledged.toReference(),
+            )
+        }
+
+        val launchBoundary = lease.remainingBudget(MINIMUM_LAUNCH_BOUNDARY_BUDGET_MILLIS)
+        if (launchBoundary is CoreExecutionBudget.Unavailable) {
+            return executionBoundaryFailure(
+                command = command,
+                lease = lease,
+                startedAtMs = startedAtMs,
+                attempts = 0,
+                before = currentlyAcknowledged.toReference(),
+                budget = launchBoundary,
+                boundary = "launch boundary",
+                launchAccepted = false,
             )
         }
 
@@ -251,7 +331,7 @@ class OpenAppActionExecutor(
                 outcome = ActionOutcome.SUCCEEDED,
                 failureCode = ActionFailureCode.NONE,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 0,
                 before = currentlyAcknowledged.toReference(),
                 after = currentlyAcknowledged.toReference(),
@@ -263,14 +343,27 @@ class OpenAppActionExecutor(
             )
         }
 
-        val launchedAtMs = wallClockMillis().coerceAtLeast(revalidationTimeMs)
+        val secondLaunchBoundary = lease.remainingBudget(MINIMUM_LAUNCH_BOUNDARY_BUDGET_MILLIS)
+        if (secondLaunchBoundary is CoreExecutionBudget.Unavailable) {
+            return executionBoundaryFailure(
+                command = command,
+                lease = lease,
+                startedAtMs = startedAtMs,
+                attempts = 0,
+                before = currentlyAcknowledged.toReference(),
+                budget = secondLaunchBoundary,
+                boundary = "immediate pre-launch boundary",
+                launchAccepted = false,
+            )
+        }
+        val launchedAtElapsedRealtimeMs = coreClock.elapsedRealtimeMs()
         val launch = launcher.launch(operation)
         if (!launch.accepted) {
             return launchFailureResult(
                 command = command,
                 launch = launch,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(launchedAtMs),
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 before = currentlyAcknowledged.toReference(),
             )
         }
@@ -280,57 +373,55 @@ class OpenAppActionExecutor(
             return cancelledResult(
                 command = command,
                 startedAtMs = startedAtMs,
+                finishedAtMs = finishedAt(lease, startedAtMs),
                 attempts = 1,
                 before = currentlyAcknowledged.toReference(),
                 detail = "cancellation arrived after Android accepted the launch request",
             )
         }
 
-        val verificationBudget = remainingBudget(
-            command = command,
-            requestedMillis = command.verification.timeoutMs,
-        )
-        if (verificationBudget <= 0) {
-            return result(
+        val verificationBudget = when (
+            val budget = lease.remainingBudget(command.verification.timeoutMs)
+        ) {
+            is CoreExecutionBudget.Available -> budget.milliseconds
+            is CoreExecutionBudget.Unavailable -> return executionBoundaryFailure(
                 command = command,
-                outcome = ActionOutcome.TIMED_OUT,
-                failureCode = ActionFailureCode.OBSERVATION_TIMEOUT,
+                lease = lease,
                 startedAtMs = startedAtMs,
-                finishedAtMs = wallClockMillis().coerceAtLeast(launchedAtMs),
                 attempts = 1,
                 before = currentlyAcknowledged.toReference(),
-                detail = "command deadline elapsed before post-launch verification",
+                budget = budget,
+                boundary = "post-launch verification",
+                launchAccepted = true,
             )
         }
 
         val evidence = evidenceSource.awaitVerifiedObservation(
-            before = currentlyAcknowledged,
-            launchedAtMs = launchedAtMs,
-            policy = command.verification,
-            timeoutMillis = verificationBudget,
-            cancelled = execution.cancelled::get,
+            currentlyAcknowledged,
+            launchedAtElapsedRealtimeMs,
+            command.verification,
+            verificationBudget,
+            execution.cancelled::get,
         )
-        val finishedAtMs = wallClockMillis().coerceAtLeast(launchedAtMs)
+        val finishedAtMs = finishedAt(lease, startedAtMs)
         val detail = (
             "${launch.adapter}: ${launch.detail}; ${evidence.detail}"
             ).take(MAX_DETAIL_LENGTH)
         return when (evidence.status) {
-            PostActionEvidenceStatus.SATISFIED -> result(
+            PostActionEvidenceStatus.SATISFIED -> satisfiedResult(
                 command = command,
-                outcome = ActionOutcome.SUCCEEDED,
-                failureCode = ActionFailureCode.NONE,
+                lease = lease,
+                evidence = evidence,
                 startedAtMs = startedAtMs,
                 finishedAtMs = finishedAtMs,
-                attempts = 1,
                 before = currentlyAcknowledged.toReference(),
-                after = evidence.observation?.toReference(),
-                predicates = evidence.evaluation?.evidence.orEmpty(),
                 detail = detail,
             )
 
             PostActionEvidenceStatus.CANCELLED -> cancelledResult(
                 command = command,
                 startedAtMs = startedAtMs,
+                finishedAtMs = finishedAtMs,
                 attempts = 1,
                 before = currentlyAcknowledged.toReference(),
                 after = evidence.observation?.toReference(),
@@ -380,16 +471,65 @@ class OpenAppActionExecutor(
         }
     }
 
+    private fun satisfiedResult(
+        command: AndroidActionCommand,
+        lease: CoreExecutionLease,
+        evidence: PostActionEvidenceResult,
+        startedAtMs: Long,
+        finishedAtMs: Long,
+        before: ObservationReference,
+        detail: String,
+    ): AndroidActionResult {
+        val after = evidence.observation
+            ?: return result(
+                command = command,
+                outcome = ActionOutcome.BLOCKED,
+                failureCode = ActionFailureCode.POSTCONDITION_FAILED,
+                startedAtMs = startedAtMs,
+                finishedAtMs = finishedAtMs,
+                attempts = 1,
+                before = before,
+                predicates = evidence.evaluation?.evidence.orEmpty(),
+                detail = "$detail; satisfied status omitted acknowledged after evidence",
+            )
+        if (!lease.wasEvidenceCapturedBeforeDeadline(after.capturedAtElapsedRealtimeMs)) {
+            return result(
+                command = command,
+                outcome = ActionOutcome.TIMED_OUT,
+                failureCode = ActionFailureCode.OBSERVATION_TIMEOUT,
+                startedAtMs = startedAtMs,
+                finishedAtMs = finishedAtMs,
+                attempts = 1,
+                before = before,
+                after = after.toReference(),
+                predicates = evidence.evaluation?.evidence.orEmpty(),
+                detail = "$detail; successful evidence was captured outside the action deadline",
+            )
+        }
+        return result(
+            command = command,
+            outcome = ActionOutcome.SUCCEEDED,
+            failureCode = ActionFailureCode.NONE,
+            startedAtMs = startedAtMs,
+            finishedAtMs = finishedAtMs,
+            attempts = 1,
+            before = before,
+            after = after.toReference(),
+            predicates = evidence.evaluation?.evidence.orEmpty(),
+            detail = detail,
+        )
+    }
+
     private fun validatePrecondition(
         command: AndroidActionCommand,
         observation: AcknowledgedAccessibilityObservation,
-        nowMs: Long,
+        nowElapsedRealtimeMs: Long,
     ): String? {
         val precondition = command.precondition
-        val age = nowMs - observation.capturedAtMs
-        if (age < 0) {
-            return "acknowledged observation timestamp is in the future"
+        if (nowElapsedRealtimeMs < observation.capturedAtElapsedRealtimeMs) {
+            return "acknowledged observation monotonic timestamp is in the future"
         }
+        val age = nowElapsedRealtimeMs - observation.capturedAtElapsedRealtimeMs
         if (age > precondition.maximumAgeMs) {
             return "acknowledged observation age ${age}ms exceeds ${precondition.maximumAgeMs}ms"
         }
@@ -418,6 +558,39 @@ class OpenAppActionExecutor(
             return "active package does not match command precondition"
         }
         return null
+    }
+
+    private fun executionBoundaryFailure(
+        command: AndroidActionCommand,
+        lease: CoreExecutionLease,
+        startedAtMs: Long,
+        attempts: Int,
+        before: ObservationReference?,
+        budget: CoreExecutionBudget.Unavailable,
+        boundary: String,
+        launchAccepted: Boolean,
+    ): AndroidActionResult {
+        val expired = budget.kind == CoreExecutionClockFailureKind.EXPIRED
+        return result(
+            command = command,
+            outcome = when {
+                launchAccepted && expired -> ActionOutcome.TIMED_OUT
+                else -> ActionOutcome.BLOCKED
+            },
+            failureCode = when {
+                launchAccepted && expired -> ActionFailureCode.OBSERVATION_TIMEOUT
+                launchAccepted -> ActionFailureCode.INTERNAL_ERROR
+                expired -> ActionFailureCode.EXPIRED
+                else -> ActionFailureCode.PRECONDITION_FAILED
+            },
+            startedAtMs = startedAtMs,
+            finishedAtMs = finishedAt(lease, startedAtMs),
+            attempts = attempts,
+            before = before,
+            detail = (
+                "$boundary could not proceed under the bounded Core clock: ${budget.detail}"
+                ).take(MAX_DETAIL_LENGTH),
+        )
     }
 
     private fun launchFailureResult(
@@ -454,6 +627,7 @@ class OpenAppActionExecutor(
     private fun cancelledResult(
         command: AndroidActionCommand,
         startedAtMs: Long,
+        finishedAtMs: Long,
         attempts: Int,
         before: ObservationReference? = null,
         after: ObservationReference? = null,
@@ -463,7 +637,7 @@ class OpenAppActionExecutor(
         outcome = ActionOutcome.CANCELLED,
         failureCode = ActionFailureCode.CANCELLED,
         startedAtMs = startedAtMs,
-        finishedAtMs = wallClockMillis().coerceAtLeast(startedAtMs),
+        finishedAtMs = finishedAtMs,
         attempts = attempts,
         before = before,
         after = after,
@@ -507,19 +681,27 @@ class OpenAppActionExecutor(
             activePackage = activePackage,
         )
 
-    private fun remainingBudget(command: AndroidActionCommand, requestedMillis: Long): Long {
-        val remaining = command.deadlineAtMs - wallClockMillis()
-        return minOf(requestedMillis, remaining).coerceAtLeast(0)
-    }
+    private fun safeCoreTime(command: AndroidActionCommand): Long =
+        coreClock.estimatedCoreTimeMs()
+            ?.coerceAtLeast(command.issuedAtMs)
+            ?.coerceAtLeast(0)
+            ?: command.issuedAtMs.coerceAtLeast(0)
+
+    private fun finishedAt(lease: CoreExecutionLease, startedAtMs: Long): Long =
+        lease.coreTimeNowMs().coerceAtLeast(startedAtMs)
 
     private data class ActiveExecution(
         val commandId: String,
         val actionId: String,
         val cancelled: AtomicBoolean = AtomicBoolean(false),
+        val startedAtCoreTimeMs: AtomicLong = AtomicLong(UNSET_CORE_TIME),
+        val lease: AtomicReference<CoreExecutionLease?> = AtomicReference(null),
     )
 
     private companion object {
         const val PRE_LAUNCH_CAPTURE_TIMEOUT_MILLIS = 2_000L
+        const val MINIMUM_LAUNCH_BOUNDARY_BUDGET_MILLIS = 1L
         const val MAX_DETAIL_LENGTH = 2_000
+        const val UNSET_CORE_TIME = -1L
     }
 }

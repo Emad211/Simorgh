@@ -11,6 +11,9 @@ import ai.simorgh.android.protocol.DeviceProtocol
 import ai.simorgh.android.protocol.DeviceRegistrationPayload
 import ai.simorgh.android.protocol.ObservationRefreshProtocol
 import ai.simorgh.android.protocol.ProtocolEnvelope
+import ai.simorgh.android.time.CoreClockReading
+import ai.simorgh.android.time.CoreClockSyncOutcome
+import ai.simorgh.android.time.CoreClockSynchronizer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -64,11 +67,18 @@ class CoreWebSocketClient(
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .build(),
+    private val clockSynchronizer: CoreClockSynchronizer = CoreClockSynchronizer(),
 ) : Closeable {
     private val lock = Any()
     private val outboundQueue = ArrayDeque<String>()
 
+    /** Logical user-controlled connection lifecycle. */
     private var generation: Long = 0
+
+    /** Monotonically increasing physical WebSocket/clock generation across reconnects. */
+    private var nextClockGeneration: Long = 0
+    private var activeClockGeneration: Long? = null
+
     private var activeConfig: CoreConnectionConfig? = null
     private var socket: WebSocket? = null
     private var reconnectFuture: ScheduledFuture<*>? = null
@@ -81,9 +91,12 @@ class CoreWebSocketClient(
     fun connect(config: CoreConnectionConfig) {
         val validated = config.validated()
         val currentGeneration: Long
+        val previousClockGeneration: Long?
         synchronized(lock) {
-            generation += 1
+            generation = incrementGeneration(generation)
             currentGeneration = generation
+            previousClockGeneration = activeClockGeneration
+            activeClockGeneration = null
             stopped = false
             registered = false
             reconnectAttempt = 0
@@ -93,13 +106,17 @@ class CoreWebSocketClient(
             socket?.cancel()
             socket = null
         }
+        previousClockGeneration?.let(clockSynchronizer::invalidate)
         openSocket(currentGeneration)
     }
 
     fun disconnect() {
         val socketToClose: WebSocket?
+        val previousClockGeneration: Long?
         synchronized(lock) {
-            generation += 1
+            generation = incrementGeneration(generation)
+            previousClockGeneration = activeClockGeneration
+            activeClockGeneration = null
             stopped = true
             registered = false
             activeConfig = null
@@ -108,6 +125,7 @@ class CoreWebSocketClient(
             socket = null
             outboundQueue.clear()
         }
+        previousClockGeneration?.let(clockSynchronizer::invalidate)
         socketToClose?.close(NORMAL_CLOSURE_CODE, "user disconnect")
         emitState(ConnectionState.Disconnected)
     }
@@ -155,12 +173,19 @@ class CoreWebSocketClient(
     }
 
     private fun openSocket(expectedGeneration: Long) {
-        val config = synchronized(lock) {
+        val config: CoreConnectionConfig
+        val clockGeneration: Long
+        synchronized(lock) {
             if (stopped || generation != expectedGeneration) {
                 return
             }
-            activeConfig
-        } ?: return
+            config = activeConfig ?: return
+            nextClockGeneration = incrementGeneration(nextClockGeneration)
+            clockGeneration = nextClockGeneration
+            activeClockGeneration = clockGeneration
+            registered = false
+        }
+        clockSynchronizer.beginGeneration(clockGeneration)
 
         emitState(ConnectionState(ConnectionPhase.CONNECTING))
         val request = Request.Builder()
@@ -169,10 +194,13 @@ class CoreWebSocketClient(
             .build()
         val openedSocket = httpClient.newWebSocket(
             request,
-            SocketListener(expectedGeneration),
+            SocketListener(
+                expectedGeneration = expectedGeneration,
+                expectedClockGeneration = clockGeneration,
+            ),
         )
         synchronized(lock) {
-            if (generation == expectedGeneration && !stopped) {
+            if (isCurrentSocketLocked(expectedGeneration, clockGeneration)) {
                 socket = openedSocket
             } else {
                 openedSocket.cancel()
@@ -180,7 +208,11 @@ class CoreWebSocketClient(
         }
     }
 
-    private fun sendRegistration(webSocket: WebSocket, expectedGeneration: Long) {
+    private fun sendRegistration(
+        webSocket: WebSocket,
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+    ) {
         val registration = DeviceProtocol.registration(
             deviceId = deviceId,
             payload = DeviceRegistrationPayload(
@@ -194,7 +226,21 @@ class CoreWebSocketClient(
                 capabilities = capabilities.capabilities.sorted(),
             ),
         )
-        if (!isCurrent(expectedGeneration) || !webSocket.send(DeviceProtocol.encode(registration))) {
+        if (
+            !isCurrentSocket(expectedGeneration, expectedClockGeneration) ||
+            !clockSynchronizer.markRegistrationSent(
+                generation = expectedClockGeneration,
+                messageId = registration.messageId,
+            )
+        ) {
+            webSocket.cancel()
+            return
+        }
+        if (!webSocket.send(DeviceProtocol.encode(registration))) {
+            clockSynchronizer.discardRegistration(
+                generation = expectedClockGeneration,
+                messageId = registration.messageId,
+            )
             webSocket.cancel()
         }
     }
@@ -202,9 +248,10 @@ class CoreWebSocketClient(
     private fun handleMessage(
         webSocket: WebSocket,
         expectedGeneration: Long,
+        expectedClockGeneration: Long,
         rawMessage: String,
     ) {
-        if (!isCurrent(expectedGeneration)) {
+        if (!isCurrentSocket(expectedGeneration, expectedClockGeneration)) {
             return
         }
         if (rawMessage.toByteArray(Charsets.UTF_8).size > DeviceProtocol.MAX_DEVICE_MESSAGE_BYTES) {
@@ -245,15 +292,15 @@ class CoreWebSocketClient(
             DeviceProtocol.TYPE_REGISTERED -> handleRegistered(
                 webSocket = webSocket,
                 expectedGeneration = expectedGeneration,
+                expectedClockGeneration = expectedClockGeneration,
                 envelope = envelope,
             )
 
-            DeviceProtocol.TYPE_HEARTBEAT_ACK -> {
-                val acknowledgement = runCatching {
-                    DeviceProtocol.decodeHeartbeatAck(envelope)
-                }.getOrElse { return }
-                listener.onProtocolEvent("heartbeat ${acknowledgement.sequence} تأیید شد")
-            }
+            DeviceProtocol.TYPE_HEARTBEAT_ACK -> handleHeartbeatAcknowledgement(
+                webSocket = webSocket,
+                expectedClockGeneration = expectedClockGeneration,
+                envelope = envelope,
+            )
 
             DeviceProtocol.TYPE_OBSERVATION_ACK -> {
                 val acknowledgement = runCatching {
@@ -356,6 +403,7 @@ class CoreWebSocketClient(
     private fun handleRegistered(
         webSocket: WebSocket,
         expectedGeneration: Long,
+        expectedClockGeneration: Long,
         envelope: ProtocolEnvelope,
     ) {
         val registeredPayload = runCatching {
@@ -365,8 +413,17 @@ class CoreWebSocketClient(
             webSocket.cancel()
             return
         }
+        val clockOutcome = clockSynchronizer.acceptRegistration(
+            generation = expectedClockGeneration,
+            correlationId = envelope.correlationId,
+            serverTimeMs = registeredPayload.serverTimeMs,
+        )
+        if (!acceptClockOutcome(webSocket, clockOutcome, requireStableReading = true)) {
+            return
+        }
+
         synchronized(lock) {
-            if (generation != expectedGeneration || stopped) {
+            if (!isCurrentSocketLocked(expectedGeneration, expectedClockGeneration)) {
                 return
             }
             registered = true
@@ -374,11 +431,73 @@ class CoreWebSocketClient(
         }
         scheduleHeartbeat(
             expectedGeneration = expectedGeneration,
+            expectedClockGeneration = expectedClockGeneration,
             intervalSeconds = registeredPayload.heartbeatIntervalSeconds,
         )
-        flushOutboundQueue(webSocket, expectedGeneration)
+        flushOutboundQueue(webSocket, expectedGeneration, expectedClockGeneration)
         emitState(ConnectionState(ConnectionPhase.CONNECTED))
-        listener.onProtocolEvent("اتصال دستگاه با هسته تأیید شد")
+        listener.onProtocolEvent(
+            "اتصال دستگاه و تخمین ساعت هسته تأیید شد؛ ${clockDiagnostic(clockOutcome.reading)}",
+        )
+    }
+
+    private fun handleHeartbeatAcknowledgement(
+        webSocket: WebSocket,
+        expectedClockGeneration: Long,
+        envelope: ProtocolEnvelope,
+    ) {
+        val acknowledgement = runCatching {
+            DeviceProtocol.decodeHeartbeatAck(envelope)
+        }.getOrElse { error ->
+            listener.onProtocolEvent("heartbeat_ack نامعتبر است: ${error.message.orEmpty()}")
+            webSocket.cancel()
+            return
+        }
+        val clockOutcome = clockSynchronizer.acceptHeartbeat(
+            generation = expectedClockGeneration,
+            correlationId = envelope.correlationId,
+            sequence = acknowledgement.sequence,
+            serverTimeMs = acknowledgement.serverTimeMs,
+        )
+        if (!acceptClockOutcome(webSocket, clockOutcome, requireStableReading = false)) {
+            return
+        }
+        if (clockOutcome.accepted) {
+            listener.onProtocolEvent(
+                "heartbeat ${acknowledgement.sequence} تأیید شد؛ " +
+                    clockDiagnostic(clockOutcome.reading),
+            )
+        } else {
+            listener.onProtocolEvent(clockOutcome.detail)
+        }
+    }
+
+    private fun acceptClockOutcome(
+        webSocket: WebSocket,
+        outcome: CoreClockSyncOutcome,
+        requireStableReading: Boolean,
+    ): Boolean {
+        if (outcome.fatal) {
+            listener.onProtocolEvent("همگام‌سازی ساعت هسته شکست خورد: ${outcome.detail}")
+            webSocket.cancel()
+            return false
+        }
+        if (requireStableReading && (!outcome.accepted || outcome.reading == null)) {
+            listener.onProtocolEvent("ثبت دستگاه بدون تخمین امن ساعت هسته رد شد")
+            webSocket.cancel()
+            return false
+        }
+        if (outcome.wallClockJumpDetected) {
+            listener.onProtocolEvent(
+                "تغییر ساعت دیوایس تشخیص داده شد؛ زمان هسته همچنان با elapsedRealtime سنجیده می‌شود",
+            )
+        }
+        if (outcome.coreDiscontinuityDetected) {
+            listener.onProtocolEvent(
+                "پرش ساعت هسته تشخیص داده شد؛ تا نمونه تأییدکننده فرمان جدید اجرا نمی‌شود",
+            )
+        }
+        return true
     }
 
     private fun invokeListenerOrCancel(
@@ -394,10 +513,17 @@ class CoreWebSocketClient(
         }
     }
 
-    private fun flushOutboundQueue(webSocket: WebSocket, expectedGeneration: Long) {
+    private fun flushOutboundQueue(
+        webSocket: WebSocket,
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+    ) {
         while (true) {
             val next = synchronized(lock) {
-                if (!registered || generation != expectedGeneration || stopped) {
+                if (
+                    !registered ||
+                    !isCurrentSocketLocked(expectedGeneration, expectedClockGeneration)
+                ) {
                     return
                 }
                 outboundQueue.pollFirst()
@@ -412,12 +538,21 @@ class CoreWebSocketClient(
         }
     }
 
-    private fun scheduleHeartbeat(expectedGeneration: Long, intervalSeconds: Int) {
+    private fun scheduleHeartbeat(
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+        intervalSeconds: Int,
+    ) {
         val safeInterval = intervalSeconds.coerceIn(MIN_HEARTBEAT_SECONDS, MAX_HEARTBEAT_SECONDS)
         synchronized(lock) {
             heartbeatFuture?.cancel(false)
             heartbeatFuture = scheduler.scheduleAtFixedRate(
-                { sendHeartbeat(expectedGeneration) },
+                {
+                    sendHeartbeat(
+                        expectedGeneration = expectedGeneration,
+                        expectedClockGeneration = expectedClockGeneration,
+                    )
+                },
                 safeInterval.toLong(),
                 safeInterval.toLong(),
                 TimeUnit.SECONDS,
@@ -425,32 +560,59 @@ class CoreWebSocketClient(
         }
     }
 
-    private fun sendHeartbeat(expectedGeneration: Long) {
+    private fun sendHeartbeat(
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+    ) {
         val activeSocket: WebSocket
         val sequence: Long
         synchronized(lock) {
-            if (stopped || generation != expectedGeneration || !registered) {
+            if (
+                stopped ||
+                !registered ||
+                !isCurrentSocketLocked(expectedGeneration, expectedClockGeneration)
+            ) {
                 return
             }
             activeSocket = socket ?: return
             heartbeatSequence += 1
             sequence = heartbeatSequence
         }
+        val elapsedRealtime = SystemClock.elapsedRealtime().coerceAtLeast(0)
         val heartbeat = DeviceProtocol.heartbeat(
             deviceId = deviceId,
             sequence = sequence,
-            appUptimeMs = SystemClock.elapsedRealtime(),
+            appUptimeMs = elapsedRealtime,
         )
+        if (
+            !clockSynchronizer.markHeartbeatSent(
+                generation = expectedClockGeneration,
+                messageId = heartbeat.messageId,
+                sequence = sequence,
+            )
+        ) {
+            listener.onProtocolEvent("ثبت Probe ساعت heartbeat شکست خورد")
+            activeSocket.cancel()
+            return
+        }
         if (!activeSocket.send(DeviceProtocol.encode(heartbeat))) {
+            clockSynchronizer.discardHeartbeat(
+                generation = expectedClockGeneration,
+                messageId = heartbeat.messageId,
+            )
             activeSocket.cancel()
         }
     }
 
-    private fun handleDisconnected(expectedGeneration: Long, detail: String?) {
+    private fun handleDisconnected(
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+        detail: String?,
+    ) {
         val attempt: Int
         val delayMillis: Long
         synchronized(lock) {
-            if (generation != expectedGeneration || stopped) {
+            if (!isCurrentSocketLocked(expectedGeneration, expectedClockGeneration)) {
                 return
             }
             if (reconnectFuture?.isDone == false) {
@@ -458,6 +620,7 @@ class CoreWebSocketClient(
             }
             registered = false
             socket = null
+            activeClockGeneration = null
             heartbeatFuture?.cancel(false)
             heartbeatFuture = null
             reconnectAttempt += 1
@@ -469,6 +632,7 @@ class CoreWebSocketClient(
                 TimeUnit.MILLISECONDS,
             )
         }
+        clockSynchronizer.invalidate(expectedClockGeneration)
         emitState(
             ConnectionState(
                 phase = ConnectionPhase.RETRY_WAIT,
@@ -478,9 +642,20 @@ class CoreWebSocketClient(
         )
     }
 
-    private fun isCurrent(expectedGeneration: Long): Boolean = synchronized(lock) {
-        generation == expectedGeneration && !stopped
+    private fun isCurrentSocket(
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+    ): Boolean = synchronized(lock) {
+        isCurrentSocketLocked(expectedGeneration, expectedClockGeneration)
     }
+
+    private fun isCurrentSocketLocked(
+        expectedGeneration: Long,
+        expectedClockGeneration: Long,
+    ): Boolean =
+        generation == expectedGeneration &&
+            activeClockGeneration == expectedClockGeneration &&
+            !stopped
 
     private fun cancelScheduledTasksLocked() {
         reconnectFuture?.cancel(false)
@@ -495,18 +670,28 @@ class CoreWebSocketClient(
 
     private inner class SocketListener(
         private val expectedGeneration: Long,
+        private val expectedClockGeneration: Long,
     ) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (!isCurrent(expectedGeneration)) {
+            if (!isCurrentSocket(expectedGeneration, expectedClockGeneration)) {
                 webSocket.cancel()
                 return
             }
             emitState(ConnectionState(ConnectionPhase.REGISTERING))
-            sendRegistration(webSocket, expectedGeneration)
+            sendRegistration(
+                webSocket = webSocket,
+                expectedGeneration = expectedGeneration,
+                expectedClockGeneration = expectedClockGeneration,
+            )
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            handleMessage(webSocket, expectedGeneration, text)
+            handleMessage(
+                webSocket = webSocket,
+                expectedGeneration = expectedGeneration,
+                expectedClockGeneration = expectedClockGeneration,
+                rawMessage = text,
+            )
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -514,11 +699,19 @@ class CoreWebSocketClient(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            handleDisconnected(expectedGeneration, "اتصال بسته شد: $code $reason")
+            handleDisconnected(
+                expectedGeneration = expectedGeneration,
+                expectedClockGeneration = expectedClockGeneration,
+                detail = "اتصال بسته شد: $code $reason",
+            )
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            handleDisconnected(expectedGeneration, t.message ?: "خطای اتصال")
+            handleDisconnected(
+                expectedGeneration = expectedGeneration,
+                expectedClockGeneration = expectedClockGeneration,
+                detail = t.message ?: "خطای اتصال",
+            )
         }
     }
 
@@ -530,5 +723,15 @@ class CoreWebSocketClient(
         const val MAX_HEARTBEAT_SECONDS: Int = 300
 
         fun isUuid(value: String): Boolean = runCatching { UUID.fromString(value) }.isSuccess
+
+        fun incrementGeneration(current: Long): Long =
+            if (current == Long.MAX_VALUE) 1 else current + 1
+
+        fun clockDiagnostic(reading: CoreClockReading?): String = if (reading == null) {
+            "تخمین ساعت موقتاً ناپایدار است"
+        } else {
+            "RTT=${reading.lastRoundTripTimeMs}ms، ±${reading.uncertaintyMs}ms، " +
+                "نمونه=${reading.sampleCount}"
+        }
     }
 }

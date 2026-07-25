@@ -14,6 +14,8 @@ data class AcknowledgedAccessibilityObservation(
     val stateFingerprint: String,
     val snapshotId: String,
     val capturedAtMs: Long,
+    /** Local-only monotonic capture time from the originating Android boot. */
+    val capturedAtElapsedRealtimeMs: Long = capturedAtMs,
     val activePackage: String? = null,
     val acknowledgedAtMs: Long,
 ) {
@@ -36,6 +38,7 @@ data class AcknowledgedAccessibilityObservation(
         stateFingerprint = stateFingerprint,
         snapshotId = snapshot.snapshotId,
         capturedAtMs = snapshot.capturedAtMs,
+        capturedAtElapsedRealtimeMs = snapshot.capturedAtElapsedRealtimeMs,
         activePackage = snapshot.activePackage,
         acknowledgedAtMs = acknowledgedAtMs,
     )

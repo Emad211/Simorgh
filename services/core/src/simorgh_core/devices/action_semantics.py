@@ -239,10 +239,8 @@ def _require_newer_after_reference(
     before: ObservationReference,
     after: ObservationReference,
 ) -> None:
-    if after.captured_at_ms < before.captured_at_ms:
-        raise AndroidActionSemanticError(
-            "one-attempt open_app after observation cannot predate before observation"
-        )
+    # captured_at_ms is Android wall-clock metadata and can move backwards while an action runs.
+    # Ordering is established by stream sequence and by Core's own received_at_ms checks below.
     if after.stream_id == before.stream_id and after.sequence <= before.sequence:
         raise AndroidActionSemanticError(
             "one-attempt open_app requires a newer after-observation sequence"

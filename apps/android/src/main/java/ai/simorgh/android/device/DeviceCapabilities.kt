@@ -17,6 +17,9 @@ data class DeviceCapabilities(
     val capabilities: Set<String>,
 ) {
     companion object {
+        const val CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY: String =
+            "android.core_clock.bounded_estimate.v1"
+
         fun current(): DeviceCapabilities {
             val compatibility = AndroidCompatibility.profileFor(Build.VERSION.SDK_INT)
             val capabilities = buildSet {
@@ -25,6 +28,7 @@ data class DeviceCapabilities(
                 add("device.action_transport.v1")
                 add("android.action.contract.v1")
                 add("android.open_app.execution.v1")
+                add(CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY)
                 add(ObservationRefreshProtocol.CAPABILITY)
                 if (BackgroundLaunchAccess.requiresSpecialAccess()) {
                     add("android.open_app.background_launch.requires_visible_or_overlay_access")
