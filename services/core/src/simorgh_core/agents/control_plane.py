@@ -3,17 +3,25 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from threading import RLock
-from typing import Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from simorgh_core.agents.budget import BudgetAccount, BudgetSnapshot
-from simorgh_core.agents.contracts import RoutingDecision, RoutingState, TaskBudget, TaskEnvelope
+from simorgh_core.agents.budget import BudgetAccount
+from simorgh_core.agents.contracts import TaskBudget, TaskEnvelope, UsageVector
 from simorgh_core.agents.invocations import canonical_fingerprint
 from simorgh_core.agents.router import SpecialistRouter
+from simorgh_core.agents.task_state import (
+    DECISION_PHASES,
+    AgentTaskPhase,
+    AgentTaskRecord,
+)
+from simorgh_core.agents.task_store import (
+    AgentTaskStore,
+    AgentTaskStoreConflictError,
+    AgentTaskStoreError,
+    InMemoryAgentTaskStore,
+    new_task_store_entry,
+)
 
 
 class AgentTaskControlPlaneError(RuntimeError):
@@ -28,72 +36,12 @@ class AgentTaskNotFoundError(AgentTaskControlPlaneError):
     pass
 
 
-class AgentTaskPhase(StrEnum):
-    ROUTING = "routing"
-    ROUTED = "routed"
-    NEEDS_CLARIFICATION = "needs_clarification"
-    NEEDS_ESCALATION = "needs_escalation"
-    BUDGET_EXHAUSTED = "budget_exhausted"
-    POLICY_BLOCKED = "policy_blocked"
-    CONTRACT_INVALID = "contract_invalid"
-    CANCELLED = "cancelled"
-    EXPIRED = "expired"
+class AgentTaskStoreUnavailableError(AgentTaskControlPlaneError):
+    pass
 
 
-_DECISION_PHASES = {
-    RoutingState.ROUTED: AgentTaskPhase.ROUTED,
-    RoutingState.NEEDS_CLARIFICATION: AgentTaskPhase.NEEDS_CLARIFICATION,
-    RoutingState.NEEDS_ESCALATION: AgentTaskPhase.NEEDS_ESCALATION,
-    RoutingState.BUDGET_EXHAUSTED: AgentTaskPhase.BUDGET_EXHAUSTED,
-    RoutingState.POLICY_BLOCKED: AgentTaskPhase.POLICY_BLOCKED,
-    RoutingState.CONTRACT_INVALID: AgentTaskPhase.CONTRACT_INVALID,
-}
-
-
-class AgentTaskRecord(BaseModel):
-    """Operator-visible task state; private trace payloads remain in the trace sink."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    request_id: UUID
-    phase: AgentTaskPhase
-    created_at_ms: int = Field(ge=0)
-    updated_at_ms: int = Field(ge=0)
-    task: TaskEnvelope
-    routing_decision: RoutingDecision | None = None
-    budget: BudgetSnapshot
-    cancel_reason: str | None = Field(default=None, max_length=1_000)
-    detail: str = Field(default="", max_length=2_000)
-
-    @model_validator(mode="after")
-    def validate_phase_shape(self) -> Self:
-        if self.updated_at_ms < self.created_at_ms:
-            raise ValueError("updated_at_ms cannot precede created_at_ms")
-        if self.task.request_id != self.request_id:
-            raise ValueError("task request_id does not match record request_id")
-        if self.budget.request_id != self.request_id:
-            raise ValueError("budget request_id does not match record request_id")
-
-        if self.phase == AgentTaskPhase.ROUTING:
-            if self.routing_decision is not None:
-                raise ValueError("routing phase cannot already contain a decision")
-        elif self.phase in {AgentTaskPhase.CANCELLED, AgentTaskPhase.EXPIRED}:
-            pass
-        else:
-            decision = self.routing_decision
-            if decision is None:
-                raise ValueError("routed terminal phase requires a routing decision")
-            if decision.request_id != self.request_id:
-                raise ValueError("routing decision request_id does not match record")
-            if _DECISION_PHASES[decision.state] != self.phase:
-                raise ValueError("record phase does not match routing decision state")
-
-        if self.phase == AgentTaskPhase.CANCELLED:
-            if self.cancel_reason is None:
-                raise ValueError("cancelled task requires a cancel reason")
-        elif self.cancel_reason is not None:
-            raise ValueError("non-cancelled task cannot contain a cancel reason")
-        return self
+class AgentTaskRoutingUnknownError(AgentTaskControlPlaneError):
+    pass
 
 
 @dataclass(slots=True)
@@ -107,22 +55,61 @@ class _MutableTaskState:
 
 
 class AgentTaskControlPlane:
-    """Idempotent route/status/cancel foundation for one primary specialist per task."""
+    """Durable route/status/cancel control plane for one primary specialist."""
 
     def __init__(
         self,
         *,
         router: SpecialistRouter,
+        store: AgentTaskStore | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
         monotonic_millis: Callable[[], int] | None = None,
     ) -> None:
         self._router = router
+        self._store = store or InMemoryAgentTaskStore()
         self._wall_clock_millis = wall_clock_millis or (
             lambda: int(time.time() * 1_000)
         )
         self._monotonic_millis = monotonic_millis
         self._lock = RLock()
         self._states: dict[UUID, _MutableTaskState] = {}
+        self._load_store_locked(recover_interrupted=True)
+
+    async def configure_store(self, store: AgentTaskStore) -> None:
+        """Replace the task store during Core startup and recover durable records."""
+
+        with self._lock:
+            if any(
+                state.record.phase == AgentTaskPhase.ROUTING
+                for state in self._states.values()
+            ):
+                raise AgentTaskStoreUnavailableError(
+                    "cannot replace agent task store while routing is active"
+                )
+            previous_store = self._store
+            previous_states = self._states
+            self._store = store
+            self._states = {}
+            try:
+                self._load_store_locked(recover_interrupted=True)
+            except BaseException:
+                self._store = previous_store
+                self._states = previous_states
+                raise
+
+    async def reset_to_memory_store(self) -> None:
+        """Detach runtime durability without modifying the previous on-disk store."""
+
+        with self._lock:
+            if any(
+                state.record.phase == AgentTaskPhase.ROUTING
+                for state in self._states.values()
+            ):
+                raise AgentTaskStoreUnavailableError(
+                    "cannot reset agent task store while routing is active"
+                )
+            self._store = InMemoryAgentTaskStore()
+            self._states = {}
 
     async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:
         fingerprint = _task_fingerprint(task)
@@ -152,7 +139,7 @@ class AgentTaskControlPlane:
                     budget=account.snapshot(),
                     detail="task deadline elapsed before routing began",
                 )
-                self._states[task.request_id] = _MutableTaskState(
+                self._persist_new_state_locked(
                     task=task,
                     fingerprint=fingerprint,
                     account=account,
@@ -160,37 +147,78 @@ class AgentTaskControlPlane:
                 )
                 return record
 
-            state = _MutableTaskState(
+            routing_record = AgentTaskRecord(
+                request_id=task.request_id,
+                phase=AgentTaskPhase.ROUTING,
+                created_at_ms=now,
+                updated_at_ms=now,
+                task=task,
+                budget=account.snapshot(),
+                detail="task identity persisted before specialist routing",
+            )
+            self._persist_new_state_locked(
                 task=task,
                 fingerprint=fingerprint,
                 account=account,
-                record=AgentTaskRecord(
-                    request_id=task.request_id,
-                    phase=AgentTaskPhase.ROUTING,
-                    created_at_ms=now,
-                    updated_at_ms=now,
-                    task=task,
-                    budget=account.snapshot(),
-                ),
+                record=routing_record,
             )
-            self._states[task.request_id] = state
 
-        decision = await self._router.route(task=task, budget=account)
+        try:
+            decision = await self._router.route(task=task, budget=account)
+        except BaseException as exc:
+            with self._lock:
+                current = self._states[task.request_id]
+                if current.cancelled:
+                    return current.record
+                stabilized_account = _restore_stable_account(
+                    account,
+                    monotonic_millis=self._monotonic_millis,
+                )
+                unknown_record = AgentTaskRecord(
+                    request_id=task.request_id,
+                    phase=AgentTaskPhase.UNKNOWN,
+                    created_at_ms=current.record.created_at_ms,
+                    updated_at_ms=self._now_ms(),
+                    task=task,
+                    budget=stabilized_account.snapshot(),
+                    detail=(
+                        "specialist routing failed after durable claim; automatic replay "
+                        f"is blocked ({exc.__class__.__name__})"
+                    ),
+                )
+                self._persist_transition_locked(
+                    state=current,
+                    account=stabilized_account,
+                    record=unknown_record,
+                )
+            raise AgentTaskRoutingUnknownError(
+                "agent task routing failed closed and is recorded as unknown"
+            ) from exc
+
         with self._lock:
             current = self._states[task.request_id]
             if current.cancelled:
                 return current.record
-            current.record = AgentTaskRecord(
+            stabilized_account = _restore_stable_account(
+                account,
+                monotonic_millis=self._monotonic_millis,
+            )
+            completed_record = AgentTaskRecord(
                 request_id=task.request_id,
-                phase=_DECISION_PHASES[decision.state],
+                phase=DECISION_PHASES[decision.state],
                 created_at_ms=current.record.created_at_ms,
                 updated_at_ms=self._now_ms(),
                 task=task,
                 routing_decision=decision,
-                budget=account.snapshot(),
+                budget=stabilized_account.snapshot(),
                 detail=decision.reason,
             )
-            return current.record
+            self._persist_transition_locked(
+                state=current,
+                account=stabilized_account,
+                record=completed_record,
+            )
+            return completed_record
 
     async def get(self, request_id: UUID) -> AgentTaskRecord:
         with self._lock:
@@ -210,12 +238,16 @@ class AgentTaskControlPlane:
             state = self._states.get(request_id)
             if state is None:
                 raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
-            if state.record.phase in {AgentTaskPhase.CANCELLED, AgentTaskPhase.EXPIRED}:
+            if state.record.phase in {
+                AgentTaskPhase.CANCELLED,
+                AgentTaskPhase.EXPIRED,
+            }:
                 return state.record
+
             state.cancelled = True
             state.cancel_reason = normalized_reason[:1_000]
             state.account.cancel()
-            state.record = AgentTaskRecord(
+            cancelled_record = AgentTaskRecord(
                 request_id=request_id,
                 phase=AgentTaskPhase.CANCELLED,
                 created_at_ms=state.record.created_at_ms,
@@ -226,11 +258,99 @@ class AgentTaskControlPlane:
                 cancel_reason=state.cancel_reason,
                 detail=state.cancel_reason,
             )
-            return state.record
+            self._persist_transition_locked(
+                state=state,
+                account=state.account,
+                record=cancelled_record,
+            )
+            return cancelled_record
 
     async def clear_for_test(self) -> None:
         with self._lock:
+            try:
+                self._store.clear()
+            except AgentTaskStoreError as exc:
+                raise AgentTaskStoreUnavailableError(str(exc)) from exc
             self._states.clear()
+
+    def _load_store_locked(self, *, recover_interrupted: bool) -> None:
+        try:
+            entries = self._store.load()
+        except AgentTaskStoreError as exc:
+            raise AgentTaskStoreUnavailableError(str(exc)) from exc
+
+        now = self._now_ms()
+        recovered: dict[UUID, _MutableTaskState] = {}
+        for entry in entries:
+            record = entry.record
+            account = BudgetAccount.restore(
+                record.budget,
+                monotonic_millis=self._monotonic_millis,
+            )
+            if recover_interrupted and record.phase == AgentTaskPhase.ROUTING:
+                record = AgentTaskRecord(
+                    request_id=record.request_id,
+                    phase=AgentTaskPhase.UNKNOWN,
+                    created_at_ms=record.created_at_ms,
+                    updated_at_ms=max(now, record.updated_at_ms),
+                    task=record.task,
+                    budget=account.snapshot(),
+                    detail=(
+                        "Core restarted while specialist routing was in progress; "
+                        "automatic replay is blocked"
+                    ),
+                )
+                try:
+                    self._store.upsert(new_task_store_entry(record))
+                except AgentTaskStoreError as exc:
+                    raise AgentTaskStoreUnavailableError(str(exc)) from exc
+
+            recovered[record.request_id] = _MutableTaskState(
+                task=record.task,
+                fingerprint=entry.task_fingerprint,
+                account=account,
+                record=record,
+                cancelled=record.phase == AgentTaskPhase.CANCELLED,
+                cancel_reason=record.cancel_reason,
+            )
+        self._states = recovered
+
+    def _persist_new_state_locked(
+        self,
+        *,
+        task: TaskEnvelope,
+        fingerprint: str,
+        account: BudgetAccount,
+        record: AgentTaskRecord,
+    ) -> None:
+        try:
+            self._store.upsert(new_task_store_entry(record))
+        except AgentTaskStoreConflictError as exc:
+            raise AgentTaskConflictError(str(exc)) from exc
+        except AgentTaskStoreError as exc:
+            raise AgentTaskStoreUnavailableError(str(exc)) from exc
+        self._states[task.request_id] = _MutableTaskState(
+            task=task,
+            fingerprint=fingerprint,
+            account=account,
+            record=record,
+        )
+
+    def _persist_transition_locked(
+        self,
+        *,
+        state: _MutableTaskState,
+        account: BudgetAccount,
+        record: AgentTaskRecord,
+    ) -> None:
+        try:
+            self._store.upsert(new_task_store_entry(record))
+        except AgentTaskStoreConflictError as exc:
+            raise AgentTaskConflictError(str(exc)) from exc
+        except AgentTaskStoreError as exc:
+            raise AgentTaskStoreUnavailableError(str(exc)) from exc
+        state.account = account
+        state.record = record
 
     def _now_ms(self) -> int:
         return max(0, int(self._wall_clock_millis()))
@@ -249,3 +369,17 @@ def _task_fingerprint(task: TaskEnvelope) -> str:
     payload = task.model_dump(mode="json")
     payload["allowed_data_sources"] = sorted(task.allowed_data_sources)
     return canonical_fingerprint(payload)
+
+
+def _restore_stable_account(
+    account: BudgetAccount,
+    *,
+    monotonic_millis: Callable[[], int] | None,
+) -> BudgetAccount:
+    snapshot = account.snapshot()
+    if snapshot.reserved == UsageVector():
+        return account
+    return BudgetAccount.restore(
+        snapshot,
+        monotonic_millis=monotonic_millis,
+    )
