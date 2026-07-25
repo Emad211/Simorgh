@@ -40,10 +40,22 @@ _ACCEPTED_ACK_STATUSES = frozenset({"accepted", "duplicate"})
 _ALLOWED_PHASE_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"queued", "delivered", "cancelling", "rejected", "expired"}),
     "delivered": frozenset(
-        {"delivered", "accepted", "cancelling", "completed", "cancelled", "rejected", "expired"}
+        {
+            "delivered",
+            "accepted",
+            "cancelling",
+            "completed",
+            "cancelled",
+            "rejected",
+            "expired",
+        }
     ),
-    "accepted": frozenset({"accepted", "cancelling", "completed", "cancelled", "expired"}),
-    "cancelling": frozenset({"cancelling", "completed", "cancelled", "rejected", "expired"}),
+    "accepted": frozenset(
+        {"accepted", "cancelling", "completed", "cancelled", "expired"}
+    ),
+    "cancelling": frozenset(
+        {"cancelling", "completed", "cancelled", "rejected", "expired"}
+    ),
     "completed": frozenset({"completed"}),
     "rejected": frozenset({"rejected"}),
     "expired": frozenset({"expired", "completed", "cancelled"}),
@@ -153,7 +165,13 @@ class ActionJournalEntryV1(BaseModel):
         if acknowledgement.action_id != self.action_id:
             raise ValueError("command_ack action_id does not match command")
         if acknowledgement.status in _ACCEPTED_ACK_STATUSES:
-            if self.phase not in {"accepted", "cancelling", "completed", "cancelled", "expired"}:
+            if self.phase not in {
+                "accepted",
+                "cancelling",
+                "completed",
+                "cancelled",
+                "expired",
+            }:
                 raise ValueError("accepted command_ack is inconsistent with journal phase")
         elif acknowledgement.status == "expired":
             if self.phase != "expired":
@@ -212,6 +230,10 @@ class ActionJournalEntryV1(BaseModel):
             raise ValueError("result_payload_sha256 does not match result")
         if self.phase not in {"completed", "cancelled"}:
             raise ValueError("persisted result requires completed or cancelled phase")
+        if self.phase == "cancelled" and self.result.outcome.value != "cancelled":
+            raise ValueError("cancelled phase requires cancelled result outcome")
+        if self.phase == "completed" and self.result.outcome.value == "cancelled":
+            raise ValueError("cancelled result outcome requires cancelled phase")
         if (self.result_ack_status is None) != (self.result_ack_sent_at_ms is None):
             raise ValueError("result ACK status and timestamp must be present together")
         if self.result_ack_status not in {None, "accepted", "duplicate"}:
@@ -231,8 +253,10 @@ class ActionJournalEntryV1(BaseModel):
         elif self.phase == "delivered":
             if self.delivery_count == 0 or self.command_ack is not None:
                 raise ValueError("delivered phase requires delivery and no command ACK")
-            if self.result is not None:
-                raise ValueError("delivered phase cannot contain result state")
+            if self.cancel_envelope is not None or self.result is not None:
+                raise ValueError(
+                    "delivered phase cannot contain cancellation or result state"
+                )
         elif self.phase == "accepted":
             if (
                 self.delivery_count == 0
@@ -240,8 +264,8 @@ class ActionJournalEntryV1(BaseModel):
                 or self.command_ack.status not in _ACCEPTED_ACK_STATUSES
             ):
                 raise ValueError("accepted phase requires accepted or duplicate command ACK")
-            if self.result is not None:
-                raise ValueError("accepted phase cannot contain result state")
+            if self.cancel_envelope is not None or self.result is not None:
+                raise ValueError("accepted phase cannot contain cancellation or result state")
         elif self.phase == "cancelling":
             if self.cancel_envelope is None or self.result is not None:
                 raise ValueError("cancelling phase requires cancel envelope and no result")
@@ -347,7 +371,10 @@ def validate_journal_transition(
         )
     if existing.command_ack is not None and candidate.command_ack != existing.command_ack:
         raise ActionJournalConflictError("durable command acknowledgement is immutable")
-    if existing.cancel_envelope is not None and candidate.cancel_envelope != existing.cancel_envelope:
+    if (
+        existing.cancel_envelope is not None
+        and candidate.cancel_envelope != existing.cancel_envelope
+    ):
         raise ActionJournalConflictError("durable cancel envelope is immutable")
     if existing.cancel_ack is not None and candidate.cancel_ack != existing.cancel_ack:
         raise ActionJournalConflictError("durable cancel acknowledgement is immutable")
@@ -367,7 +394,9 @@ def validate_journal_transition(
                 or candidate.result_ack_sent_at_ms < existing.result_ack_sent_at_ms
             )
         ):
-            raise ActionJournalConflictError("durable result ACK timestamp cannot move backwards")
+            raise ActionJournalConflictError(
+                "durable result ACK timestamp cannot move backwards"
+            )
     elif candidate.result_ack_status is not None or candidate.result_ack_sent_at_ms is not None:
         if candidate.result is None:
             raise ActionJournalConflictError("result ACK cannot precede durable result")
@@ -398,18 +427,20 @@ class InMemoryActionJournal:
         for candidate_key, candidate in self._entries.items():
             if candidate_key == key:
                 continue
-            if candidate.device_id == validated.device_id:
-                if candidate.command_id == validated.command_id:
-                    raise ActionJournalConflictError(
-                        "command_id already belongs to another durable action"
-                    )
-                if (
-                    candidate.command_envelope.message_id
-                    == validated.command_envelope.message_id
-                ):
-                    raise ActionJournalConflictError(
-                        "command envelope message_id already belongs to another durable action"
-                    )
+            if (
+                candidate.device_id == validated.device_id
+                and candidate.command_id == validated.command_id
+            ):
+                raise ActionJournalConflictError(
+                    "command_id already belongs to another durable action"
+                )
+            if (
+                candidate.command_envelope.message_id
+                == validated.command_envelope.message_id
+            ):
+                raise ActionJournalConflictError(
+                    "command envelope message_id already belongs to another durable action"
+                )
             if (
                 candidate.result_envelope_id is not None
                 and candidate.result_envelope_id == validated.result_envelope_id
@@ -524,7 +555,9 @@ class SQLiteActionJournal:
             try:
                 with self._transaction():
                     existing_row = self._connection.execute(
-                        self._select_rows_sql(where_clause="WHERE device_id = ? AND action_id = ?"),
+                        self._select_rows_sql(
+                            where_clause="WHERE device_id = ? AND action_id = ?"
+                        ),
                         (str(validated.device_id), str(validated.action_id)),
                     ).fetchone()
                     if existing_row is not None:
@@ -720,7 +753,9 @@ class SQLiteActionJournal:
             str(row["action_id"]),
             str(row["command_id"]),
             str(row["command_message_id"]),
-            str(row["result_message_id"]) if row["result_message_id"] is not None else None,
+            str(row["result_message_id"])
+            if row["result_message_id"] is not None
+            else None,
             str(row["phase"]),
             int(row["terminal"]),
             int(row["created_at_ms"]),
