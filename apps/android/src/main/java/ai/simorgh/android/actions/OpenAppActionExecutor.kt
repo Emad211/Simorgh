@@ -408,16 +408,13 @@ class OpenAppActionExecutor(
             "${launch.adapter}: ${launch.detail}; ${evidence.detail}"
             ).take(MAX_DETAIL_LENGTH)
         return when (evidence.status) {
-            PostActionEvidenceStatus.SATISFIED -> result(
+            PostActionEvidenceStatus.SATISFIED -> satisfiedResult(
                 command = command,
-                outcome = ActionOutcome.SUCCEEDED,
-                failureCode = ActionFailureCode.NONE,
+                lease = lease,
+                evidence = evidence,
                 startedAtMs = startedAtMs,
                 finishedAtMs = finishedAtMs,
-                attempts = 1,
                 before = currentlyAcknowledged.toReference(),
-                after = evidence.observation?.toReference(),
-                predicates = evidence.evaluation?.evidence.orEmpty(),
                 detail = detail,
             )
 
@@ -472,6 +469,55 @@ class OpenAppActionExecutor(
                 detail = detail,
             )
         }
+    }
+
+    private fun satisfiedResult(
+        command: AndroidActionCommand,
+        lease: CoreExecutionLease,
+        evidence: PostActionEvidenceResult,
+        startedAtMs: Long,
+        finishedAtMs: Long,
+        before: ObservationReference,
+        detail: String,
+    ): AndroidActionResult {
+        val after = evidence.observation
+            ?: return result(
+                command = command,
+                outcome = ActionOutcome.BLOCKED,
+                failureCode = ActionFailureCode.POSTCONDITION_FAILED,
+                startedAtMs = startedAtMs,
+                finishedAtMs = finishedAtMs,
+                attempts = 1,
+                before = before,
+                predicates = evidence.evaluation?.evidence.orEmpty(),
+                detail = "$detail; satisfied status omitted acknowledged after evidence",
+            )
+        if (!lease.wasEvidenceCapturedBeforeDeadline(after.capturedAtElapsedRealtimeMs)) {
+            return result(
+                command = command,
+                outcome = ActionOutcome.TIMED_OUT,
+                failureCode = ActionFailureCode.OBSERVATION_TIMEOUT,
+                startedAtMs = startedAtMs,
+                finishedAtMs = finishedAtMs,
+                attempts = 1,
+                before = before,
+                after = after.toReference(),
+                predicates = evidence.evaluation?.evidence.orEmpty(),
+                detail = "$detail; successful evidence was captured outside the action deadline",
+            )
+        }
+        return result(
+            command = command,
+            outcome = ActionOutcome.SUCCEEDED,
+            failureCode = ActionFailureCode.NONE,
+            startedAtMs = startedAtMs,
+            finishedAtMs = finishedAtMs,
+            attempts = 1,
+            before = before,
+            after = after.toReference(),
+            predicates = evidence.evaluation?.evidence.orEmpty(),
+            detail = detail,
+        )
     }
 
     private fun validatePrecondition(
