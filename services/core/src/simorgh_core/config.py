@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     simorgh_port: int = 8080
     simorgh_device_token: SecretStr | None = None
     simorgh_operator_token: SecretStr | None = None
+    simorgh_action_journal_path: str = Field(
+        default=".simorgh/action-journal.sqlite3",
+        min_length=1,
+        max_length=4_096,
+    )
+    simorgh_action_journal_max_terminal_records: int = Field(
+        default=256,
+        ge=0,
+        le=100_000,
+    )
 
     avalai_api_key: SecretStr | None = None
     avalai_base_url: str = "https://api.avalai.ir/v1"
