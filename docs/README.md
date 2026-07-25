@@ -13,17 +13,19 @@ The implementation order is authoritative. A later product surface must not bypa
 
 ## Specialist agents and personal colleague runtime
 
-- [`AGENT_RUNTIME.md`](AGENT_RUNTIME.md) — Persian-first deterministic routing, specialist policy, budgets, idempotency, submit/status/cancel API, model/tool gateways, traces and current limitations.
+- [`AGENT_RUNTIME.md`](AGENT_RUNTIME.md) — Persian-first deterministic routing, specialist policy, budgets, durable invocation behavior, model/tool gateways, traces and current limitations.
 - [`AGENT_TASK_STORE.md`](AGENT_TASK_STORE.md) — durable SQLite task identity, replay, cancellation, crash recovery, integrity, retention, backup and incident handling.
+- [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current specialist runtime selects one primary owner. PR #37 adds durable task identity and routing state, but specialist execution and typed results remain subsequent Phase 1 steps.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 adds the durable invocation authority used by governed model and structured read-tool gateways. Specialist execution and typed artifacts remain later Phase 1 steps.
 
-Common explicit and deterministic Persian routes use zero model calls. Ambiguous requests require clarification unless an explicitly configured one-call classifier has sufficient budget.
+Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
 Current roadmap dependencies:
 
 - issue #36 — complete durable native runtime and one GitHub read workflow;
+- issue #38 / PR #39 — durable invocation identity and restart replay;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
@@ -79,18 +81,21 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0011 — durable Core Android action journal;
 - ADR 0012 — bounded Core clock normalization on Android;
 - ADR 0013 — native specialist-agent runtime and deterministic cost governance;
-- ADR 0014 — crash-safe durable agent-task identity and routing recovery.
+- ADR 0014 — crash-safe durable agent-task identity and routing recovery;
+- ADR 0015 — durable invocation identity, reservation and exact restart replay.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
-## Credential boundaries
+## Credential and private-data boundaries
 
 - AvalAI and other model-provider credentials belong only on Simorgh Core.
 - `SIMORGH_DEVICE_TOKEN` authenticates the private Android WebSocket.
 - `SIMORGH_OPERATOR_TOKEN` authenticates trusted action, refresh and specialist-task APIs.
 - Provider, operator, and device credentials are not interchangeable.
 - Accessibility snapshots and refresh messages never carry model-provider credentials.
-- Android action and agent-task stores contain operational state but never provider keys or device/operator bearer tokens.
+- Android action, task and invocation stores contain operational state but never provider keys or device/operator bearer tokens.
+- Invocation identity stores input fingerprints rather than prompts/tool arguments; completed typed result payloads remain durable operational data and must be minimized by contract.
+- Provider/tool exception messages are not persisted; only bounded typed failure metadata is retained.
 - Clock probes contain protocol identity and timing metadata only; they never contain credentials.
 - Agent traces reject configured secret/raw-content metadata and never include prompts or tool arguments by default.
 - Future MCP credentials remain Core-side secret references and are never copied into specialist tasks or Android payloads.
@@ -113,8 +118,8 @@ Do not claim Galaxy A53 or One UI validation until the physical protocol is exec
 For specialist-agent changes, distinguish:
 
 1. pure contract, registry and deterministic routing tests;
-2. fake provider/tool budget and replay tests with zero external spending;
-3. authenticated API and restart/recovery tests;
+2. fake provider/tool budget and restart-replay tests with zero external spending;
+3. authenticated API and storage recovery tests;
 4. optional live-provider staging validation under an explicit budget;
 5. separately reviewed connector and mutation-executor validation.
 
@@ -123,16 +128,20 @@ For specialist-agent changes, distinguish:
 - Observation refresh is safe to recreate after Core restart because it has no external side effect.
 - Android action execution has an encrypted device-side write-ahead ledger.
 - Core persists Android action identity, delivery uncertainty, cancellation, result identity, and ACK bookkeeping in a versioned SQLite journal.
-- Core persists agent task identity, routing state, cancellation and expiry in a separate versioned SQLite store.
+- Core persists agent task identity, routing state, cancellation and expiry in a separate SQLite task store.
+- Core persists model/tool/future-specialist invocation identity, pre-call usage reservation, terminal state and typed result in a separate SQLite invocation store.
 - A routing claim interrupted by Core restart becomes `unknown`; it is not automatically routed again.
-- A command or provider/tool invocation that may already have crossed an external boundary is not blindly redispatched after restart.
-- An exact Android result persisted before ACK can be acknowledged as duplicate after restart.
+- A pending/reserved invocation interrupted by restart becomes `unknown`; an uncertain mutation becomes `unknown_side_effect`.
+- Completed model/tool invocations replay without another provider/tool call or new budget reservation.
+- Crash-recovered committed invocation usage is reconciled into retained parent task budgets without double counting.
+- A command or invocation that may already have crossed an external boundary is not blindly redispatched after restart.
+- The ungoverned direct model endpoint is disabled with HTTP 410.
 - New `open_app` commands require a stable bounded Core clock estimate and fail closed when uncertainty consumes the remaining deadline.
 - Local observation age, capture ordering, launch ordering, and action duration use `SystemClock.elapsedRealtime()` rather than the adjustable phone wall clock.
 - Each physical WebSocket reconnect creates a new clock generation; an old estimate cannot authorize a launch on the new socket.
-- The complete observation registry is still process-local; a successful UI result not validated before Core restart may lack old evidence and must fail closed.
-- Agent invocation identities and traces remain process-local until later Phase 1 steps.
-- Model/tool usage is reserved before invocation and reconciled afterwards; unresolved recovery reservations are conservatively committed.
+- The complete observation registry and traces remain process-local and fail closed when evidence is unavailable.
+- Model/tool usage is reserved before invocation and reconciled afterwards; unresolved durable reservations are conservatively committed.
+- Retry is not enabled by the durable invocation schema; a future retry requires a new identity and explicit budget.
 - Deterministic routing and execution-critical Android infrastructure remain model-free.
 - Planning output is not permission, current-state evidence or proof of side-effect completion.
 
