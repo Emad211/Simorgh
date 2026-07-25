@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from threading import RLock
 from uuid import UUID, uuid4
@@ -83,7 +84,7 @@ class BudgetAccount:
         *,
         request_id: UUID,
         limits: TaskBudget,
-        monotonic_millis: callable[[], int] | None = None,
+        monotonic_millis: Callable[[], int] | None = None,
     ) -> None:
         self._request_id = request_id
         self._limits = limits
@@ -133,17 +134,18 @@ class BudgetAccount:
     ) -> BudgetSnapshot:
         with self._lock:
             self._require_not_cancelled_locked()
-            reservation = self._reservations.pop(reservation_id, None)
+            reservation = self._reservations.get(reservation_id)
             if reservation is None:
                 raise BudgetReservationNotFoundError(
                     f"budget reservation {reservation_id} does not exist"
                 )
             self._validate_kind_usage(kind=reservation.kind, usage=actual_usage)
+            self._reservations.pop(reservation_id)
             candidate = self._committed.plus(actual_usage)
             try:
                 self._ensure_within_limits_locked(candidate)
             except BudgetExceededError as exc:
-                # The external call may already have occurred. Record the truthful actual usage,
+                # The external call may already have occurred. Record truthful actual usage,
                 # mark the account exhausted, and prevent every later invocation.
                 self._committed = candidate
                 self._exhausted_dimension = exc.dimension
