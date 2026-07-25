@@ -163,9 +163,18 @@ def test_gateway_reserves_before_provider_and_selects_cheapest_sufficient_model(
 
 def test_model_trace_records_cost_without_prompt_or_output_content() -> None:
     request = _request()
+    private_output = "PRIVATE_MODEL_OUTPUT_7f2948d28d"
     trace_sink = InMemoryTraceSink()
     gateway = BudgetedModelGateway(
-        provider=RecordingProvider(),
+        provider=RecordingProvider(
+            output=ModelOutput(
+                text=private_output,
+                model="cheap-fast",
+                provider="fake",
+                request_id="provider-request-private",
+                usage={"input_tokens": 12, "output_tokens": 4},
+            )
+        ),
         provider_id="fake",
         catalog=_catalog(),
         invocation_store=InMemoryInvocationStore(),
@@ -188,7 +197,7 @@ def test_model_trace_records_cost_without_prompt_or_output_content() -> None:
     encoded = "\n".join(event.model_dump_json() for event in events)
     assert request.input_text not in encoded
     assert request.instructions not in encoded
-    assert result.text not in encoded
+    assert private_output not in encoded
 
 
 def test_exact_retry_replays_completed_model_result_without_provider_cost() -> None:
