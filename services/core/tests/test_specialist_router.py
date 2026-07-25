@@ -20,8 +20,10 @@ from simorgh_core.agents.contracts import (
     UsageVector,
 )
 from simorgh_core.agents.defaults import default_specialist_registry
+from simorgh_core.agents.model_gateway import ModelGatewayError, ModelOutputContractError
 from simorgh_core.agents.registry import SpecialistRegistry
 from simorgh_core.agents.router import SpecialistRouter, normalize_routing_text
+from simorgh_core.agents.tracing import InMemoryTraceSink, TraceEventKind
 
 
 def _task(
@@ -30,6 +32,7 @@ def _task(
     explicit_task_kind: TaskKind | None = None,
     execution_mode: ExecutionMode = ExecutionMode.PLAN,
     risk_class: RiskClass | None = None,
+    budget: TaskBudget | None = None,
 ) -> TaskEnvelope:
     effective_risk = risk_class
     if effective_risk is None:
@@ -47,7 +50,7 @@ def _task(
         explicit_task_kind=explicit_task_kind,
         risk_class=effective_risk,
         execution_mode=execution_mode,
-        budget=TaskBudget(max_model_calls=1),
+        budget=budget or TaskBudget(max_model_calls=1),
     )
 
 
@@ -124,6 +127,53 @@ def test_arabic_keyboard_variants_normalize_to_persian_routing_text() -> None:
     assert decision.model_calls == 0
 
 
+def test_equal_rule_score_uses_unique_priority_without_model_call() -> None:
+    registry = SpecialistRegistry(
+        (
+            _definition(agent_id="alpha.planner", phrase="پروژه", priority=10),
+            _definition(agent_id="beta.planner", phrase="پروژه", priority=20),
+        )
+    )
+    classifier = RecordingClassifier(
+        AgentClassification(
+            selected_agent_id="beta.planner",
+            confidence_bps=9_000,
+            reason="should not be called",
+        )
+    )
+    task = _task("برای پروژه برنامه بساز")
+
+    decision = asyncio.run(
+        SpecialistRouter(registry=registry, classifier=classifier).route(
+            task=task,
+            budget=_budget(task),
+        )
+    )
+
+    assert decision.state == RoutingState.ROUTED
+    assert decision.selected_agent_id == "alpha.planner"
+    assert decision.model_calls == 0
+    assert classifier.calls == 0
+
+
+def test_routing_phrase_does_not_match_inside_larger_token() -> None:
+    registry = SpecialistRegistry(
+        (
+            _definition(agent_id="alpha.planner", phrase="api"),
+            _definition(agent_id="beta.planner", phrase="other"),
+        )
+    )
+    task = _task("rapidly prepare a plan")
+
+    decision = asyncio.run(
+        SpecialistRouter(registry=registry).route(task=task, budget=_budget(task))
+    )
+
+    assert decision.state == RoutingState.NEEDS_CLARIFICATION
+    assert decision.selected_agent_id is None
+    assert decision.model_calls == 0
+
+
 def test_ambiguous_rules_use_at_most_one_classifier_call_and_one_primary_owner() -> None:
     registry = SpecialistRegistry(
         (
@@ -184,6 +234,81 @@ def test_low_classifier_confidence_requests_clarification_instead_of_fanout() ->
     assert classifier.calls == 1
 
 
+def test_classifier_budget_failure_reports_zero_actual_model_calls() -> None:
+    registry = SpecialistRegistry(
+        (
+            _definition(agent_id="alpha.planner", phrase="پروژه"),
+            _definition(agent_id="beta.planner", phrase="پروژه"),
+        )
+    )
+    task = _task(
+        "برای این پروژه کمک کن",
+        budget=TaskBudget(max_model_calls=0),
+    )
+    classifier = RecordingClassifier(
+        AgentClassification(
+            selected_agent_id="alpha.planner",
+            confidence_bps=8_000,
+            reason="unreachable",
+        )
+    )
+
+    decision = asyncio.run(
+        SpecialistRouter(registry=registry, classifier=classifier).route(
+            task=task,
+            budget=_budget(task),
+        )
+    )
+
+    assert decision.state == RoutingState.BUDGET_EXHAUSTED
+    assert decision.model_calls == 0
+    assert classifier.calls == 1
+
+
+def test_classifier_contract_failure_is_typed_after_one_accounted_call() -> None:
+    task = _task("برای پروژه کمک کن")
+    registry = SpecialistRegistry(
+        (
+            _definition(agent_id="alpha.planner", phrase="پروژه"),
+            _definition(agent_id="beta.planner", phrase="پروژه"),
+        )
+    )
+    classifier = ChargedRaisingClassifier(ModelOutputContractError("invalid JSON"))
+
+    decision = asyncio.run(
+        SpecialistRouter(registry=registry, classifier=classifier).route(
+            task=task,
+            budget=_budget(task),
+        )
+    )
+
+    assert decision.state == RoutingState.CONTRACT_INVALID
+    assert decision.model_calls == 1
+    assert "invalid typed result" in decision.reason
+
+
+def test_classifier_provider_failure_requests_typed_escalation() -> None:
+    task = _task("برای پروژه کمک کن")
+    registry = SpecialistRegistry(
+        (
+            _definition(agent_id="alpha.planner", phrase="پروژه"),
+            _definition(agent_id="beta.planner", phrase="پروژه"),
+        )
+    )
+    classifier = ChargedRaisingClassifier(ModelGatewayError("provider unavailable"))
+
+    decision = asyncio.run(
+        SpecialistRouter(registry=registry, classifier=classifier).route(
+            task=task,
+            budget=_budget(task),
+        )
+    )
+
+    assert decision.state == RoutingState.NEEDS_ESCALATION
+    assert decision.model_calls == 1
+    assert "provider is unavailable" in decision.reason
+
+
 def test_no_classifier_returns_clarification_without_model_cost() -> None:
     registry = SpecialistRegistry(
         (
@@ -201,6 +326,33 @@ def test_no_classifier_returns_clarification_without_model_cost() -> None:
     assert decision.state == RoutingState.NEEDS_CLARIFICATION
     assert decision.model_calls == 0
     assert budget.snapshot().committed.model_calls == 0
+
+
+def test_router_trace_contains_cost_and_decision_but_not_raw_input() -> None:
+    trace_sink = InMemoryTraceSink()
+    task = _task(
+        "ریپازیتوری بسیار خصوصی من را در GitHub بررسی کن",
+        explicit_task_kind=TaskKind.REPOSITORY_RESEARCH,
+        execution_mode=ExecutionMode.READ_ONLY,
+    )
+
+    decision = asyncio.run(
+        SpecialistRouter(
+            registry=default_specialist_registry(),
+            trace_sink=trace_sink,
+        ).route(task=task, budget=_budget(task))
+    )
+    events = trace_sink.for_request(task.request_id)
+
+    assert decision.selected_agent_id == "github.read"
+    assert [event.kind for event in events] == [
+        TraceEventKind.ROUTING_STARTED,
+        TraceEventKind.ROUTING_COMPLETED,
+    ]
+    assert events[-1].usage.model_calls == 0
+    encoded = "\n".join(event.model_dump_json() for event in events)
+    assert task.input_text not in encoded
+    assert "raw_input" not in encoded
 
 
 def test_execute_mode_cannot_route_to_proposal_only_mobile_agent() -> None:
@@ -222,7 +374,12 @@ def test_execute_mode_cannot_route_to_proposal_only_mobile_agent() -> None:
     assert decision.model_calls == 0
 
 
-def _definition(*, agent_id: str, phrase: str) -> SpecialistDefinition:
+def _definition(
+    *,
+    agent_id: str,
+    phrase: str,
+    priority: int = 100,
+) -> SpecialistDefinition:
     return SpecialistDefinition(
         agent_id=agent_id,
         version="1.0.0",
@@ -242,7 +399,7 @@ def _definition(*, agent_id: str, phrase: str) -> SpecialistDefinition:
                 weight=10,
             ),
         ),
-        routing_priority=100,
+        routing_priority=priority,
     )
 
 
@@ -282,3 +439,37 @@ class RecordingClassifier:
             ),
         )
         return self.result
+
+
+class ChargedRaisingClassifier:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def classify(
+        self,
+        *,
+        task: TaskEnvelope,
+        candidates: Sequence[SpecialistDefinition],
+        budget: BudgetAccount,
+        invocation_id: UUID,
+    ) -> AgentClassification:
+        del task, candidates, invocation_id
+        reservation = budget.reserve(
+            kind=ReservationKind.MODEL,
+            usage=UsageVector(
+                model_calls=1,
+                input_tokens=10,
+                output_tokens=10,
+                estimated_cost_microusd=10,
+            ),
+        )
+        budget.reconcile(
+            reservation_id=reservation.reservation_id,
+            actual_usage=UsageVector(
+                model_calls=1,
+                input_tokens=10,
+                output_tokens=1,
+                estimated_cost_microusd=5,
+            ),
+        )
+        raise self._error
