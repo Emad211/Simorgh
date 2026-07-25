@@ -5,9 +5,14 @@ import ai.simorgh.android.protocol.ActionCommandAckStatus
 import ai.simorgh.android.protocol.ActionResultAckStatus
 import ai.simorgh.android.protocol.DeviceActionCancelPayload
 import ai.simorgh.android.protocol.DeviceActionResultAckPayload
+import ai.simorgh.android.time.CoreClock
+import ai.simorgh.android.time.CoreClockBus
+import ai.simorgh.android.time.CoreExecutionClockFailureKind
+import ai.simorgh.android.time.CoreExecutionLeaseStart
+import ai.simorgh.android.time.LegacyWallClockCoreClock
+import ai.simorgh.android.time.beginExecutionLease
 import java.security.MessageDigest
 import java.util.UUID
-
 
 data class ActionCommandReceipt(
     val status: ActionCommandAckStatus,
@@ -24,9 +29,24 @@ class AndroidActionRouter(
     private val ledger: ActionLedger,
     private val handlerProvider: () -> AndroidActionHandler? = AndroidActionHandlerRegistry::current,
     private val resultEmitter: (PendingActionResultDelivery) -> Unit,
-    private val nowMillis: () -> Long = System::currentTimeMillis,
     private val eventListener: (String) -> Unit = {},
+    private val coreClock: CoreClock = CoreClockBus,
 ) {
+    /** Compatibility constructor for deterministic JVM fixtures using one synthetic time source. */
+    constructor(
+        ledger: ActionLedger,
+        handlerProvider: () -> AndroidActionHandler? = AndroidActionHandlerRegistry::current,
+        resultEmitter: (PendingActionResultDelivery) -> Unit,
+        nowMillis: () -> Long,
+        eventListener: (String) -> Unit = {},
+    ) : this(
+        ledger = ledger,
+        handlerProvider = handlerProvider,
+        resultEmitter = resultEmitter,
+        eventListener = eventListener,
+        coreClock = LegacyWallClockCoreClock(nowMillis),
+    )
+
     private val lock = Any()
     private var activeInProcess: PersistedActionEntry? = null
 
@@ -49,7 +69,6 @@ class AndroidActionRouter(
                 commandEnvelopeId = commandEnvelopeId,
                 command = command,
                 commandHash = commandHash,
-                now = nowMillis(),
             )
         }
 
@@ -146,7 +165,6 @@ class AndroidActionRouter(
         commandEnvelopeId: String,
         command: AndroidActionCommand,
         commandHash: String,
-        now: Long,
     ): CommandPlan {
         when (val loaded = ledger.load()) {
             is ActionLedgerLoadResult.Corrupt -> return CommandPlan.Return(
@@ -161,7 +179,7 @@ class AndroidActionRouter(
             is ActionLedgerLoadResult.Loaded -> {
                 val entry = loaded.entry
                 if (entry.matches(commandEnvelopeId, command, commandHash)) {
-                    return planMatchingCommand(entry, now)
+                    return planMatchingCommand(entry)
                 }
 
                 if (entry.phase == ActionLedgerPhase.ACTIVE) {
@@ -186,13 +204,29 @@ class AndroidActionRouter(
             ActionLedgerLoadResult.Empty -> Unit
         }
 
-        if (command.deadlineAtMs <= now) {
-            return CommandPlan.Return(
-                receipt = ActionCommandReceipt(
-                    status = ActionCommandAckStatus.EXPIRED,
-                    detail = "command deadline elapsed before Android acceptance",
-                ),
+        when (
+            val clockAcceptance = coreClock.beginExecutionLease(
+                issuedAtCoreTimeMs = command.issuedAtMs,
+                deadlineAtCoreTimeMs = command.deadlineAtMs,
             )
+        ) {
+            is CoreExecutionLeaseStart.Available -> Unit
+            is CoreExecutionLeaseStart.Unavailable -> {
+                val expired = clockAcceptance.kind == CoreExecutionClockFailureKind.EXPIRED
+                return CommandPlan.Return(
+                    receipt = ActionCommandReceipt(
+                        status = if (expired) {
+                            ActionCommandAckStatus.EXPIRED
+                        } else {
+                            ActionCommandAckStatus.REJECTED
+                        },
+                        detail = (
+                            "Core clock rejected Android command acceptance: " +
+                                clockAcceptance.detail
+                            ).take(MAX_DETAIL_LENGTH),
+                    ),
+                )
+            }
         }
 
         val handler = handlerProvider()
@@ -219,7 +253,6 @@ class AndroidActionRouter(
 
     private fun planMatchingCommand(
         entry: PersistedActionEntry,
-        now: Long,
     ): CommandPlan {
         if (entry.phase == ActionLedgerPhase.COMPLETED) {
             return CommandPlan.Return(
@@ -239,7 +272,7 @@ class AndroidActionRouter(
             )
         }
 
-        val recovered = recoveryBlockedResult(entry, now)
+        val recovered = recoveryBlockedResult(entry)
         ledger.save(recovered)
         activeInProcess = null
         return CommandPlan.Return(
@@ -341,7 +374,7 @@ class AndroidActionRouter(
 
         val active = activeInProcess
         if (active == null || !active.sameIdentity(entry)) {
-            val recovered = recoveryBlockedResult(entry, nowMillis())
+            val recovered = recoveryBlockedResult(entry)
             ledger.save(recovered)
             activeInProcess = null
             return CancellationPlan.Return(
@@ -421,8 +454,10 @@ class AndroidActionRouter(
 
     private fun recoveryBlockedResult(
         entry: PersistedActionEntry,
-        now: Long,
     ): PersistedActionEntry {
+        val now = coreClock.estimatedCoreTimeMs()
+            ?.coerceAtLeast(entry.command.issuedAtMs)
+            ?: entry.command.issuedAtMs.coerceAtLeast(0)
         val result = AndroidActionResult(
             commandId = entry.command.commandId,
             actionId = entry.command.actionId,
