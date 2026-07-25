@@ -155,12 +155,16 @@ def validate_task_store_transition(
             "invalid durable agent-task phase transition "
             f"{existing.record.phase.value} -> {candidate.record.phase.value}"
         )
-    if existing.record.routing_decision is not None:
-        if candidate.record.routing_decision != existing.record.routing_decision:
-            raise AgentTaskStoreConflictError("durable routing decision is immutable")
-    if existing.record.cancel_reason is not None:
-        if candidate.record.cancel_reason != existing.record.cancel_reason:
-            raise AgentTaskStoreConflictError("durable cancellation reason is immutable")
+    if (
+        existing.record.routing_decision is not None
+        and candidate.record.routing_decision != existing.record.routing_decision
+    ):
+        raise AgentTaskStoreConflictError("durable routing decision is immutable")
+    if (
+        existing.record.cancel_reason is not None
+        and candidate.record.cancel_reason != existing.record.cancel_reason
+    ):
+        raise AgentTaskStoreConflictError("durable cancellation reason is immutable")
 
     existing_budget = existing.record.budget
     candidate_budget = candidate.record.budget
@@ -448,7 +452,11 @@ class SQLiteAgentTaskStore:
                 """
             )
             row = self._connection.execute(
-                "SELECT value FROM agent_task_store_metadata WHERE key = 'schema_version'"
+                """
+                SELECT value
+                FROM agent_task_store_metadata
+                WHERE key = 'schema_version'
+                """
             ).fetchone()
             if row is None:
                 self._connection.execute(
@@ -541,21 +549,21 @@ class SQLiteAgentTaskStore:
         return entry
 
     def _prune_terminal_locked(self) -> None:
-        if self._max_terminal_records < 0:
-            return
-        self._connection.execute(
+        rows = self._connection.execute(
             """
-            DELETE FROM agent_task_records
-            WHERE request_id IN (
-                SELECT request_id
-                FROM agent_task_records
-                WHERE terminal = 1
-                ORDER BY updated_at_ms DESC, request_id DESC
-                LIMIT -1 OFFSET ?
-            )
+            SELECT request_id
+            FROM agent_task_records
+            WHERE terminal = 1
+            ORDER BY updated_at_ms DESC, request_id DESC
+            LIMIT -1 OFFSET ?
             """,
             (self._max_terminal_records,),
-        )
+        ).fetchall()
+        for row in rows:
+            self._connection.execute(
+                "DELETE FROM agent_task_records WHERE request_id = ?",
+                (row["request_id"],),
+            )
 
     def _verify_database_integrity(self) -> None:
         try:
@@ -572,8 +580,8 @@ class SQLiteAgentTaskStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
+        self._connection.execute("BEGIN IMMEDIATE")
         try:
-            self._connection.execute("BEGIN IMMEDIATE")
             yield
         except BaseException:
             self._connection.execute("ROLLBACK")
