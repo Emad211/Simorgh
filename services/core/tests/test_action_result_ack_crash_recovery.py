@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
@@ -108,6 +109,7 @@ def test_result_replay_is_duplicate_after_ack_socket_crash(
 
     original_send = DeviceSession.send_envelope
     fail_next_result_ack = True
+    result_ack_attempted = Event()
 
     async def crash_before_result_ack(
         session: DeviceSession,
@@ -116,6 +118,7 @@ def test_result_replay_is_duplicate_after_ack_socket_crash(
         nonlocal fail_next_result_ack
         if envelope.type == "device.action_result_ack" and fail_next_result_ack:
             fail_next_result_ack = False
+            result_ack_attempted.set()
             raise WebSocketDisconnect(code=1006, reason="fixture Core crash before ACK")
         await original_send(session, envelope)
 
@@ -158,8 +161,7 @@ def test_result_replay_is_duplicate_after_ack_socket_crash(
             payload=result.model_dump(mode="json"),
         )
         first_socket.send_text(result_envelope.model_dump_json())
-        with pytest.raises(WebSocketDisconnect):
-            first_socket.receive_text()
+        assert result_ack_attempted.wait(timeout=2.0)
 
         completed = first_client.get(
             f"/v1/devices/{device_id}/actions/{command.action_id}",
