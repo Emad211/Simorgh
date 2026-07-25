@@ -17,6 +17,7 @@ from simorgh_core.agents.tool_gateway import (
     ToolEffect,
     ToolMutationBlockedError,
 )
+from simorgh_core.agents.tracing import InMemoryTraceSink, TraceEventKind
 
 
 class RecordingInvoker:
@@ -64,10 +65,12 @@ def test_allowed_read_tool_is_budgeted_and_exact_retry_is_replayed() -> None:
         arguments={"query": "Simorgh"},
     )
     invoker = RecordingInvoker()
+    trace_sink = InMemoryTraceSink()
     gateway = BudgetedToolGateway(
         registry=default_specialist_registry(),
         invoker=invoker,
         invocation_store=InMemoryInvocationStore(),
+        trace_sink=trace_sink,
     )
     budget = _budget(request_id)
 
@@ -79,15 +82,29 @@ def test_allowed_read_tool_is_budgeted_and_exact_retry_is_replayed() -> None:
     assert replay.replayed
     assert replay.payload == first.payload
     assert budget.snapshot().committed.tool_calls == 1
+    events = trace_sink.for_request(request_id)
+    assert [event.kind for event in events] == [
+        TraceEventKind.BUDGET_RESERVED,
+        TraceEventKind.TOOL_STARTED,
+        TraceEventKind.BUDGET_RECONCILED,
+        TraceEventKind.TOOL_COMPLETED,
+        TraceEventKind.INVOCATION_REPLAYED,
+    ]
+    assert events[-1].usage.tool_calls == 0
+    encoded = "\n".join(event.model_dump_json() for event in events)
+    assert "Simorgh" not in encoded
+    assert "Emad211/Simorgh" not in encoded
 
 
 def test_unlisted_tool_or_connector_is_rejected_before_invoker() -> None:
     request_id = uuid4()
     invoker = RecordingInvoker()
+    trace_sink = InMemoryTraceSink()
     gateway = BudgetedToolGateway(
         registry=default_specialist_registry(),
         invoker=invoker,
         invocation_store=InMemoryInvocationStore(),
+        trace_sink=trace_sink,
     )
 
     with pytest.raises(SpecialistPolicyError, match="not allowed to invoke tool"):
@@ -123,15 +140,22 @@ def test_unlisted_tool_or_connector_is_rejected_before_invoker() -> None:
             )
         )
     assert invoker.calls == 0
+    events = trace_sink.for_request(request_id)
+    assert len(events) == 2
+    assert all(event.kind == TraceEventKind.TOOL_FAILED for event in events)
+    assert all(event.outcome == "policy_blocked" for event in events)
+    assert all(event.usage.tool_calls == 0 for event in events)
 
 
 def test_planning_agent_cannot_execute_mutation_tool() -> None:
     request_id = uuid4()
     invoker = RecordingInvoker()
+    trace_sink = InMemoryTraceSink()
     gateway = BudgetedToolGateway(
         registry=default_specialist_registry(),
         invoker=invoker,
         invocation_store=InMemoryInvocationStore(),
+        trace_sink=trace_sink,
     )
 
     with pytest.raises(ToolMutationBlockedError, match="does not permit mutation"):
@@ -151,3 +175,7 @@ def test_planning_agent_cannot_execute_mutation_tool() -> None:
             )
         )
     assert invoker.calls == 0
+    event = trace_sink.for_request(request_id).single()
+    assert event.kind == TraceEventKind.TOOL_FAILED
+    assert event.outcome == "policy_blocked"
+    assert event.usage.tool_calls == 0
