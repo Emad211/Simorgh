@@ -69,6 +69,7 @@ def _registration(device_id: UUID) -> ProtocolEnvelope:
                 "device.identity",
                 "android.accessibility.observe.platform",
                 "android.open_app.execution.v1",
+                "android.core_clock.bounded_estimate.v1",
                 OBSERVATION_REFRESH_CAPABILITY,
             ],
         ),
