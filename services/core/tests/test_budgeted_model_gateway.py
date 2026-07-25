@@ -15,8 +15,10 @@ from simorgh_core.agents.model_gateway import (
     ModelCatalog,
     ModelGatewayError,
     ModelInvocationTerminalError,
+    ModelOutputContractError,
     ModelSpec,
 )
+from simorgh_core.agents.tracing import InMemoryTraceSink, TraceEventKind
 from simorgh_core.providers.base import ModelOutput
 
 
@@ -159,15 +161,47 @@ def test_gateway_reserves_before_provider_and_selects_cheapest_sufficient_model(
     assert snapshot.committed.output_tokens == 4
 
 
+def test_model_trace_records_cost_without_prompt_or_output_content() -> None:
+    request = _request()
+    trace_sink = InMemoryTraceSink()
+    gateway = BudgetedModelGateway(
+        provider=RecordingProvider(),
+        provider_id="fake",
+        catalog=_catalog(),
+        invocation_store=InMemoryInvocationStore(),
+        trace_sink=trace_sink,
+    )
+
+    result = asyncio.run(gateway.generate(request=request, budget=_budget(request)))
+    events = trace_sink.for_request(request.request_id)
+
+    assert [event.kind for event in events] == [
+        TraceEventKind.BUDGET_RESERVED,
+        TraceEventKind.MODEL_STARTED,
+        TraceEventKind.BUDGET_RECONCILED,
+        TraceEventKind.MODEL_COMPLETED,
+    ]
+    assert events[-1].usage.model_calls == 1
+    assert events[-1].usage.input_tokens == result.input_tokens
+    assert events[-1].usage.output_tokens == result.output_tokens
+    assert events[-1].usage.estimated_cost_microusd == result.cost_microusd
+    encoded = "\n".join(event.model_dump_json() for event in events)
+    assert request.input_text not in encoded
+    assert request.instructions not in encoded
+    assert result.text not in encoded
+
+
 def test_exact_retry_replays_completed_model_result_without_provider_cost() -> None:
     request = _request()
     provider = RecordingProvider()
     store = InMemoryInvocationStore()
+    trace_sink = InMemoryTraceSink()
     gateway = BudgetedModelGateway(
         provider=provider,
         provider_id="fake",
         catalog=_catalog(),
         invocation_store=store,
+        trace_sink=trace_sink,
     )
     budget = _budget(request)
 
@@ -179,6 +213,10 @@ def test_exact_retry_replays_completed_model_result_without_provider_cost() -> N
     assert replay.replayed
     assert replay.text == first.text
     assert budget.snapshot().committed.model_calls == 1
+    assert trace_sink.for_request(request.request_id)[-1].kind == (
+        TraceEventKind.INVOCATION_REPLAYED
+    )
+    assert trace_sink.for_request(request.request_id)[-1].usage.model_calls == 0
 
 
 def test_provider_transport_failure_commits_conservative_reservation_once() -> None:
@@ -202,6 +240,35 @@ def test_provider_transport_failure_commits_conservative_reservation_once() -> N
     assert snapshot.committed.input_tokens > 0
     assert snapshot.committed.output_tokens == 200
 
+    with pytest.raises(ModelInvocationTerminalError):
+        asyncio.run(gateway.generate(request=request, budget=budget))
+    assert provider.calls == 1
+
+
+def test_provider_identity_mismatch_is_charged_but_never_accepted() -> None:
+    request = _request()
+    provider = RecordingProvider(
+        output=ModelOutput(
+            text="untrusted output",
+            model="cheap-fast",
+            provider="unexpected-provider",
+            usage={"input_tokens": 12, "output_tokens": 4},
+        )
+    )
+    store = InMemoryInvocationStore()
+    budget = _budget(request)
+    gateway = BudgetedModelGateway(
+        provider=provider,
+        provider_id="fake",
+        catalog=_catalog(),
+        invocation_store=store,
+    )
+
+    with pytest.raises(ModelOutputContractError, match="provider identity"):
+        asyncio.run(gateway.generate(request=request, budget=budget))
+
+    assert provider.calls == 1
+    assert budget.snapshot().committed.model_calls == 1
     with pytest.raises(ModelInvocationTerminalError):
         asyncio.run(gateway.generate(request=request, budget=budget))
     assert provider.calls == 1
