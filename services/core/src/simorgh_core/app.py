@@ -25,16 +25,20 @@ from simorgh_core.providers.avalai import AvalAIProvider, MissingAvalAICredentia
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    action_journal = SQLiteActionJournal(
-        settings.simorgh_action_journal_path,
-        max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
-    )
-    task_store = SQLiteAgentTaskStore(
-        settings.simorgh_agent_task_store_path,
-        max_terminal_records=settings.simorgh_agent_task_store_max_terminal_records,
-    )
+    action_journal: SQLiteActionJournal | None = None
+    task_store: SQLiteAgentTaskStore | None = None
     action_journal_configured = False
     try:
+        action_journal = SQLiteActionJournal(
+            settings.simorgh_action_journal_path,
+            max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
+        )
+        task_store = SQLiteAgentTaskStore(
+            settings.simorgh_agent_task_store_path,
+            max_terminal_records=(
+                settings.simorgh_agent_task_store_max_terminal_records
+            ),
+        )
         await action_broker.configure_journal(
             action_journal,
             max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
@@ -42,10 +46,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         action_journal_configured = True
         await agent_task_control_plane.configure_store(task_store)
     except BaseException:
-        task_store.close()
+        if task_store is not None:
+            task_store.close()
         if action_journal_configured:
             await action_broker.reset_to_memory_journal()
-        else:
+        elif action_journal is not None:
             action_journal.close()
         raise
 
