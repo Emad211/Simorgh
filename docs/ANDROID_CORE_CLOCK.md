@@ -1,30 +1,74 @@
 # Android bounded Core clock
 
-Status: implemented for Android action admission, `open_app` execution boundaries, observation age, and result timestamps.
+Status: implemented for Android connection admission, action admission, `open_app` execution boundaries, Accessibility evidence ordering, and action-result timestamps.
 
-## Why this exists
+## Purpose
 
-Core sends absolute epoch timestamps, but an Android phone has its own independently adjustable wall clock. Simorgh must not authorize a side effect by comparing those clocks directly.
+Simorgh Core sends epoch timestamps such as:
 
-Android therefore estimates Core epoch from authenticated registration and heartbeat round trips and anchors the estimate to `SystemClock.elapsedRealtime()`.
+```text
+issued_at_ms
+deadline_at_ms
+server_time_ms
+```
+
+The Android phone has an independently adjustable wall clock. Manual changes, network correction, timezone changes, OEM resume behavior, or an inaccurate real-time clock must never authorize or invalidate a side effect.
+
+Android therefore estimates Core epoch from authenticated registration and heartbeat round trips and anchors every local duration to:
+
+```text
+SystemClock.elapsedRealtime()
+```
+
+## Specialist-agent boundary
+
+Clock normalization is deliberately split into deterministic specialists:
+
+```text
+Transport Agent
+  CoreClockSynchronizer
+  owns probes, message correlation, heartbeat sequence, socket generation
+
+Clock Agent
+  CoreClockEstimator + CoreExecutionLease
+  owns interval math, uncertainty, deadline budget, monotonic duration
+
+Execution Agent
+  AndroidActionRouter + OpenAppActionExecutor
+  owns ledger admission, evidence checks, and the launch boundary
+```
+
+None of these components calls an LLM, AvalAI, a cloud clock service, or a separate network endpoint.
+
+Operational cost:
+
+- zero model calls;
+- zero additional HTTP/WebSocket requests;
+- existing registration and heartbeat messages are reused;
+- O(1) integer arithmetic per accepted sample;
+- at most 32 pending heartbeat probes by default;
+- no clock polling loop;
+- no clock state persisted to disk;
+- no extra field in the Accessibility wire payload.
 
 ## Capability
 
-A compatible Android registration advertises:
+A clock-safe Android build advertises:
 
 ```text
 android.core_clock.bounded_estimate.v1
 ```
 
-Core requires it together with:
+Core requires both:
 
 ```text
 android.open_app.execution.v1
+android.core_clock.bounded_estimate.v1
 ```
 
-A connected phone lacking the clock capability receives the existing typed `unsupported_device_capability` response; no command envelope is created or delivered.
+for `open_app` dispatch. A connected older APK that can launch an app but still depends on device wall time receives a typed `unsupported_device_capability` response. Core does not create or deliver a command envelope.
 
-## Registration sequence
+## Registration sample
 
 ```text
 Android elapsedRealtime t0
@@ -38,42 +82,58 @@ device.registered correlation_id = R
 Android elapsedRealtime t1
 ```
 
-The possible offset is:
+Because Core produced `S` between Android send and receive boundaries, the possible Core-to-monotonic offset is:
 
 ```text
 [S - t1, S - t0]
 ```
 
-The connection becomes `CONNECTED` only after:
+At Android monotonic time `t`, Core time is bounded by:
 
-- the registration payload is valid;
-- the correlation ID matches the exact registration probe;
-- the clock sample is accepted;
+```text
+[t + lower_offset, t + upper_offset]
+```
+
+The Android connection becomes `CONNECTED` only when:
+
+- the typed registration response is valid;
+- `correlation_id` matches the exact registration message ID;
+- the sample belongs to the active physical socket generation;
+- the sample is accepted;
 - a stable bounded reading exists.
 
 ## Heartbeat maintenance
 
-Each heartbeat stores:
+Every existing application heartbeat records:
 
 ```text
 message_id
 sequence
 sent_at_elapsedRealtime
-connection_generation
+physical_socket_generation
 ```
 
-The ACK must match message ID and sequence. Pending probes are bounded to prevent unbounded memory use.
-
-Behavior:
+The ACK must match both correlation ID and sequence.
 
 | Condition | Result |
 |---|---|
-| exact correlated ACK | sample incorporated |
-| unknown or evicted old ACK | ignored, non-fatal |
-| missing/non-UUID correlation | protocol failure |
+| exact correlated ACK | incorporate sample |
+| unknown, evicted, or very late ACK | ignore, non-fatal |
+| non-UUID/missing correlation | protocol failure |
 | sequence mismatch | protocol failure |
-| old WebSocket generation | ignored |
+| callback from obsolete socket generation | ignore |
 | large Core interval discontinuity | estimate unstable until confirmation |
+
+Pending heartbeat probes are bounded. Eviction changes only clock precision; it cannot authorize a command.
+
+## Generation isolation
+
+Two generation domains are used intentionally:
+
+- a client-local physical socket generation rejects callbacks from an obsolete socket;
+- a process-wide unique estimator generation prevents one `CoreWebSocketClient` instance from invalidating a newer client instance that happened to reuse the same local counter value.
+
+Reconnect or a new client instance invalidates old probes and requires a fresh registration sample before new side effects are admitted.
 
 ## Reading fields
 
@@ -93,121 +153,164 @@ wallClockJumpCount
 observedAtElapsedRealtimeMs
 ```
 
-The midpoint is useful for timestamps and diagnostics. Authorization always uses `latestCoreTimeMs`.
+The midpoint is used for diagnostics and action-result epoch timestamps. Authorization never assumes symmetric network latency and uses the complete interval.
 
-## Deadline rule
+## Combining samples
+
+- overlapping offset intervals are intersected;
+- a small non-overlap is conservatively unioned to tolerate scheduler/timestamp granularity;
+- a large gap is a Core-clock discontinuity;
+- after a discontinuity, the replacement interval is retained but unstable;
+- a second consistent sample is required before action admission resumes.
+
+## Three-state deadline rule
+
+For deadline `D` and bounded current Core interval `[earliest, latest]`:
 
 ```text
-guaranteedRemainingMs = deadline_at_ms - latestCoreTimeMs
+D <= earliest
+    definitely expired
+
+D > earliest and D <= latest
+    expiration is uncertain; reject fail-closed
+
+D > latest
+    guaranteedRemainingMs = D - latest
 ```
 
-Execution is denied when:
+Mappings:
 
-- there is no stable non-stale estimate;
-- the command deadline is invalid;
-- the deadline elapsed;
-- the remaining midpoint budget is no larger than uncertainty;
-- the command `issued_at_ms` is later than the latest possible current Core time;
-- the WebSocket/clock generation changes during execution.
+```text
+definitely expired                → command ACK expired
+uncertainty overlaps deadline     → command ACK rejected
+clock unavailable/stale/unstable  → command ACK rejected
+issued_at later than latest       → command ACK rejected
+```
 
-Clock-related admission maps to:
+This distinction matters operationally: `expired` means every possible Core time is past the deadline; `rejected` for uncertainty means Android cannot prove enough safe time remains.
 
-- `expired` when the bounded deadline elapsed;
-- `rejected` for unavailable clock, uncertainty, future issuance, or discontinuity.
+The encrypted Android action ledger is not written when a new command fails clock admission.
 
-The Android encrypted action ledger is not written when a new command fails clock admission.
+## Action-scoped execution lease
 
-## Action lease
+The Executor creates one lease containing:
 
-The Executor creates one lease and never extends its initial local deadline.
+```text
+clock generation
+Core midpoint at lease start
+elapsedRealtime at lease start
+initial uncertainty
+Core deadline
+conservative local elapsedRealtime deadline
+```
 
 ```text
 localDeadlineElapsed =
     reading.observedAtElapsedRealtimeMs + guaranteedRemainingMs
 ```
 
-At each boundary it takes the minimum of:
+The initial local deadline is never extended. At every execution boundary Android takes the minimum of:
 
-- the initially accepted local remaining time;
-- the latest bounded Core remaining time;
-- the operation's requested timeout.
+- initial local remaining time;
+- latest bounded Core remaining time;
+- operation-requested timeout.
 
-This prevents a later noisy heartbeat from granting more execution time.
+A later heartbeat can narrow, invalidate, or expire a lease, but cannot grant extra execution time.
+
+The lease is checked:
+
+1. before fresh pre-launch capture;
+2. after evidence revalidation;
+3. immediately before `launcher.launch()`;
+4. before post-launch verification.
+
+A generation change before launch prevents the side effect. A change after Android accepted the launch cannot undo it; the result remains conservative and the command is never replayed.
+
+## Evidence deadline
+
+A delayed Core ACK must not invalidate evidence that was captured safely before the deadline. Conversely, late evidence must never become success merely because its ACK arrived.
+
+A successful after-observation must satisfy:
+
+```text
+captureElapsed >= leaseStartElapsed
+captureElapsed < conservativeLocalDeadlineElapsed
+```
+
+The comparison uses the local monotonic capture timestamp, not ACK arrival time and not Android wall time.
+
+Evidence captured exactly at or after the conservative deadline produces a timed-out result, not success.
+
+## Result timestamps
+
+```text
+started_at_ms =
+    bounded Core midpoint at lease creation,
+    never earlier than issued_at_ms
+
+finished_at_ms =
+    started_at_ms + elapsedRealtime duration
+```
+
+Later wall-clock jumps or Core-estimate changes cannot change the duration. Even the exception path after an accepted launch uses the stored action lease rather than a new estimate.
 
 ## Wall-clock changes
 
-Changing Android date, time, timezone, or automatic-time setting does not change:
+Android compares wall-clock delta against monotonic delta only for diagnostics. A large difference increments `wallClockJumpCount` and resets the diagnostic anchor.
 
-- command deadline authorization;
+Changing Android date, time, timezone, or automatic-time mode does not change:
+
+- command authorization;
 - observation age;
 - capture-after-request ordering;
 - post-launch ordering;
-- action duration;
-- result `finished_at_ms - started_at_ms`.
-
-Wall-clock jumps are recorded diagnostically at the next clock sample. They do not move the Core estimate.
+- action timeout;
+- result duration.
 
 ## Accessibility timestamps
 
-Wire field:
+Wire/audit field:
 
 ```text
 captured_at_ms
 ```
 
-Purpose:
-
-- Core audit metadata;
-- protocol compatibility;
-- persisted observation reference.
-
-Local-only field:
+Local execution field:
 
 ```text
 capturedAtElapsedRealtimeMs
 ```
 
-Purpose:
+The local field is `@Transient`:
 
-- maximum observation age;
-- fresh-capture ordering;
-- pre-launch and post-launch ordering.
+- it is not serialized;
+- it adds zero wire bytes;
+- it does not alter protocol schema `1.0`;
+- it does not alter the canonical UI fingerprint;
+- it is meaningful only within one Android boot.
 
-The local field is `@Transient`, excluded from JSON and canonical fingerprints. Production snapshot construction always stamps it from `SystemClock.elapsedRealtime()`.
+Production snapshot construction injects `SystemClock.elapsedRealtime()`. JVM tests inject deterministic clocks rather than falling back to wall time.
 
-## Reconnect behavior
-
-Every physical socket receives a new clock generation.
-
-On reconnect:
-
-1. old probes are cleared;
-2. the old estimate is invalidated;
-3. a new registration probe is measured;
-4. queued non-side-effect messages may wait;
-5. a new action is rejected until a stable estimate exists.
-
-An action lease created under an old generation cannot authorize a future launch boundary.
+Core also avoids using Android wall time to order before/after evidence. It verifies exact audit metadata, stream sequence, and Core-owned observation receive order.
 
 ## High latency
 
-High RTT directly widens the interval. This is intentional.
+High RTT widens uncertainty intentionally.
 
 Example:
 
 ```text
-RTT = 1000 ms
-uncertainty ≈ 500 ms
-remaining deadline = 400 ms
+Core interval = [10000, 11000]
+deadline = 10600
 ```
 
-The action is rejected because uncertainty is larger than the remaining safe budget.
+The deadline lies inside the interval. The action is rejected as uncertain because Android cannot prove that Core has not already passed it.
 
-Operationally, use a larger Core command deadline rather than weakening Android's uncertainty rule.
+Use a larger Core deadline for legitimate high-latency operation. Do not weaken the uncertainty rule.
 
 ## Diagnostics
 
-The Android service emits protocol events containing:
+Protocol events may report:
 
 ```text
 RTT=<milliseconds>
@@ -215,45 +318,49 @@ RTT=<milliseconds>
 sample=<count>
 ```
 
-It also reports:
+Additional diagnostics include:
 
 - device wall-clock jump;
-- Core clock discontinuity;
+- Core-clock discontinuity;
 - unknown late heartbeat probe;
 - registration/heartbeat correlation failure;
-- stale or unavailable clock at action admission.
+- stale or unavailable clock;
+- generation change before an execution boundary.
 
-These diagnostics must not include device/operator credentials.
+Diagnostics never contain device, operator, or provider credentials.
 
-## Testing on Galaxy A53
+## Samsung Galaxy A53 validation protocol
 
-Before claiming One UI validation, record:
+Before One UI support is claimed, record:
 
 1. Android version;
 2. One UI version;
 3. security patch;
-4. APK commit SHA;
-5. Core commit SHA;
-6. advertised clock capability;
-7. registration RTT and uncertainty;
-8. several heartbeat RTTs;
-9. phone clock moved at least five minutes forward;
-10. phone clock moved at least five minutes backward;
-11. automatic time toggled during a waiting action;
-12. Wi-Fi/mobile-data transition and reconnect;
-13. high-latency or throttled-network case;
-14. a deadline shorter than uncertainty, proving no launch occurs;
-15. a valid longer deadline, proving normal execution;
-16. observation age before and after wall-clock change;
-17. result duration based on monotonic elapsed time;
-18. no command accepted before clock registration is stable.
+4. APK and Core commit SHAs;
+5. advertised clock capability;
+6. registration RTT and uncertainty;
+7. several heartbeat RTTs;
+8. phone clock moved at least five minutes forward;
+9. phone clock moved at least five minutes backward;
+10. automatic time toggled during a waiting action;
+11. Wi-Fi/mobile-data transition and reconnect;
+12. high-latency or throttled-network case;
+13. deadline definitely expired;
+14. deadline overlapping uncertainty;
+15. longer safe deadline;
+16. evidence captured before, at, and after the lease deadline;
+17. observation age across wall-clock change;
+18. result duration based on monotonic elapsed time;
+19. no command accepted before registration clock stability;
+20. no old client/socket generation invalidating a newer connection.
 
 ## Limitations
 
-- The estimate is between Android and one Simorgh Core connection, not global time synchronization.
-- `elapsedRealtime` survives sleep but resets on device reboot.
-- Local monotonic capture timestamps are intentionally not persisted across reboot.
-- A reconnect temporarily removes execution availability until a new sample is stable.
-- Extremely asymmetric network delay remains represented by the conservative interval rather than guessed away.
+- This is Core↔Android connection time normalization, not global clock synchronization.
+- `elapsedRealtime` survives sleep but resets on reboot.
+- local monotonic capture timestamps are not persisted across reboot;
+- reconnect temporarily removes side-effect availability;
+- extremely asymmetric network delay remains conservatively represented rather than guessed away;
+- physical Galaxy A53 validation is still required.
 
-See ADR 0012 for the decision rationale and rejected alternatives.
+See ADR 0012 for the decision rationale.

@@ -1,81 +1,177 @@
 # Android device transport
 
-Status: registration, liveness, read-only observation, and crash-safe action transport implemented
+Status: authenticated registration, bounded Core-clock synchronization, liveness, read-only observation, refresh, and crash-safe typed action transport implemented.
 
-The Android application connects to Simorgh Core through an authenticated, versioned WebSocket endpoint:
+## Endpoint and credentials
+
+Android connects through:
 
 ```text
 GET /v1/devices/ws
 Authorization: Bearer <SIMORGH_DEVICE_TOKEN>
 ```
 
-The AvalAI API key remains exclusively on Simorgh Core. Android receives only a separate device-gateway token.
+Credential boundaries:
+
+- `SIMORGH_DEVICE_TOKEN` authenticates only the Android WebSocket;
+- `SIMORGH_OPERATOR_TOKEN` authorizes trusted Core action/refresh APIs;
+- AvalAI and other model-provider keys remain only on Core;
+- clock probes, Accessibility observations, and typed actions never contain provider credentials.
 
 ## Connection lifecycle
 
 ```text
-Android foreground service       Simorgh Core
-   |--- WebSocket -------------------->|
-   |--- device.register -------------->|
-   |<-- device.registered -------------|
-   |--- heartbeat -------------------->|
-   |<-- heartbeat_ack -----------------|
-   |--- device.observation ----------->|
-   |<-- device.observation_ack --------|
-   |<-- device.action_command ---------|
-   |--- device.action_command_ack ---->|
-   |--- device.action_result --------->|
-   |<-- device.action_result_ack ------|
-   |<-- device.action_cancel ----------|
-   |--- device.action_cancel_ack ----->|
+Android foreground service           Simorgh Core
+    |--- WebSocket ------------------------->|
+    |--- device.register ------------------->|  monotonic send probe
+    |<-- device.registered ------------------|  correlated server_time_ms
+    |--- device.heartbeat ------------------>|  bounded monotonic probe
+    |<-- device.heartbeat_ack ---------------|  correlation + sequence
+    |--- device.observation ---------------->|
+    |<-- device.observation_ack -------------|
+    |<-- device.observation_refresh ---------|
+    |--- device.observation_refresh_ack ---->|
+    |--- correlated device.observation ----->|
+    |<-- device.action_command --------------|
+    |--- device.action_command_ack --------->|
+    |--- device.action_result -------------->|
+    |<-- device.action_result_ack -----------|
+    |<-- device.action_cancel ---------------|
+    |--- device.action_cancel_ack ---------->|
 ```
 
-The first application message must be `device.register`. Core rejects an unregistered connection, an invalid device identifier, an unsupported protocol envelope, or an invalid bearer token.
+The first application message must be `device.register`. Core rejects an invalid token, device ID, protocol envelope, registration payload, or unsupported message.
 
-The WebSocket is owned by `SimorghConnectionService`, not the Activity. Closing the Android UI therefore does not intentionally terminate the device session.
+The WebSocket is owned by `SimorghConnectionService`, not the Activity. Closing the UI does not intentionally close the device session.
 
 ## Protocol envelope
 
 Every message contains:
 
 - `protocol_version`;
-- globally unique `message_id`;
+- UUID `message_id`;
 - typed `type`;
-- `sent_at_ms`;
+- non-negative `sent_at_ms`;
 - `device_id`;
 - optional `correlation_id`;
-- structured `payload`.
+- structured payload.
 
 Current protocol version: `1.0`.
 
-Inbound Core messages are rejected when their UTF-8 byte length exceeds the protocol limit, `message_id` is not a UUID, the timestamp is invalid, the device identity differs, or the typed payload cannot be decoded.
+Inbound messages fail closed when byte size, protocol version, UUID identity, device identity, correlation, sequence, timestamp shape, or typed payload is invalid.
+
+## Registration and bounded Core clock
+
+`device.registered` is both registration confirmation and the first bounded Core-clock sample.
+
+Android records `elapsedRealtime` immediately before sending `device.register`. The response must:
+
+- correlate to the exact registration message ID;
+- carry valid `server_time_ms`;
+- belong to the active physical socket generation;
+- yield a stable Core-time interval.
+
+The connection becomes `CONNECTED` only after this clock sample is valid. Merely decoding `device.registered` is not enough.
+
+Every existing heartbeat refines the same interval; no extra clock request or polling loop is introduced.
+
+See [`ANDROID_CORE_CLOCK.md`](ANDROID_CORE_CLOCK.md).
+
+## Generation model
+
+Two independent generation guards are used:
+
+```text
+logical connection generation
+    user connect/disconnect lifecycle
+
+physical socket/clock generation
+    every WebSocket attempt and reconnect
+```
+
+Additionally, the shared clock estimator uses a process-wide unique generation so an obsolete client instance cannot invalidate a newer instance that reused the same local counter.
+
+Callbacks, probes, and ACKs from obsolete generations cannot mutate current transport or clock state.
+
+## Heartbeat probe semantics
+
+Each heartbeat probe retains only:
+
+```text
+message_id
+sequence
+sent_at_elapsedRealtime
+socket_generation
+```
+
+The response must match correlation ID and sequence.
+
+- exact ACK: update clock estimate;
+- unknown/evicted late ACK: ignore without closing a healthy connection;
+- identity or sequence mismatch: protocol failure;
+- probe set: bounded to 32 by default.
+
+This adds O(1) local arithmetic and no network traffic beyond the heartbeat already required for liveness.
 
 ## Resilience
 
-The Android client implements:
+Android transport implements:
 
 - registration before normal traffic;
+- bounded Core-clock registration before side-effect availability;
 - WebSocket-level pings;
 - application heartbeat negotiated by Core;
 - bounded exponential reconnect delay from 1 to 30 seconds;
-- a bounded generic outbound queue of 100 messages;
-- connection generations that discard callbacks from obsolete sockets;
-- replacement of an older live connection when the same device reconnects;
-- sticky foreground-service recovery after ordinary process eviction;
-- optional restoration after device boot;
-- ordered latest-wins Accessibility observations with explicit acknowledgements;
-- encrypted write-ahead action state;
-- stable action result delivery after reconnect;
-- exact Core command-envelope replay;
-- separate command, result, and cancellation correlation.
+- generic outbound queue bounded to 100 messages;
+- obsolete-socket callback suppression;
+- replacement of an older live Session for the same device;
+- sticky foreground-service recovery;
+- optional restoration after boot;
+- ordered latest-wins Accessibility observations;
+- explicit observation refresh and correlation;
+- encrypted Android action write-ahead state;
+- stable result delivery after reconnect;
+- exact command-envelope replay where safe;
+- separate command/result/cancellation identity.
 
-A connection is marked `CONNECTED` only after Core returns `device.registered`.
+Observation and action-result messages bypass the generic queue. Their dedicated publishers own coalescing, ordering, stable message identity, and ACK retry so generic queue eviction cannot corrupt them.
 
-Observation and action-result messages intentionally bypass the generic reconnect queue. Their publishers own coalescing or stable retry semantics so queue eviction cannot silently corrupt observation ordering or result identity.
+## Cost profile
+
+The device transport's deterministic runtime path performs:
+
+- zero LLM/model calls;
+- zero AvalAI calls;
+- zero extra clock requests;
+- no periodic UI screenshot upload;
+- no installed-app inventory upload;
+- bounded queues and probe maps;
+- integer interval calculations only.
+
+Planning agents may use models on Core, but model output never controls transport identity, time math, replay, ledger mutation, or side-effect verification.
+
+## Current side-effect surface
+
+Live typed operation:
+
+```text
+open_app(package_name)
+open_app(package_name, uri)
+```
+
+Core dispatch requires current Session capabilities:
+
+```text
+android.open_app.execution.v1
+android.core_clock.bounded_estimate.v1
+```
+
+All other action schema variants remain non-dispatchable until an independent executor, capability, evidence contract, tests, and physical validation are merged.
 
 See:
 
 - [`OBSERVATION_TRANSPORT.md`](OBSERVATION_TRANSPORT.md);
+- [`OBSERVATION_REFRESH.md`](OBSERVATION_REFRESH.md);
 - [`ANDROID_ACTION_TRANSPORT.md`](ANDROID_ACTION_TRANSPORT.md).
 
 ## Local development
@@ -89,60 +185,53 @@ SIMORGH_HOST=0.0.0.0
 SIMORGH_PORT=8080
 ```
 
-The two tokens must be different:
-
-- the device token authenticates the phone WebSocket;
-- the operator token authorizes the Core action API.
-
 Run Core:
 
 ```bash
 uvicorn simorgh_core.app:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-### Android emulator
-
-Use:
+Android emulator endpoint:
 
 ```text
 ws://10.0.2.2:8080/v1/devices/ws
 ```
 
-### Samsung Galaxy A53 or another physical phone
-
-1. Connect the phone and development computer to the same trusted network.
-2. Find the computer's LAN address, for example `192.168.1.20`.
-3. Allow inbound TCP port 8080 in the computer firewall for the trusted network only.
-4. Enter this endpoint in the debug app:
+Physical phone on a trusted LAN:
 
 ```text
-ws://192.168.1.20:8080/v1/devices/ws
+ws://<computer-lan-address>:8080/v1/devices/ws
 ```
 
-5. Enter the value of `SIMORGH_DEVICE_TOKEN` in the app and start the service.
-6. Enable the Simorgh Accessibility observer to begin read-only UI snapshots.
-7. Use `SIMORGH_OPERATOR_TOKEN` only from the trusted Core/operator client when testing typed action dispatch.
+The debug manifest permits local cleartext `ws://`. Production disables cleartext and requires `wss://`.
 
-The debug manifest permits cleartext `ws://` for local development. The production manifest disables cleartext traffic and requires `wss://`.
+## Secret storage
 
-## Secret handling
+The device token is encrypted with AES-GCM using a non-exportable Android Keystore key. Preferences store ciphertext, IV, endpoint, and service preferences only.
 
-The device token is encrypted with an AES-GCM key generated and retained by Android Keystore. SharedPreferences contain only ciphertext, its IV, the endpoint, and service preferences. The AES key is non-exportable through the application API.
+The Android action ledger uses a separate Keystore-backed AES-GCM key. The operator token and model-provider credentials are never stored on Android.
 
-The active action ledger uses a separate Android Keystore-backed AES-GCM key and contains encrypted typed command/result state. The endpoint is not considered a secret. The AvalAI and operator tokens are never sent to or stored on Android.
+The shared development token is a foundation, not final pairing. Per-device revocable credentials remain a separate increment.
 
-This is a transport credential foundation, not the final pairing system. A later increment will replace the shared development device token with device-specific, revocable credentials.
+## Foreground-service behavior
 
-## Foreground service behavior
+The connection service is user-visible, has an ongoing notification and Stop action, and owns:
 
-The connection service is user-visible and has an ongoing notification with a Stop action. Android 14 and newer use the declared `specialUse` foreground-service type. Starting after device boot is controlled by an explicit switch and is independent of sticky process recovery.
+- WebSocket transport;
+- bounded clock synchronization;
+- observation publisher;
+- refresh coordinator;
+- action router;
+- encrypted ledger;
+- result publisher;
+- current `open_app` executor.
 
-The foreground service owns the WebSocket, observation publisher, action router, encrypted ledger, and result publisher. No network or planning work runs inside Accessibility callbacks.
+No network, planning, model inference, or tool selection runs inside Accessibility callbacks.
 
-See [`ANDROID_ALWAYS_ON.md`](ANDROID_ALWAYS_ON.md) for Android-version behavior, Samsung setup, and physical-device validation scenarios.
+See [`ANDROID_ALWAYS_ON.md`](ANDROID_ALWAYS_ON.md) for Android-version and Samsung configuration details.
 
-## Current scope and next step
+## Physical validation boundary
 
-The device channel now supports registration, heartbeat, ordered read-only Accessibility observations, typed action command delivery, command acknowledgement, cancellation, result delivery, result acknowledgement, and crash-safe replay semantics.
+Automated tests validate protocol, correlation, reconnect, clock bounds, queue limits, action replay, and APK build. They do not substitute for Samsung Galaxy A53 / One UI validation.
 
-No Android side-effect adapter is installed by this transport increment. The next vertical slice implements only `open_app`, verifies it using a newer Accessibility observation, and rejects all other operations until their own implementation and evidence are merged.
+Record exact Android/One UI versions, APK/Core commits, network topology, registration RTT, heartbeat uncertainty, reconnect behavior, wall-clock changes, command/result identities, and proof that no uncertain command executes twice.
