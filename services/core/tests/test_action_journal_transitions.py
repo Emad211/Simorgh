@@ -223,7 +223,14 @@ def test_delivery_count_and_phase_cannot_move_backwards(tmp_path: Path) -> None:
         delivery_count=1,
         updated_at_ms=1_400,
     )
-    backwards_phase = delivered.model_copy(update={"updated_at_ms": 1_400})
+    completed = _completed(accepted_twice).model_copy(
+        update={"updated_at_ms": 1_500}
+    )
+    backwards_phase = _accepted(
+        delivered,
+        delivery_count=2,
+        updated_at_ms=1_600,
+    )
 
     for journal in _journals(tmp_path):
         try:
@@ -233,6 +240,7 @@ def test_delivery_count_and_phase_cannot_move_backwards(tmp_path: Path) -> None:
             journal.upsert(accepted_twice)
             with pytest.raises(ActionJournalConflictError, match="delivery_count cannot decrease"):
                 journal.upsert(lower_delivery)
+            journal.upsert(completed)
             with pytest.raises(ActionJournalConflictError, match="phase transition"):
                 journal.upsert(backwards_phase)
         finally:
