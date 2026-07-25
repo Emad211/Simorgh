@@ -16,6 +16,7 @@ from simorgh_core.agents.invocations import (
     InvocationKind,
     InvocationPhase,
     InvocationStartKind,
+    InvocationStateError,
     InvocationStoreCorruptionError,
     InvocationStoreSchemaError,
     InvocationStoreUnhealthyError,
@@ -218,9 +219,10 @@ def test_completed_result_and_actual_usage_are_immutable(tmp_path: Path) -> None
     store.close()
 
 
-def test_oversized_result_is_rejected_before_persistence() -> None:
+def test_oversized_result_is_rejected_without_echoing_payload() -> None:
     store = InMemoryInvocationStore()
     invocation_id = uuid4()
+    private_marker = "PRIVATE_OVERSIZED_RESULT_71e9"
     store.begin(
         invocation_id=invocation_id,
         request_id=uuid4(),
@@ -230,11 +232,17 @@ def test_oversized_result_is_rejected_before_persistence() -> None:
         input_fingerprint=canonical_fingerprint({"query": "fixture"}),
     )
 
-    with pytest.raises(ValueError, match="durable payload limit"):
+    with pytest.raises(
+        InvocationStateError,
+        match="failed typed validation",
+    ) as raised:
         store.complete(
             invocation_id=invocation_id,
-            result_payload={"text": "x" * (MAX_INVOCATION_RESULT_BYTES + 1)},
+            result_payload={
+                "text": private_marker + "x" * MAX_INVOCATION_RESULT_BYTES
+            },
         )
+    assert private_marker not in str(raised.value)
 
 
 def test_payload_hash_tampering_fails_closed_and_latches_store(
