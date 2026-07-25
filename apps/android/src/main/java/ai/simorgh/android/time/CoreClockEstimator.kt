@@ -14,6 +14,8 @@ data class CoreClockReading(
     val sampleCount: Int,
     val discontinuityCount: Int,
     val wallClockJumpCount: Int,
+    /** elapsedRealtime value at which this reading was evaluated. */
+    val observedAtElapsedRealtimeMs: Long = 0,
 )
 
 enum class CoreDeadlineUnavailableReason {
@@ -292,6 +294,7 @@ class CoreClockEstimator(
             sampleCount = sampleCount,
             discontinuityCount = discontinuityCount,
             wallClockJumpCount = wallClockJumpCount,
+            observedAtElapsedRealtimeMs = nowElapsedMs,
         )
     }
 
