@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from simorgh_core.agents.budget import BudgetAccount, BudgetError, ReservationKind
 from simorgh_core.agents.contracts import SideEffectPolicy, UsageVector
@@ -66,8 +66,17 @@ class ToolCallRequest(BaseModel):
     agent_version: str = Field(min_length=1, max_length=32)
     tool_id: str = Field(min_length=1, max_length=128)
     connector_id: str = Field(min_length=1, max_length=128)
+    allowed_data_sources: frozenset[str] = Field(default_factory=frozenset, max_length=256)
     effect: ToolEffect = ToolEffect.READ_ONLY
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=256)
+
+    @field_validator("allowed_data_sources")
+    @classmethod
+    def validate_data_sources(cls, value: frozenset[str]) -> frozenset[str]:
+        for source in value:
+            if not source or len(source) > 128:
+                raise ValueError("data-source identifiers must be in 1..128 characters")
+        return value
 
 
 class ToolCallResult(BaseModel):
@@ -81,7 +90,7 @@ class ToolCallResult(BaseModel):
 
 
 class BudgetedToolGateway:
-    """Enforce policy, one-call budget, and exact retry replay for structured tools."""
+    """Enforce task and specialist policy, budget, and exact read replay."""
 
     def __init__(
         self,
@@ -107,6 +116,10 @@ class BudgetedToolGateway:
             if definition.version != request.agent_version:
                 raise SpecialistPolicyError(
                     "tool request agent version does not match the active specialist policy"
+                )
+            if request.connector_id not in request.allowed_data_sources:
+                raise SpecialistPolicyError(
+                    f"task does not allow data source {request.connector_id!r}"
                 )
             self._registry.require_tool(
                 agent_id=request.agent_id,
@@ -135,7 +148,9 @@ class BudgetedToolGateway:
             )
             raise
 
-        fingerprint = canonical_fingerprint(request)
+        request_payload = request.model_dump(mode="json")
+        request_payload["allowed_data_sources"] = sorted(request.allowed_data_sources)
+        fingerprint = canonical_fingerprint(request_payload)
         started = self._invocations.begin(
             invocation_id=request.invocation_id,
             request_id=request.request_id,
