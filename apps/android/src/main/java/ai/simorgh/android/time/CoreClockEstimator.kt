@@ -233,25 +233,27 @@ class CoreClockEstimator(
                 kind = CoreDeadlineUnavailableReason.CLOCK_UNAVAILABLE,
                 reason = "Core clock estimate is unavailable, unstable, or stale",
             )
-        val centeredRemaining = saturatingSubtract(
+
+        val earliestRemaining = saturatingSubtract(
             deadlineCoreTimeMs,
-            current.estimatedCoreTimeMs,
+            current.earliestCoreTimeMs,
         )
-        if (centeredRemaining <= current.uncertaintyMs) {
+        if (earliestRemaining <= 0) {
             return CoreDeadlineBudget.Unavailable(
-                kind = CoreDeadlineUnavailableReason.UNCERTAINTY,
-                reason = "clock uncertainty consumes the remaining command deadline budget",
+                kind = CoreDeadlineUnavailableReason.EXPIRED,
+                reason = "command deadline has definitely elapsed across the bounded Core clock interval",
                 reading = current,
             )
         }
+
         val guaranteedRemaining = saturatingSubtract(
             deadlineCoreTimeMs,
             current.latestCoreTimeMs,
         )
         if (guaranteedRemaining <= 0) {
             return CoreDeadlineBudget.Unavailable(
-                kind = CoreDeadlineUnavailableReason.EXPIRED,
-                reason = "command deadline has elapsed in the bounded Core clock interval",
+                kind = CoreDeadlineUnavailableReason.UNCERTAINTY,
+                reason = "clock uncertainty overlaps the remaining command deadline budget",
                 reading = current,
             )
         }
