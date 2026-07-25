@@ -8,10 +8,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from simorgh_core import __version__
-from simorgh_core.agents.api import (
-    agent_task_control_plane,
-    router as agent_task_router,
-)
+from simorgh_core.agents.api import agent_task_control_plane
+from simorgh_core.agents.api import router as agent_task_router
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_api import router as device_action_router
@@ -35,15 +33,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         settings.simorgh_agent_task_store_path,
         max_terminal_records=settings.simorgh_agent_task_store_max_terminal_records,
     )
+    action_journal_configured = False
     try:
         await action_broker.configure_journal(
             action_journal,
             max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
         )
+        action_journal_configured = True
         await agent_task_control_plane.configure_store(task_store)
     except BaseException:
         task_store.close()
-        action_journal.close()
+        if action_journal_configured:
+            await action_broker.reset_to_memory_journal()
+        else:
+            action_journal.close()
         raise
 
     try:
