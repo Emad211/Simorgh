@@ -31,8 +31,7 @@ def test_unknown_action_journal_schema_prevents_core_startup(
     monkeypatch.setenv("SIMORGH_ACTION_JOURNAL_PATH", str(journal_path))
     get_settings.cache_clear()
     try:
-        with pytest.raises(ActionJournalSchemaError, match="unsupported"):
-            with TestClient(app):
-                pass
+        with pytest.raises(ActionJournalSchemaError, match="unsupported"), TestClient(app):
+            pass
     finally:
         get_settings.cache_clear()
