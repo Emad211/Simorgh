@@ -92,7 +92,12 @@ def _delivered(entry: ActionJournalEntryV1) -> ActionJournalEntryV1:
     )
 
 
-def _accepted(entry: ActionJournalEntryV1) -> ActionJournalEntryV1:
+def _accepted(
+    entry: ActionJournalEntryV1,
+    *,
+    delivery_count: int = 1,
+    updated_at_ms: int = 1_200,
+) -> ActionJournalEntryV1:
     acknowledgement = DeviceActionCommandAckPayload(
         command_id=entry.command_id,
         action_id=entry.action_id,
@@ -106,8 +111,8 @@ def _accepted(entry: ActionJournalEntryV1) -> ActionJournalEntryV1:
         command_envelope=entry.command_envelope,
         phase="accepted",
         created_at_ms=entry.created_at_ms,
-        updated_at_ms=1_200,
-        delivery_count=1,
+        updated_at_ms=updated_at_ms,
+        delivery_count=delivery_count,
         last_session_id=SESSION_ID,
         command_ack=acknowledgement,
     )
@@ -131,7 +136,7 @@ def _completed(entry: ActionJournalEntryV1) -> ActionJournalEntryV1:
         phase="completed",
         created_at_ms=entry.created_at_ms,
         updated_at_ms=1_400,
-        delivery_count=1,
+        delivery_count=entry.delivery_count,
         last_session_id=SESSION_ID,
         command_ack=entry.command_ack,
         result=result,
@@ -141,10 +146,13 @@ def _completed(entry: ActionJournalEntryV1) -> ActionJournalEntryV1:
     )
 
 
-def _journals(tmp_path: Path):
-    memory = InMemoryActionJournal()
-    sqlite = SQLiteActionJournal(tmp_path / "transition-journal.sqlite3")
-    return memory, sqlite
+def _journals(
+    tmp_path: Path,
+) -> tuple[InMemoryActionJournal, SQLiteActionJournal]:
+    return (
+        InMemoryActionJournal(),
+        SQLiteActionJournal(tmp_path / "transition-journal.sqlite3"),
+    )
 
 
 def test_valid_lifecycle_is_identical_in_memory_and_sqlite(tmp_path: Path) -> None:
@@ -204,22 +212,25 @@ def test_delivery_count_and_phase_cannot_move_backwards(tmp_path: Path) -> None:
     command = _command()
     queued = _queued(command, _envelope(command))
     delivered = _delivered(queued)
-    accepted = _accepted(delivered)
-    lower_delivery = accepted.model_copy(
-        update={
-            "phase": "accepted",
-            "delivery_count": 0,
-            "last_session_id": None,
-            "updated_at_ms": 1_300,
-        }
+    accepted_once = _accepted(delivered)
+    accepted_twice = _accepted(
+        delivered,
+        delivery_count=2,
+        updated_at_ms=1_300,
     )
-    backwards_phase = delivered.model_copy(update={"updated_at_ms": 1_300})
+    lower_delivery = _accepted(
+        delivered,
+        delivery_count=1,
+        updated_at_ms=1_400,
+    )
+    backwards_phase = delivered.model_copy(update={"updated_at_ms": 1_400})
 
     for journal in _journals(tmp_path):
         try:
             journal.upsert(queued)
             journal.upsert(delivered)
-            journal.upsert(accepted)
+            journal.upsert(accepted_once)
+            journal.upsert(accepted_twice)
             with pytest.raises(ActionJournalConflictError, match="delivery_count cannot decrease"):
                 journal.upsert(lower_delivery)
             with pytest.raises(ActionJournalConflictError, match="phase transition"):
