@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class AgentTaskControlPlane:
         self._monotonic_millis = monotonic_millis
         self._lock = RLock()
         self._states: dict[UUID, _MutableTaskState] = {}
+        self._store_failure: AgentTaskStoreError | None = None
         self._load_store_locked(recover_interrupted=True)
 
     async def configure_store(self, store: AgentTaskStore) -> None:
@@ -88,13 +90,16 @@ class AgentTaskControlPlane:
                 )
             previous_store = self._store
             previous_states = self._states
+            previous_failure = self._store_failure
             self._store = store
             self._states = {}
+            self._store_failure = None
             try:
                 self._load_store_locked(recover_interrupted=True)
             except BaseException:
                 self._store = previous_store
                 self._states = previous_states
+                self._store_failure = previous_failure
                 raise
             if previous_store is not store:
                 previous_store.close()
@@ -113,11 +118,13 @@ class AgentTaskControlPlane:
             previous_store = self._store
             self._store = InMemoryAgentTaskStore()
             self._states = {}
+            self._store_failure = None
             previous_store.close()
 
     async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:
         fingerprint = _task_fingerprint(task)
         with self._lock:
+            self._require_store_healthy_locked()
             existing = self._states.get(task.request_id)
             if existing is not None:
                 if existing.fingerprint != fingerprint:
@@ -169,39 +176,40 @@ class AgentTaskControlPlane:
 
         try:
             decision = await self._router.route(task=task, budget=account)
-        except BaseException as exc:
+        except asyncio.CancelledError:
             with self._lock:
+                self._require_store_healthy_locked()
+                current = self._states[task.request_id]
+                if not current.cancelled:
+                    self._mark_routing_unknown_locked(
+                        task=task,
+                        account=account,
+                        detail=(
+                            "specialist routing coroutine was cancelled after durable "
+                            "claim; automatic replay is blocked"
+                        ),
+                    )
+            raise
+        except Exception as exc:
+            with self._lock:
+                self._require_store_healthy_locked()
                 current = self._states[task.request_id]
                 if current.cancelled:
                     return current.record
-                stabilized_account = _restore_stable_account(
-                    account,
-                    monotonic_millis=self._monotonic_millis,
-                )
-                unknown_record = AgentTaskRecord(
-                    request_id=task.request_id,
-                    phase=AgentTaskPhase.UNKNOWN,
-                    created_at_ms=current.record.created_at_ms,
-                    updated_at_ms=self._next_record_time(
-                        current.record.updated_at_ms
-                    ),
+                self._mark_routing_unknown_locked(
                     task=task,
-                    budget=stabilized_account.snapshot(),
+                    account=account,
                     detail=(
                         "specialist routing failed after durable claim; automatic replay "
                         f"is blocked ({exc.__class__.__name__})"
                     ),
-                )
-                self._persist_transition_locked(
-                    state=current,
-                    account=stabilized_account,
-                    record=unknown_record,
                 )
             raise AgentTaskRoutingUnknownError(
                 "agent task routing failed closed and is recorded as unknown"
             ) from exc
 
         with self._lock:
+            self._require_store_healthy_locked()
             current = self._states[task.request_id]
             if current.cancelled:
                 return current.record
@@ -230,6 +238,7 @@ class AgentTaskControlPlane:
 
     async def get(self, request_id: UUID) -> AgentTaskRecord:
         with self._lock:
+            self._require_store_healthy_locked()
             state = self._states.get(request_id)
             if state is None:
                 raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
@@ -243,6 +252,7 @@ class AgentTaskControlPlane:
     ) -> AgentTaskRecord:
         normalized_reason = reason.strip() or "operator requested cancellation"
         with self._lock:
+            self._require_store_healthy_locked()
             state = self._states.get(request_id)
             if state is None:
                 raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
@@ -275,9 +285,11 @@ class AgentTaskControlPlane:
 
     async def clear_for_test(self) -> None:
         with self._lock:
+            self._require_store_healthy_locked()
             try:
                 self._store.clear()
             except AgentTaskStoreError as exc:
+                self._record_store_failure_locked(exc)
                 raise AgentTaskStoreUnavailableError(str(exc)) from exc
             self._states.clear()
 
@@ -285,6 +297,7 @@ class AgentTaskControlPlane:
         try:
             entries = self._store.load()
         except AgentTaskStoreError as exc:
+            self._record_store_failure_locked(exc)
             raise AgentTaskStoreUnavailableError(str(exc)) from exc
 
         now = self._now_ms()
@@ -311,6 +324,7 @@ class AgentTaskControlPlane:
                 try:
                     self._store.upsert(new_task_store_entry(record))
                 except AgentTaskStoreError as exc:
+                    self._record_store_failure_locked(exc)
                     raise AgentTaskStoreUnavailableError(str(exc)) from exc
 
             recovered[record.request_id] = _MutableTaskState(
@@ -322,6 +336,34 @@ class AgentTaskControlPlane:
                 cancel_reason=record.cancel_reason,
             )
         self._states = recovered
+
+    def _mark_routing_unknown_locked(
+        self,
+        *,
+        task: TaskEnvelope,
+        account: BudgetAccount,
+        detail: str,
+    ) -> AgentTaskRecord:
+        current = self._states[task.request_id]
+        stabilized_account = _restore_stable_account(
+            account,
+            monotonic_millis=self._monotonic_millis,
+        )
+        unknown_record = AgentTaskRecord(
+            request_id=task.request_id,
+            phase=AgentTaskPhase.UNKNOWN,
+            created_at_ms=current.record.created_at_ms,
+            updated_at_ms=self._next_record_time(current.record.updated_at_ms),
+            task=task,
+            budget=stabilized_account.snapshot(),
+            detail=detail,
+        )
+        self._persist_transition_locked(
+            state=current,
+            account=stabilized_account,
+            record=unknown_record,
+        )
+        return unknown_record
 
     def _persist_new_state_locked(
         self,
@@ -336,6 +378,7 @@ class AgentTaskControlPlane:
         except AgentTaskStoreConflictError as exc:
             raise AgentTaskConflictError(str(exc)) from exc
         except AgentTaskStoreError as exc:
+            self._record_store_failure_locked(exc)
             raise AgentTaskStoreUnavailableError(str(exc)) from exc
         self._states[task.request_id] = _MutableTaskState(
             task=task,
@@ -353,12 +396,24 @@ class AgentTaskControlPlane:
     ) -> None:
         try:
             self._store.upsert(new_task_store_entry(record))
-        except AgentTaskStoreConflictError as exc:
-            raise AgentTaskConflictError(str(exc)) from exc
         except AgentTaskStoreError as exc:
-            raise AgentTaskStoreUnavailableError(str(exc)) from exc
+            self._record_store_failure_locked(exc)
+            raise AgentTaskStoreUnavailableError(
+                f"durable agent-task transition failed: {exc}"
+            ) from exc
         state.account = account
         state.record = record
+
+    def _record_store_failure_locked(self, exc: AgentTaskStoreError) -> None:
+        if self._store_failure is None:
+            self._store_failure = exc
+
+    def _require_store_healthy_locked(self) -> None:
+        if self._store_failure is not None:
+            raise AgentTaskStoreUnavailableError(
+                "agent task store is unhealthy after a durable operation failure: "
+                f"{self._store_failure}"
+            ) from self._store_failure
 
     def _now_ms(self) -> int:
         return max(0, int(self._wall_clock_millis()))
