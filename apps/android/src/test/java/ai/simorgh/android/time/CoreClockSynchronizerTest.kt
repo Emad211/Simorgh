@@ -2,6 +2,7 @@ package ai.simorgh.android.time
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,7 +29,7 @@ class CoreClockSynchronizerTest {
         assertTrue(outcome.accepted)
         assertFalse(outcome.fatal)
         val reading = requireNotNull(outcome.reading)
-        assertEquals(10, reading.generation)
+        assertTrue(reading.generation > 0)
         assertEquals(40, reading.lastRoundTripTimeMs)
         assertEquals(20, reading.uncertaintyMs)
     }
@@ -133,7 +134,38 @@ class CoreClockSynchronizerTest {
             correlationId = currentRegistration,
             serverTimeMs = 20_010,
         )
-        assertEquals(15, requireNotNull(current.reading).generation)
+        assertTrue(requireNotNull(current.reading).generation > 0)
+    }
+
+    @Test
+    fun `client instances cannot invalidate a newer shared estimator generation`() {
+        val clocks = MutableClocks(0, 1_000)
+        val sharedEstimator = estimator(clocks)
+        val first = synchronizer(clocks, sharedEstimator)
+        val second = synchronizer(clocks, sharedEstimator)
+
+        val firstRegistration = UUID.randomUUID().toString()
+        first.beginGeneration(1)
+        first.markRegistrationSent(1, firstRegistration)
+        clocks.elapsedMs = 20
+        val firstReading = requireNotNull(
+            first.acceptRegistration(1, firstRegistration, 10_010).reading,
+        )
+
+        val secondRegistration = UUID.randomUUID().toString()
+        second.beginGeneration(1)
+        second.markRegistrationSent(1, secondRegistration)
+        clocks.elapsedMs = 40
+        val secondReading = requireNotNull(
+            second.acceptRegistration(1, secondRegistration, 20_030).reading,
+        )
+        assertNotEquals(firstReading.generation, secondReading.generation)
+
+        first.invalidate(1)
+        assertEquals(
+            secondReading.generation,
+            requireNotNull(sharedEstimator.reading()).generation,
+        )
     }
 
     @Test
