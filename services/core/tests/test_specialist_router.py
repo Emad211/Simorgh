@@ -9,6 +9,7 @@ from simorgh_core.agents.contracts import (
     AgentClassification,
     ExecutionMode,
     ModelPolicy,
+    RiskClass,
     RoutingRule,
     RoutingState,
     SideEffectPolicy,
@@ -28,7 +29,15 @@ def _task(
     *,
     explicit_task_kind: TaskKind | None = None,
     execution_mode: ExecutionMode = ExecutionMode.PLAN,
+    risk_class: RiskClass | None = None,
 ) -> TaskEnvelope:
+    effective_risk = risk_class
+    if effective_risk is None:
+        effective_risk = (
+            RiskClass.EXTERNAL_MUTATION
+            if execution_mode == ExecutionMode.EXECUTE_TYPED
+            else RiskClass.PLANNING
+        )
     return TaskEnvelope(
         request_id=uuid4(),
         received_at_ms=1_000,
@@ -36,6 +45,7 @@ def _task(
         input_text=text,
         requested_outcome="انتخاب عامل تخصصی اصلی",
         explicit_task_kind=explicit_task_kind,
+        risk_class=effective_risk,
         execution_mode=execution_mode,
         budget=TaskBudget(max_model_calls=1),
     )
@@ -66,15 +76,16 @@ def test_explicit_task_kind_routes_with_zero_model_calls() -> None:
         registry=default_specialist_registry(),
         classifier=classifier,
     )
+    budget = _budget(task)
 
-    decision = asyncio.run(router.route(task=task, budget=_budget(task)))
+    decision = asyncio.run(router.route(task=task, budget=budget))
 
     assert decision.state == RoutingState.ROUTED
     assert decision.selected_agent_id == "github.read"
     assert decision.method == "explicit_task_kind"
     assert decision.model_calls == 0
     assert classifier.calls == 0
-    assert _budget(task).snapshot().committed.model_calls == 0
+    assert budget.snapshot().committed.model_calls == 0
 
 
 def test_persian_and_mixed_english_terms_route_deterministically() -> None:
