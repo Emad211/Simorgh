@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from simorgh_core.app import app
-from simorgh_core.devices.action_capabilities import OPEN_APP_EXECUTION_CAPABILITY
+from simorgh_core.devices.action_capabilities import (
+    CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
+    OPEN_APP_EXECUTION_CAPABILITY,
+)
 from simorgh_core.devices.actions import (
     ActionFailureCode,
     ActionOutcome,
@@ -49,6 +52,7 @@ def _register(websocket, device_id: UUID, *, suffix: str) -> None:
             capabilities=[
                 "device.action_transport.v1",
                 OPEN_APP_EXECUTION_CAPABILITY,
+                CORE_CLOCK_BOUNDED_ESTIMATE_CAPABILITY,
             ],
         ),
     )
