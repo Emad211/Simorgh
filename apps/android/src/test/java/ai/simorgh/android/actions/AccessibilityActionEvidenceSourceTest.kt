@@ -106,7 +106,7 @@ class AccessibilityActionEvidenceSourceTest {
             val future = executor.submit<PostActionEvidenceResult> {
                 source.awaitVerifiedObservation(
                     before = before,
-                    launchedAtMs = 2_000,
+                    launchedAtElapsedRealtimeMs = 2_000,
                     policy = policy,
                     timeoutMillis = 1_000,
                     cancelled = { false },
@@ -167,7 +167,7 @@ class AccessibilityActionEvidenceSourceTest {
             val future = executor.submit<PostActionEvidenceResult> {
                 source.awaitVerifiedObservation(
                     before = before,
-                    launchedAtMs = 2_000,
+                    launchedAtElapsedRealtimeMs = 2_000,
                     policy = policy,
                     timeoutMillis = 250,
                     cancelled = { false },
