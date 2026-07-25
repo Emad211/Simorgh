@@ -3,14 +3,20 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
+import pytest
+
 from simorgh_core.agents.contracts import (
     ExecutionMode,
     RiskClass,
+    RoutingDecision,
     TaskBudget,
     TaskEnvelope,
     TaskKind,
 )
-from simorgh_core.agents.control_plane import AgentTaskControlPlane
+from simorgh_core.agents.control_plane import (
+    AgentTaskControlPlane,
+    AgentTaskRoutingUnknownError,
+)
 from simorgh_core.agents.defaults import default_specialist_registry
 from simorgh_core.agents.router import SpecialistRouter
 from simorgh_core.agents.task_state import AgentTaskPhase
@@ -91,10 +97,11 @@ def test_router_failure_during_wall_clock_rollback_still_records_unknown() -> No
         monotonic_millis=lambda: 100,
     )
 
-    try:
+    with pytest.raises(
+        AgentTaskRoutingUnknownError,
+        match="recorded as unknown",
+    ):
         asyncio.run(control_plane.submit(task))
-    except Exception:
-        pass
 
     recovered = asyncio.run(control_plane.get(task.request_id))
     assert recovered.phase == AgentTaskPhase.UNKNOWN
@@ -108,6 +115,6 @@ class RollbackFailingRouter:
     def __init__(self, wall_clock_ms: list[int]) -> None:
         self._wall_clock_ms = wall_clock_ms
 
-    async def route(self, **_kwargs: object) -> object:
+    async def route(self, **_kwargs: object) -> RoutingDecision:
         self._wall_clock_ms[0] = 500
         raise RuntimeError("simulated router failure after wall-clock rollback")
