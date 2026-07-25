@@ -3,7 +3,6 @@ package ai.simorgh.android.time
 import android.os.SystemClock
 import kotlin.math.abs
 
-
 data class CoreClockReading(
     val generation: Long,
     val estimatedCoreTimeMs: Long,
@@ -17,6 +16,13 @@ data class CoreClockReading(
     val wallClockJumpCount: Int,
 )
 
+enum class CoreDeadlineUnavailableReason {
+    INVALID_DEADLINE,
+    CLOCK_UNAVAILABLE,
+    UNCERTAINTY,
+    EXPIRED,
+}
+
 sealed interface CoreDeadlineBudget {
     data class Available(
         val guaranteedRemainingMs: Long,
@@ -24,6 +30,7 @@ sealed interface CoreDeadlineBudget {
     ) : CoreDeadlineBudget
 
     data class Unavailable(
+        val kind: CoreDeadlineUnavailableReason,
         val reason: String,
         val reading: CoreClockReading? = null,
     ) : CoreDeadlineBudget
@@ -170,9 +177,9 @@ class CoreClockEstimator(
                     estimateStable = true
                 } else {
                     val gap = if (sampleLowerOffset > currentUpper) {
-                        sampleLowerOffset - currentUpper
+                        nonNegativeDifference(sampleLowerOffset, currentUpper)
                     } else {
-                        currentLower - sampleUpperOffset
+                        nonNegativeDifference(currentLower, sampleUpperOffset)
                     }
                     if (gap > coreDiscontinuityThresholdMs) {
                         lowerOffsetMs = sampleLowerOffset
@@ -214,11 +221,15 @@ class CoreClockEstimator(
 
     override fun deadlineBudget(deadlineCoreTimeMs: Long): CoreDeadlineBudget {
         if (deadlineCoreTimeMs < 0) {
-            return CoreDeadlineBudget.Unavailable("deadline cannot be negative")
+            return CoreDeadlineBudget.Unavailable(
+                kind = CoreDeadlineUnavailableReason.INVALID_DEADLINE,
+                reason = "deadline cannot be negative",
+            )
         }
         val current = reading()
             ?: return CoreDeadlineBudget.Unavailable(
-                "Core clock estimate is unavailable, unstable, or stale",
+                kind = CoreDeadlineUnavailableReason.CLOCK_UNAVAILABLE,
+                reason = "Core clock estimate is unavailable, unstable, or stale",
             )
         val centeredRemaining = saturatingSubtract(
             deadlineCoreTimeMs,
@@ -226,6 +237,7 @@ class CoreClockEstimator(
         )
         if (centeredRemaining <= current.uncertaintyMs) {
             return CoreDeadlineBudget.Unavailable(
+                kind = CoreDeadlineUnavailableReason.UNCERTAINTY,
                 reason = "clock uncertainty consumes the remaining command deadline budget",
                 reading = current,
             )
@@ -236,6 +248,7 @@ class CoreClockEstimator(
         )
         if (guaranteedRemaining <= 0) {
             return CoreDeadlineBudget.Unavailable(
+                kind = CoreDeadlineUnavailableReason.EXPIRED,
                 reason = "command deadline has elapsed in the bounded Core clock interval",
                 reading = current,
             )
@@ -320,7 +333,7 @@ class CoreClockEstimator(
     private fun halfCeiling(value: Long): Long = value / 2 + value % 2
 
     private fun midpoint(lower: Long, upper: Long): Long =
-        lower + (upper - lower) / 2
+        (lower and upper) + ((lower xor upper) shr 1)
 
     private fun saturatingAdd(left: Long, right: Long): Long = when {
         right > 0 && left > Long.MAX_VALUE - right -> Long.MAX_VALUE
