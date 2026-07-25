@@ -50,9 +50,11 @@ def test_task_store_schema_failure_unwinds_action_storage_and_allows_clean_resta
     connection.commit()
     connection.close()
 
-    with pytest.raises(AgentTaskStoreSchemaError, match="unsupported"):
-        with TestClient(app):
-            pass
+    with pytest.raises(
+        AgentTaskStoreSchemaError,
+        match="unsupported",
+    ), TestClient(app):
+        pass
 
     task_path.unlink()
     for suffix in ("-wal", "-shm"):
