@@ -35,6 +35,7 @@ class AvalAIProvider:
         input_text: str,
         model: str | None = None,
         instructions: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> ModelOutput:
         selected_model = model or self._default_model
         request: dict[str, Any] = {
@@ -43,6 +44,8 @@ class AvalAIProvider:
         }
         if instructions:
             request["instructions"] = instructions
+        if max_output_tokens is not None:
+            request["max_output_tokens"] = max_output_tokens
 
         response = await self._client.responses.create(**request)
         usage = response.usage.model_dump(mode="json") if response.usage else None

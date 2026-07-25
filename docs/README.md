@@ -4,6 +4,22 @@ This directory is the source of truth for runtime contracts, architecture decisi
 
 Documentation changes are part of the implementation. A state-changing capability is not complete until its contract, failure semantics, verification model, and test/physical-validation boundary are documented.
 
+## Specialist agents and personal colleague runtime
+
+- [`AGENT_RUNTIME.md`](AGENT_RUNTIME.md) — Persian-first deterministic routing, specialist policy, budgets, idempotency, submit/status/cancel API, model/tool gateways, traces and current limitations.
+- [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
+
+The current specialist-control-plane increment routes one typed task to one primary owner. It does not yet execute the specialist or an external mutation.
+
+Common explicit and deterministic Persian routes use zero model calls. Ambiguous requests require clarification unless an explicitly configured one-call classifier has sufficient budget.
+
+Follow-up increments:
+
+- issue #31 — Persian Voice, local wake word and conversational audio;
+- issue #32 — privacy-safe notification intelligence;
+- issue #33 — governed MCP client registry;
+- issue #34 — durable Personal Work Graph and proactive specialist crew.
+
 ## Android compatibility and lifecycle
 
 - [`android-compatibility.md`](android-compatibility.md) — installation baseline, runtime capability negotiation, and Android-version support tiers.
@@ -44,7 +60,7 @@ Click, text entry, scrolling, arbitrary gestures, global actions, screenshot tra
 
 ## Architecture Decision Records
 
-ADRs live under [`adr/`](adr/). Relevant device/runtime decisions include:
+ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 
 - ADR 0006 — idempotent Android action delivery;
 - ADR 0007 — verified Android `open_app` execution;
@@ -52,7 +68,8 @@ ADRs live under [`adr/`](adr/). Relevant device/runtime decisions include:
 - ADR 0009 — explicit observation refresh handshake;
 - ADR 0010 — enforced Android action capability negotiation;
 - ADR 0011 — durable Core Android action journal;
-- ADR 0012 — bounded Core clock normalization on Android.
+- ADR 0012 — bounded Core clock normalization on Android;
+- ADR 0013 — native specialist-agent runtime and deterministic cost governance.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
@@ -60,11 +77,13 @@ An ADR records why a design was selected, its consequences, rejected alternative
 
 - AvalAI and other model-provider credentials belong only on Simorgh Core.
 - `SIMORGH_DEVICE_TOKEN` authenticates the private Android WebSocket.
-- `SIMORGH_OPERATOR_TOKEN` authenticates trusted action and refresh APIs.
+- `SIMORGH_OPERATOR_TOKEN` authenticates trusted action, refresh and specialist-task APIs.
 - Provider, operator, and device credentials are not interchangeable.
 - Accessibility snapshots and refresh messages never carry model-provider credentials.
 - The Core action journal contains operational action state but never stores provider keys or device/operator bearer tokens.
 - Clock probes contain protocol identity and timing metadata only; they never contain credentials.
+- Agent traces reject configured secret/raw-content metadata and never include prompts or tool arguments by default.
+- Future MCP credentials remain Core-side secret references and are never copied into specialist tasks or Android payloads.
 
 ## Validation rules
 
@@ -81,7 +100,15 @@ For Android changes, distinguish:
 
 Do not claim Galaxy A53 or One UI validation until the physical protocol is executed and its exact APK commit, OS/One UI versions, settings, observations, clock diagnostics, commands, and results are recorded.
 
-## Durability and clock boundaries
+For specialist-agent changes, distinguish:
+
+1. pure contract, registry and deterministic routing tests;
+2. fake provider/tool budget and replay tests with zero external spending;
+3. authenticated API tests;
+4. optional live-provider staging validation under an explicit budget;
+5. separately reviewed connector and mutation-executor validation.
+
+## Durability, cost and execution boundaries
 
 - Observation refresh is safe to recreate after Core restart because it has no external side effect.
 - Android action execution has an encrypted device-side write-ahead ledger.
@@ -92,6 +119,10 @@ Do not claim Galaxy A53 or One UI validation until the physical protocol is exec
 - Local observation age, capture ordering, launch ordering, and action duration use `SystemClock.elapsedRealtime()` rather than the adjustable phone wall clock.
 - Each physical WebSocket reconnect creates a new clock generation; an old estimate cannot authorize a launch on the new socket.
 - The complete observation registry is still process-local; a successful UI result not validated before Core restart may lack old evidence and must fail closed.
+- Specialist task and invocation stores are currently process-local and do not yet claim crash recovery.
+- Model/tool usage is reserved before invocation and reconciled afterwards.
+- Deterministic routing and execution-critical Android infrastructure remain model-free.
+- Planning output is not permission, current-state evidence or proof of side-effect completion.
 
 ## Documentation style
 
@@ -101,3 +132,4 @@ Do not claim Galaxy A53 or One UI validation until the physical protocol is exec
 - Prefer typed examples over natural-language pseudocommands at execution boundaries.
 - State what remains untested or process-local.
 - Link follow-up issues rather than hiding known limitations.
+- State whether a route or operation uses a model, tool, connector or external mutation.
