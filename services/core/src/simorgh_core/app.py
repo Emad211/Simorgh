@@ -15,6 +15,9 @@ from simorgh_core.agents.invocation_store import (
     invocation_store_registry,
 )
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
+from simorgh_core.agents.usage_recovery import (
+    reconcile_task_store_invocation_usage,
+)
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_api import OperatorDependency
 from simorgh_core.devices.action_api import router as device_action_router
@@ -48,6 +51,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         )
         invocation_store = SQLiteInvocationStore(
             settings.simorgh_invocation_store_path,
+        )
+        reconcile_task_store_invocation_usage(
+            task_store=task_store,
+            invocation_records=invocation_store.load(),
         )
         await action_broker.configure_journal(
             action_journal,
