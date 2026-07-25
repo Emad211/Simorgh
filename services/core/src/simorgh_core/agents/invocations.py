@@ -254,7 +254,7 @@ class InvocationStore(Protocol):
         *,
         invocation_id: UUID,
         result_payload: dict[str, Any],
-        committed_usage: UsageVector = UsageVector(),
+        committed_usage: UsageVector = _ZERO_USAGE,
     ) -> InvocationRecord: ...
 
     def fail(
