@@ -1,6 +1,7 @@
 package ai.simorgh.android.accessibility
 
 import ai.simorgh.android.protocol.DeviceProtocol
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
