@@ -85,6 +85,7 @@ class BudgetAccount:
         request_id: UUID,
         limits: TaskBudget,
         monotonic_millis: Callable[[], int] | None = None,
+        initial_snapshot: BudgetSnapshot | None = None,
     ) -> None:
         self._request_id = request_id
         self._limits = limits
@@ -93,10 +94,45 @@ class BudgetAccount:
         )
         self._lock = RLock()
         self._started_at_ms = self._now_ms()
-        self._committed = UsageVector()
+        self._elapsed_offset_ms = 0
         self._reservations: dict[UUID, BudgetReservation] = {}
-        self._cancelled = False
-        self._exhausted_dimension: str | None = None
+
+        if initial_snapshot is None:
+            self._committed = UsageVector()
+            self._cancelled = False
+            self._exhausted_dimension: str | None = None
+        else:
+            if initial_snapshot.request_id != request_id:
+                raise ValueError("initial budget snapshot request_id does not match account")
+            if initial_snapshot.limits != limits:
+                raise ValueError("initial budget snapshot limits do not match account")
+            # Reservation identities are process-local. After restart, an unresolved reservation
+            # may already have reached an external provider/tool, so restore it conservatively as
+            # committed usage and never recreate the reservation for automatic replay.
+            self._committed = initial_snapshot.committed.plus(
+                initial_snapshot.reserved
+            )
+            self._cancelled = initial_snapshot.cancelled
+            self._exhausted_dimension = initial_snapshot.exhausted_dimension
+            self._elapsed_offset_ms = initial_snapshot.elapsed_ms
+            try:
+                self._ensure_within_limits_locked(self._committed)
+            except BudgetExceededError as exc:
+                self._exhausted_dimension = exc.dimension
+
+    @classmethod
+    def restore(
+        cls,
+        snapshot: BudgetSnapshot,
+        *,
+        monotonic_millis: Callable[[], int] | None = None,
+    ) -> BudgetAccount:
+        return cls(
+            request_id=snapshot.request_id,
+            limits=snapshot.limits,
+            monotonic_millis=monotonic_millis,
+            initial_snapshot=snapshot,
+        )
 
     @property
     def request_id(self) -> UUID:
@@ -252,7 +288,8 @@ class BudgetAccount:
         return self._usage_value(self._committed, dimension)
 
     def _elapsed_ms_locked(self) -> int:
-        return max(0, self._now_ms() - self._started_at_ms)
+        elapsed_this_process = max(0, self._now_ms() - self._started_at_ms)
+        return self._elapsed_offset_ms + elapsed_this_process
 
     def _now_ms(self) -> int:
         return max(0, int(self._monotonic_millis()))
