@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     )
     simorgh_action_journal_max_terminal_records: int = Field(
         default=256,
-        ge=0,
+        ge=1,
         le=100_000,
     )
 
