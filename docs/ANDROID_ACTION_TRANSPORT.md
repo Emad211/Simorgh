@@ -1,14 +1,14 @@
 # Android action transport
 
-Status: implemented typed transport with one live verified side effect: `open_app`
+Status: implemented typed, capability-gated, restart-safe transport with one live verified side effect: `open_app`.
 
 ## Purpose
 
 This subsystem transports one validated Android action from Simorgh Core to one private Android device and returns one typed result without silently duplicating an uncertain side effect.
 
-The transport does not interpret natural language and does not choose screen coordinates. Core accepts a schema-versioned `AndroidActionCommand`, applies semantic and capability checks, and sends it only to a current device Session that advertises the operation's enabled execution capability.
+The transport does not interpret natural language and does not choose screen coordinates. Core accepts a schema-versioned `AndroidActionCommand`, applies semantic and capability checks, persists ownership, and sends it only to a current device Session that advertises the operation's enabled execution capability.
 
-Android validates the command again, writes it to an encrypted ledger, and delegates it to exactly one installed executor.
+Android validates the command again, writes it to an encrypted device ledger, and delegates it to exactly one installed executor.
 
 ## Non-negotiable invariants
 
@@ -17,28 +17,31 @@ Android validates the command again, writes it to an encrypted ledger, and deleg
 3. Every live operation maps to an explicit versioned device capability.
 4. Initial dispatch requires a current connected Session advertising that capability.
 5. Negotiation failure occurs before command-envelope creation and broker identity ownership.
-6. `command_id`, `action_id`, and protocol `message_id` are UUIDs with distinct roles.
-7. Reconnect redelivers only the original command envelope and only to a compatible Session.
-8. Android writes an encrypted active ledger entry before invoking an executor.
-9. Process restart never blindly repeats an action whose execution state is uncertain.
+6. Core persists action ownership before returning status or crossing a side-effect boundary.
+7. `command_id`, `action_id`, and protocol `message_id` are UUIDs with distinct roles.
+8. Reconnect reuses only the original envelope; Core restart never blindly resends an uncertain command.
+9. Android writes an encrypted active ledger entry before invoking an executor.
 10. A completed result keeps one stable result `message_id` until Core acknowledges it.
-11. A new command is blocked while a prior result remains unacknowledged.
-12. Action result and observation payloads use dedicated bounded retry state machines.
+11. Core persists result identity before writing `device.action_result_ack`.
+12. A new Android command is blocked while a prior result remains unacknowledged.
 13. WebSocket writes are serialized per device Session.
 14. Model-provider credentials never cross the Core boundary.
 
-## Credentials
+## Credentials and persistence
 
 ```dotenv
 SIMORGH_DEVICE_TOKEN=<phone-to-core-websocket-token>
 SIMORGH_OPERATOR_TOKEN=<trusted-core-action-api-token>
 AVALAI_API_KEY=<core-only-model-provider-key>
+SIMORGH_ACTION_JOURNAL_PATH=.simorgh/action-journal.sqlite3
+SIMORGH_ACTION_JOURNAL_MAX_TERMINAL_RECORDS=256
 ```
 
-- `SIMORGH_DEVICE_TOKEN` authenticates the persistent Android WebSocket.
-- `SIMORGH_OPERATOR_TOKEN` authorizes action dispatch, status lookup, cancellation, and observation refresh APIs.
+- `SIMORGH_DEVICE_TOKEN` authenticates the Android WebSocket.
+- `SIMORGH_OPERATOR_TOKEN` authorizes action, status, cancellation, and observation-refresh APIs.
 - `AVALAI_API_KEY` remains on Core and is unrelated to device authentication.
-- Device, operator, and model-provider credentials are not interchangeable.
+- The action journal contains operational action state, not bearer tokens or model-provider keys.
+- Terminal retention is at least one record; the default is 256.
 
 The shared development device token is not the final pairing design. Per-device revocable credentials remain a later increment.
 
@@ -51,21 +54,21 @@ POST /v1/devices/{device_id}/actions/{action_id}/cancel
 Authorization: Bearer <SIMORGH_OPERATOR_TOKEN>
 ```
 
-`POST /actions` accepts only `AndroidActionCommand`. Raw natural-language instructions never cross the execution boundary.
+`POST /actions` accepts only `AndroidActionCommand`. Raw natural language never crosses the execution boundary.
 
 ## Capability negotiation
 
 Android registration contains a versioned capability list. Core enforces the current Session's list rather than inferring support from SDK level or a historical device profile.
 
-Initial live mapping:
+Current live mapping:
 
 ```text
 open_app -> android.open_app.execution.v1
 ```
 
-The shared schema also contains operation types reserved for later reviewed increments. Until their executors and capabilities are enabled, Core rejects them as `unsupported_operation` and does not create an action record.
+Schema operations reserved for later increments remain non-dispatchable until they have an executor and distinct capability.
 
-### Dispatch ordering
+Dispatch ordering:
 
 ```text
 schema validation
@@ -74,118 +77,83 @@ cross-field semantic validation
     ↓
 operation → capability mapping
     ↓
-current Session lookup
-    ↓
-capability comparison
+current Session and capability check
     ↓
 identifier and single-flight checks
     ↓
-command envelope creation
+command envelope construction
+    ↓
+durable queued record
     ↓
 current-Session revalidation
     ↓
-delivery
+durable delivery uncertainty
+    ↓
+socket write
 ```
 
-### Typed negotiation errors
+Typed errors distinguish:
 
-Disconnected current device:
+- HTTP 409 `device_not_connected`;
+- HTTP 409 `unsupported_device_capability`;
+- HTTP 422 `unsupported_operation`;
+- HTTP 503 `action_journal_unavailable`.
 
-```json
-{
-  "detail": {
-    "code": "device_not_connected",
-    "message": "device is not connected",
-    "operation_kind": "open_app",
-    "required_capabilities": [],
-    "missing_capabilities": [],
-    "available_capabilities": []
-  }
-}
-```
+Initial negotiation failure reserves no identifier. The exact same command can be submitted after a compatible Session registers.
 
-Connected Session missing execution capability:
-
-```json
-{
-  "detail": {
-    "code": "unsupported_device_capability",
-    "message": "current device session lacks required capability: android.open_app.execution.v1",
-    "operation_kind": "open_app",
-    "required_capabilities": ["android.open_app.execution.v1"],
-    "missing_capabilities": ["android.open_app.execution.v1"],
-    "available_capabilities": ["device.action_transport.v1"]
-  }
-}
-```
-
-Known schema operation without a live executor:
-
-```json
-{
-  "detail": {
-    "code": "unsupported_operation",
-    "message": "Android operation 'wait' is not enabled for Core dispatch",
-    "operation_kind": "wait",
-    "required_capabilities": [],
-    "missing_capabilities": [],
-    "available_capabilities": []
-  }
-}
-```
-
-Device-state conflicts use HTTP `409`; an operation without a live Core mapping uses HTTP `422`.
-
-Initial negotiation failure reserves no action or command identifier. The exact same command can be submitted after a compatible Session registers.
-
-See ADR 0010: [`adr/0010-enforced-android-action-capabilities.md`](adr/0010-enforced-android-action-capabilities.md).
+See ADR 0010 and [`CORE_ACTION_JOURNAL.md`](CORE_ACTION_JOURNAL.md).
 
 ## Wire messages
 
 | Direction | Type | Correlation rule |
 |---|---|---|
-| Core → Android | `device.action_command` | Stable command-envelope `message_id` |
-| Android → Core | `device.action_command_ack` | `correlation_id` = command-envelope `message_id` |
-| Android → Core | `device.action_result` | `correlation_id` = command-envelope `message_id`; stable result `message_id` |
-| Core → Android | `device.action_result_ack` | `correlation_id` = result-envelope `message_id` |
-| Core → Android | `device.action_cancel` | `correlation_id` = command-envelope `message_id`; stable cancel envelope |
-| Android → Core | `device.action_cancel_ack` | `correlation_id` = cancel-envelope `message_id` |
+| Core → Android | `device.action_command` | stable command-envelope `message_id` |
+| Android → Core | `device.action_command_ack` | `correlation_id` = command message ID |
+| Android → Core | `device.action_result` | stable result message ID; correlation = command message ID |
+| Core → Android | `device.action_result_ack` | correlation = result message ID |
+| Core → Android | `device.action_cancel` | stable cancel envelope; correlation = command message ID |
+| Android → Core | `device.action_cancel_ack` | correlation = cancel message ID |
 
-Every message remains in protocol envelope `1.0` and is rejected when its protocol version, device identity, UUID shape, byte limit, or typed payload is invalid.
+Every message remains in protocol envelope `1.0` and is rejected when protocol version, device identity, UUID shape, byte limit, or typed payload is invalid.
 
 ## Command acknowledgement statuses
 
-- `accepted`: encrypted ledger was written and an executor accepted ownership.
-- `duplicate`: exact command is active or already completed.
-- `busy`: another action or unacknowledged result owns the Android slot.
+- `accepted`: Android ledger was written and an executor accepted ownership.
+- `duplicate`: the exact command is already active or completed.
+- `busy`: another action or unacknowledged result owns Android's slot.
 - `expired`: deadline elapsed before Android accepted ownership.
 - `rejected`: validation, ledger state, or executor availability prevented acceptance.
 
-An ACK proves receipt state only. It does not prove that the requested visible state was reached.
+An ACK proves receipt state only. It does not prove the requested visible state was reached.
 
-## Core action broker
+## Durable Core action broker
 
-Core stores bounded process-local records keyed by `(device_id, action_id)`.
+Core stores records in a versioned SQLite journal and mirrors the validated state in memory.
 
 ```text
 queued → delivered → accepted → completed
                      └────────→ cancelled
 queued/delivered/accepted → cancelling → completed/cancelled
-queued/delivered/accepted → rejected/expired
+queued/delivered/accepted/cancelling → expired
+queued/delivered/cancelling → rejected
 ```
 
 The broker enforces:
 
-- current-Session connectivity and execution capability before new ownership;
-- one active record per device;
-- unique `command_id` ownership within a device;
-- immutable command content for reused `action_id`;
-- exact envelope replay after reconnect;
-- capability revalidation before command redelivery;
-- command, cancellation, and result correlation;
-- rejection of messages from obsolete replaced Sessions;
-- bounded terminal history;
-- duplicate result acceptance only when the complete typed result is identical.
+- write-before-visible state transitions;
+- current-Session capability before new ownership;
+- one active action per device;
+- unique command and envelope identities;
+- immutable command, cancellation, and result identity;
+- monotonic delivery count and timestamps;
+- allowlisted phase transitions;
+- exact command/result correlation;
+- rejection of obsolete Session messages;
+- bounded durable terminal history;
+- duplicate result acceptance only when envelope identity and complete typed payload are identical;
+- fail-closed HTTP 503 behavior after runtime journal failure.
+
+SQLite uses WAL, `synchronous=FULL`, `BEGIN IMMEDIATE`, schema versioning, `PRAGMA quick_check`, canonical JSON, SHA-256, indexed-column equality, and strict typed validation.
 
 ### Upgrade and downgrade behavior
 
@@ -193,21 +161,31 @@ The newest registered Session is authoritative for new actions.
 
 If a command has never crossed the device boundary and a replacement Session lacks its capability, Core may reject it safely.
 
-If delivery count is already non-zero or Android accepted the command, a downgrade does not prove the side effect never ran. Core therefore:
+If delivery may already have occurred, a downgrade does not prove the side effect never ran. Core:
 
-- does not send the command to the incompatible replacement Session;
-- preserves the existing phase;
-- records a diagnostic detail;
-- waits for a result or the original deadline;
+- does not send the command to the incompatible Session;
+- preserves the phase and durable identity;
+- waits for a result or original deadline;
 - never creates a replacement command implicitly.
 
-This preserves the at-most-once bias under ACK loss and app downgrade.
+### Core restart recovery
 
-The Core broker remains process-local. Durable Core action journal and orphaned-result recovery are tracked separately in issue #22.
+A recovered record is redispatchable only when all are true:
+
+```text
+phase = queued
+delivery_count = 0
+last_session_id = null
+command_ack = null
+```
+
+If delivery count, Session ownership, or command ACK exists, Core transfers result ownership to the new Session but does not resend the command.
+
+This preserves at-most-once behavior even when the previous socket write was uncertain.
 
 ## Android encrypted write-ahead ledger
 
-Before `AndroidActionHandler.submit`, Android stores:
+Before executor submission, Android persists:
 
 ```text
 schema_version
@@ -220,12 +198,12 @@ phase = active
 Properties:
 
 - AES-GCM authenticated encryption;
-- non-exportable AES key generated in Android Keystore;
-- ciphertext and IV in private SharedPreferences;
-- synchronous `commit()` before executor submission;
-- strict schema and normalization validation on every read.
+- non-exportable key from Android Keystore;
+- private SharedPreferences ciphertext and IV;
+- synchronous commit before executor invocation;
+- strict validation on every read.
 
-After completion, the record is atomically replaced with:
+After completion, Android atomically stores:
 
 ```text
 phase = completed
@@ -234,135 +212,137 @@ result
 result_acknowledged = false
 ```
 
-Result identity is generated once and persisted. Reconnect and retry reuse it.
+Reconnect and retry reuse the stable result identity.
 
-## Restart semantics
+## Restart and crash boundaries
 
-### Restart before, during, or immediately after executor submission
+### Android process restart during uncertain execution
 
-Android cannot prove that the side effect did not start. It does not replay the action. Recovery produces:
+Android cannot prove the side effect did not start, so it does not replay it. Recovery produces a conservative blocked result:
 
 ```text
 outcome = blocked
 failure_code = internal_error
-detail = execution state was unknown after Android process restart;
-         command was not re-executed
 ```
 
-This is an intentional at-most-once bias.
+### Core restart after uncertain command delivery
 
-### Restart after completion but before result acknowledgement
+Core does not redispatch. It waits for Android's persisted result or deadline.
 
-Android reloads the completed record and retransmits the exact result envelope. The device action is not re-executed.
+### Core crash after result persistence but before ACK
 
-## Result publisher
+```text
+persist exact result
+    ↓
+Core crashes before ACK
+    ↓
+Android replays exact envelope
+    ↓
+Core loads durable result
+    ↓
+duplicate ACK
+    ↓
+Android clears ledger
+```
 
-`ActionResultPublisher` owns one result delivery:
+A changed result message ID, correlation, or payload is a conflict, not a duplicate.
+
+### Observation evidence limitation
+
+The journal preserves a successful result after Core validated it. The complete observation registry is still process-local. A success claim first arriving after Core restart may lack old before/after evidence and remains rejected until evidence becomes durable or is safely replayed.
+
+Failed, blocked, timed-out, and cancelled results do not claim successful UI postconditions and can be associated with recovered action identity without reconstructing old UI evidence.
+
+## Result publisher and ACK bookkeeping
+
+Android's `ActionResultPublisher` owns one result delivery:
 
 - at most three sends per connection;
 - ten-second ACK timeout;
-- exact message and correlation IDs across retries;
+- stable message and correlation IDs;
 - failed socket send does not consume an attempt;
-- reconnect resets the per-connection attempt budget;
-- persisted result resumes after reconnect;
-- competing result cannot replace active delivery;
-- only matching command, action, and result-message correlation can clear it.
+- reconnect resumes the persisted result;
+- competing results cannot replace active delivery.
 
-For `accepted` or `duplicate`, Android persists `result_acknowledged=true`, then clears publisher state. For `unknown_action` or `rejected`, network retry stops but the encrypted ledger remains unacknowledged for controlled recovery.
+Core persists the result before ACK. After a successful ACK socket write, Core journals ACK status and timestamp. That timestamp does not prove Android received the ACK; Android remains authoritative and retransmits if its ledger was not cleared.
+
+For `accepted` or `duplicate`, Android marks the result acknowledged and clears its publisher/ledger state. For `unknown_action` or `rejected`, the encrypted result remains for controlled recovery.
 
 ## Cancellation
 
-Cancellation is cooperative, not a rollback guarantee.
+Cancellation is cooperative, not rollback:
 
-1. Core stores one stable cancel envelope.
+1. Core persists one stable cancel envelope.
 2. Android validates command/action identity against its ledger.
 3. A matching in-process executor receives `cancel()`.
 4. Android replies `accepted`, `duplicate`, `not_found`, or `completed`.
 5. The executor still owns the final typed result.
 
-Capability negotiation controls execution-command dispatch. Cancellation is a separate transport message for an action that may already exist on the device.
+Cancellation may be redelivered after Core restart because it requests stopping work rather than repeating the original side effect.
 
 ## Failure matrix
 
 | Failure | Behavior |
 |---|---|
-| Device disconnected during initial dispatch | HTTP 409 `device_not_connected`; no record or envelope |
-| Current Session lacks operation capability | HTTP 409 `unsupported_device_capability`; no record or envelope |
-| Operation has no live executor mapping | HTTP 422 `unsupported_operation`; no record or envelope |
-| Compatible Session disconnects after command delivery | Exact command may be redelivered only to another compatible Session |
-| Replacement Session lacks capability before any delivery | Action can become rejected safely |
-| Replacement Session lacks capability after possible delivery | No redelivery; phase retained until result/deadline |
-| Duplicate active command | Android returns `duplicate`; executor is not called again |
-| Android process dies with active ledger | Blocked recovery result; command is not replayed |
-| Result ACK is lost | Exact result envelope is retransmitted |
-| Result is replayed to Core | `duplicate` only when content is identical |
-| Different content reuses an identifier | Conflict; state is not overwritten |
-| Corrupt encrypted ledger | Command rejected before executor invocation |
+| Device disconnected during initial dispatch | HTTP 409; no durable record |
+| Capability missing | HTTP 409; no durable record |
+| Operation has no executor mapping | HTTP 422; no durable record |
+| Journal write fails | HTTP 503; broker stops mutating state |
+| Socket write fails after durable delivery attempt | state remains uncertain; exact retry in-process, no blind resend after restart |
+| Replacement Session lacks capability before delivery | action may be rejected safely |
+| Replacement Session lacks capability after possible delivery | no command redelivery; wait for result/deadline |
+| Duplicate active command | Android returns duplicate; executor is not called again |
+| Android dies with active ledger | blocked recovery result; command is not replayed |
+| Core dies after result persistence | exact replay receives duplicate ACK |
+| Result ACK is lost | Android retransmits exact result |
+| Result identity/content changes | conflict; durable state is not overwritten |
+| Journal schema or integrity is invalid | Core startup fails closed |
 | Competing action arrives | HTTP 409; current action retains ownership |
-| Oversized message | Rejected with message-too-big semantics |
-| Executor unavailable despite advertised capability | Android returns `rejected` |
 
-## Automated tests
+## Automated validation
 
-Core coverage includes:
+Core tests cover:
 
-- operator credential isolation;
-- operation-to-capability mapping;
-- unmapped operation rejection;
-- disconnected and missing-capability typed errors;
-- absence of command leakage after negotiation failure;
-- identifier reuse after compatible registration;
-- current replacement Session authority;
-- no redelivery after capability downgrade;
-- accepted action preservation after downgrade;
-- dispatch, command ACK, result, and result ACK;
-- duplicate result handling;
-- exact command replay after reconnect;
-- per-device single flight;
-- cancellation correlation;
-- identifier/content conflicts;
-- obsolete Session rejection.
+- capability negotiation and absence of command leakage;
+- journal close/reopen and schema version;
+- payload/index tampering and startup failure;
+- immutable command/envelope/result identity;
+- monotonic transitions and delivery counts;
+- write failure before API/socket visibility;
+- safe recovery of never-delivered queued command;
+- no redispatch of uncertain delivered/accepted command;
+- active single-flight ownership after restart;
+- orphaned result acceptance after Core restart;
+- crash after result persistence but before ACK;
+- exact replay receiving duplicate ACK;
+- conflicting replay rejection;
+- next action after terminal recovery;
+- cancellation, expiry, command ACK, and result correlation.
 
-Android JVM coverage includes:
+Android JVM tests cover:
 
-- ledger exists before handler submission;
-- active duplicate is not submitted twice;
-- synchronous completion is retained;
-- restart converts uncertain active state to a blocked result;
-- unacknowledged result blocks the next command;
-- mismatched result ACK cannot release the ledger;
-- corrupt ledger fails closed;
-- result retry preserves message and correlation IDs;
-- failed send resumes after reconnect without consuming an attempt;
-- competing result cannot replace active delivery;
-- protocol command/result/cancel correlation round trips.
+- ledger before handler submission;
+- duplicate suppression;
+- process-death recovery without replay;
+- unacknowledged result blocking the next command;
+- stable result retry identity;
+- mismatched ACK rejection;
+- corrupt ledger fail-closed behavior;
+- command/result/cancel protocol round trips.
 
 ## Physical Galaxy A53 boundary
 
-Capability filtering is a Core behavior and is covered automatically. The `open_app` executor itself still requires the documented physical Galaxy A53 protocol before One UI validation is claimed.
+Core journal and capability filtering are covered automatically. The `open_app` executor still requires its documented physical Galaxy A53 protocol before One UI validation is claimed.
 
-Record at minimum:
-
-- Android and One UI versions;
-- app commit and advertised capabilities;
-- command and result identities;
-- foreground/background launch conditions;
-- reconnect and process-death cases;
-- proof that no uncertain action executes twice.
+Record Android/One UI versions, APK commit, advertised capabilities, command/result identities, foreground/background conditions, reconnect/process death, and proof that no uncertain action executes twice.
 
 ## Current boundary
 
-Live action:
+Live actions:
 
 ```text
 open_app(package_name)
 open_app(package_name, uri)
 ```
 
-Other schema operations remain non-dispatchable until they receive:
-
-- an independent executor;
-- a versioned capability;
-- deterministic tests;
-- evidence-bound success semantics;
-- physical-device validation where applicable.
+Other schema operations remain non-dispatchable until they receive an independent executor, versioned capability, deterministic evidence-bound tests, and physical validation where applicable.
