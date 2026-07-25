@@ -13,6 +13,7 @@ from simorgh_core.devices.action_broker import (
     DeviceActionBusyError,
     DeviceActionConflictError,
     DeviceActionDeviceUnavailableError,
+    DeviceActionJournalUnavailableError,
     DeviceActionNotFoundError,
     DeviceActionPhase,
     DeviceActionRecord,
@@ -125,6 +126,16 @@ def _dispatch_error(
     )
 
 
+def _journal_unavailable(exc: DeviceActionJournalUnavailableError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "action_journal_unavailable",
+            "message": str(exc),
+        },
+    )
+
+
 @router.post(
     "/{device_id}/actions",
     response_model=DeviceActionStatusResponse,
@@ -143,6 +154,8 @@ async def dispatch_action(
         )
     except AndroidActionSemanticError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except DeviceActionJournalUnavailableError as exc:
+        raise _journal_unavailable(exc) from exc
     except DeviceActionDeviceUnavailableError as exc:
         raise _dispatch_error(
             status_code=status.HTTP_409_CONFLICT,
@@ -193,6 +206,8 @@ async def get_action_status(
 ) -> DeviceActionStatusResponse:
     try:
         record = await action_broker.get(device_id=device_id, action_id=action_id)
+    except DeviceActionJournalUnavailableError as exc:
+        raise _journal_unavailable(exc) from exc
     except DeviceActionNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return DeviceActionStatusResponse.from_record(record)
@@ -216,6 +231,8 @@ async def cancel_action(
             action_id=action_id,
             reason=payload.reason,
         )
+    except DeviceActionJournalUnavailableError as exc:
+        raise _journal_unavailable(exc) from exc
     except DeviceActionNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if record.terminal:

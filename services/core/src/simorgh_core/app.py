@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -8,16 +10,42 @@ from pydantic import BaseModel, ConfigDict, Field
 from simorgh_core import __version__
 from simorgh_core.config import Settings, get_settings
 from simorgh_core.devices.action_api import router as device_action_router
+from simorgh_core.devices.action_broker import action_broker
+from simorgh_core.devices.action_journal import SQLiteActionJournal
 from simorgh_core.devices.gateway import router as device_router
 from simorgh_core.devices.observation_refresh_api import (
     router as observation_refresh_router,
 )
 from simorgh_core.providers.avalai import AvalAIProvider, MissingAvalAICredentialsError
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    journal = SQLiteActionJournal(
+        settings.simorgh_action_journal_path,
+        max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
+    )
+    try:
+        await action_broker.configure_journal(
+            journal,
+            max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
+        )
+    except BaseException:
+        journal.close()
+        raise
+
+    try:
+        yield
+    finally:
+        await action_broker.reset_to_memory_journal()
+
+
 app = FastAPI(
     title="Simorgh Core API",
     version=__version__,
     description="Core orchestration API for the Simorgh personal agent operating system.",
+    lifespan=lifespan,
 )
 app.include_router(device_router)
 app.include_router(device_action_router)

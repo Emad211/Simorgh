@@ -195,7 +195,8 @@ async def _send_action_result_ack(
     result: AndroidActionResult,
     result_status: ActionResultAckStatus,
     detail: str = "",
-) -> None:
+) -> int:
+    sent_at_ms = int(time.time() * 1000)
     acknowledgement = ProtocolEnvelope.create(
         message_type="device.action_result_ack",
         device_id=session.device_id,
@@ -204,11 +205,12 @@ async def _send_action_result_ack(
             command_id=result.command_id,
             action_id=result.action_id,
             status=result_status,
-            received_at_ms=int(time.time() * 1000),
+            received_at_ms=sent_at_ms,
             detail=detail[:1_000],
         ),
     )
     await session.send_envelope(acknowledgement)
+    return sent_at_ms
 
 
 async def _reject_action_result(
@@ -315,17 +317,25 @@ async def _handle_action_result(
             )
             return
 
-    result_status, _ = await action_broker.record_result(
+    result_status, durable_record = await action_broker.record_result(
         session=session,
         envelope=envelope,
         result=result,
     )
-    await _send_action_result_ack(
+    sent_at_ms = await _send_action_result_ack(
         session=session,
         result_envelope=envelope,
         result=result,
         result_status=result_status,
     )
+    if durable_record is not None and result_status in {"accepted", "duplicate"}:
+        await action_broker.record_result_ack_sent(
+            device_id=session.device_id,
+            action_id=result.action_id,
+            result_envelope_id=envelope.message_id,
+            status=result_status,
+            sent_at_ms=sent_at_ms,
+        )
 
 
 async def _handle_action_cancel_ack(
