@@ -3,6 +3,7 @@ package ai.simorgh.android.time
 import android.os.SystemClock
 import java.util.LinkedHashMap
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 enum class CoreClockSyncFailureKind {
     INACTIVE_GENERATION,
@@ -25,9 +26,9 @@ data class CoreClockSyncOutcome(
 /**
  * Owns request/response boundaries used to estimate Core epoch time.
  *
- * Every physical WebSocket attempt receives a new generation. Probes from an obsolete socket are
- * never allowed to update the current estimate. Registration has exactly one outstanding probe;
- * heartbeat probes are bounded and keyed by their protocol message IDs.
+ * Every physical WebSocket attempt receives an external generation used to reject stale socket
+ * callbacks. The shared estimator receives a separate process-wide generation so two client
+ * instances can never invalidate one another by reusing the same local counter value.
  */
 class CoreClockSynchronizer(
     private val estimator: CoreClockEstimator = CoreClockBus.estimator,
@@ -39,6 +40,7 @@ class CoreClockSynchronizer(
     private val heartbeatProbes = LinkedHashMap<String, HeartbeatProbe>()
 
     private var activeGeneration: Long? = null
+    private var activeEstimatorGeneration: Long? = null
     private var registrationProbe: RegistrationProbe? = null
 
     init {
@@ -47,11 +49,13 @@ class CoreClockSynchronizer(
 
     fun beginGeneration(generation: Long) {
         require(generation >= 0)
+        val estimatorGeneration = CoreClockGenerationSequence.next()
         synchronized(lock) {
             activeGeneration = generation
+            activeEstimatorGeneration = estimatorGeneration
             registrationProbe = null
             heartbeatProbes.clear()
-            estimator.beginGeneration(generation)
+            estimator.beginGeneration(estimatorGeneration)
         }
     }
 
@@ -64,10 +68,12 @@ class CoreClockSynchronizer(
             ) {
                 return
             }
+            val estimatorGeneration = activeEstimatorGeneration
             activeGeneration = null
+            activeEstimatorGeneration = null
             registrationProbe = null
             heartbeatProbes.clear()
-            estimator.invalidate(current)
+            estimator.invalidate(estimatorGeneration)
         }
     }
 
@@ -80,7 +86,7 @@ class CoreClockSynchronizer(
         }
         val sentAt = monotonicMillis().coerceAtLeast(0)
         return synchronized(lock) {
-            if (activeGeneration != generation) {
+            if (activeGeneration != generation || activeEstimatorGeneration == null) {
                 return@synchronized false
             }
             registrationProbe = RegistrationProbe(
@@ -115,10 +121,12 @@ class CoreClockSynchronizer(
     ): CoreClockSyncOutcome {
         val receivedAt = monotonicMillis().coerceAtLeast(0)
         val receivedWall = wallClockMillis().coerceAtLeast(0)
-        val probe = synchronized(lock) {
+        val acceptedProbe = synchronized(lock) {
             if (activeGeneration != generation) {
                 return inactiveGenerationOutcome()
             }
+            val estimatorGeneration = activeEstimatorGeneration
+                ?: return inactiveGenerationOutcome()
             val current = registrationProbe
                 ?: return CoreClockSyncOutcome(
                     accepted = false,
@@ -135,11 +143,14 @@ class CoreClockSynchronizer(
                 )
             }
             registrationProbe = null
-            current
+            AcceptedProbe(
+                estimatorGeneration = estimatorGeneration,
+                sentAtElapsedMs = current.sentAtElapsedMs,
+            )
         }
         return sampleOutcome(
-            generation = generation,
-            probeSentAtElapsedMs = probe.sentAtElapsedMs,
+            estimatorGeneration = acceptedProbe.estimatorGeneration,
+            probeSentAtElapsedMs = acceptedProbe.sentAtElapsedMs,
             receivedAtElapsedMs = receivedAt,
             serverTimeMs = serverTimeMs,
             receivedWallClockMs = receivedWall,
@@ -157,7 +168,7 @@ class CoreClockSynchronizer(
         }
         val sentAt = monotonicMillis().coerceAtLeast(0)
         return synchronized(lock) {
-            if (activeGeneration != generation) {
+            if (activeGeneration != generation || activeEstimatorGeneration == null) {
                 return@synchronized false
             }
             heartbeatProbes[messageId] = HeartbeatProbe(
@@ -196,10 +207,12 @@ class CoreClockSynchronizer(
     ): CoreClockSyncOutcome {
         val receivedAt = monotonicMillis().coerceAtLeast(0)
         val receivedWall = wallClockMillis().coerceAtLeast(0)
-        val probe = synchronized(lock) {
+        val acceptedProbe = synchronized(lock) {
             if (activeGeneration != generation) {
                 return inactiveGenerationOutcome()
             }
+            val estimatorGeneration = activeEstimatorGeneration
+                ?: return inactiveGenerationOutcome()
             if (correlationId == null || !isUuid(correlationId)) {
                 return CoreClockSyncOutcome(
                     accepted = false,
@@ -225,11 +238,14 @@ class CoreClockSynchronizer(
                     detail = "heartbeat_ack sequence did not match its correlated probe",
                 )
             }
-            current
+            AcceptedProbe(
+                estimatorGeneration = estimatorGeneration,
+                sentAtElapsedMs = current.sentAtElapsedMs,
+            )
         }
         return sampleOutcome(
-            generation = generation,
-            probeSentAtElapsedMs = probe.sentAtElapsedMs,
+            estimatorGeneration = acceptedProbe.estimatorGeneration,
+            probeSentAtElapsedMs = acceptedProbe.sentAtElapsedMs,
             receivedAtElapsedMs = receivedAt,
             serverTimeMs = serverTimeMs,
             receivedWallClockMs = receivedWall,
@@ -240,7 +256,7 @@ class CoreClockSynchronizer(
     fun reading(): CoreClockReading? = estimator.reading()
 
     private fun sampleOutcome(
-        generation: Long,
+        estimatorGeneration: Long,
         probeSentAtElapsedMs: Long,
         receivedAtElapsedMs: Long,
         serverTimeMs: Long,
@@ -248,7 +264,7 @@ class CoreClockSynchronizer(
         source: String,
     ): CoreClockSyncOutcome {
         val sample = estimator.recordSample(
-            sampleGeneration = generation,
+            sampleGeneration = estimatorGeneration,
             requestSentElapsedMs = probeSentAtElapsedMs,
             responseReceivedElapsedMs = receivedAtElapsedMs,
             serverTimeMs = serverTimeMs,
@@ -292,11 +308,30 @@ class CoreClockSynchronizer(
         val sentAtElapsedMs: Long,
     )
 
+    private data class AcceptedProbe(
+        val estimatorGeneration: Long,
+        val sentAtElapsedMs: Long,
+    )
+
     private companion object {
         const val DEFAULT_MAX_PENDING_HEARTBEAT_PROBES: Int = 32
 
         fun isUuid(value: String): Boolean = runCatching {
             UUID.fromString(value)
         }.isSuccess
+    }
+}
+
+private object CoreClockGenerationSequence {
+    private val value = AtomicLong(0)
+
+    fun next(): Long {
+        while (true) {
+            val current = value.get()
+            val next = if (current == Long.MAX_VALUE) 1 else current + 1
+            if (value.compareAndSet(current, next)) {
+                return next
+            }
+        }
     }
 }
