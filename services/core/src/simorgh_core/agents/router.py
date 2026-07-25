@@ -28,17 +28,17 @@ _WHITESPACE = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^\w\u0600-\u06ff]+", flags=re.UNICODE)
 _PERSIAN_TRANSLATION = str.maketrans(
     {
-        "ي": "ی",
-        "ى": "ی",
-        "ك": "ک",
-        "ة": "ه",
-        "ۀ": "ه",
-        "ؤ": "و",
-        "إ": "ا",
-        "أ": "ا",
-        "ٱ": "ا",
-        "‌": " ",
-        "‍": " ",
+        "\u064a": "\u06cc",  # Arabic yeh -> Persian yeh
+        "\u0649": "\u06cc",  # alef maksura -> Persian yeh
+        "\u0643": "\u06a9",  # Arabic kaf -> Persian kaf
+        "\u0629": "\u0647",  # teh marbuta -> heh
+        "\u06c0": "\u0647",  # heh with yeh above -> heh
+        "\u0624": "\u0648",  # waw with hamza -> waw
+        "\u0625": "\u0627",  # alef with hamza below -> alef
+        "\u0623": "\u0627",  # alef with hamza above -> alef
+        "\u0671": "\u0627",  # alef wasla -> alef
+        "\u200c": " ",  # zero-width non-joiner
+        "\u200d": " ",  # zero-width joiner
     }
 )
 _ROUTER_AGENT_ID = "system.specialist-router"
@@ -313,7 +313,7 @@ class SpecialistRouter:
 
 
 class _RuleScore:
-    __slots__ = ("definition", "score", "rule_ids")
+    __slots__ = ("definition", "rule_ids", "score")
 
     def __init__(
         self,
