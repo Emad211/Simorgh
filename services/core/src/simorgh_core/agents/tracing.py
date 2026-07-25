@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping, Protocol
+from collections.abc import Callable, Mapping
 from enum import StrEnum
 from threading import RLock
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
