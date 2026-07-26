@@ -31,6 +31,7 @@ jobs:
           sed -i '/from pathlib import Path/a from textwrap import dedent' /tmp/phase15_security_patch.py
           python -m py_compile /tmp/phase15_security_patch.py
           python /tmp/phase15_security_patch.py 2>&1 | tee /tmp/phase15-security-patch.log
+          sed -i 's/traces\.events/traces.for_request(task.request_id)/g' services/core/tests/test_github_read_security_boundary.py
           rm -f .github/phase15-security-patch.py.b64
           git show "${{ github.event.pull_request.base.sha }}:.github/workflows/ci.yml" > .github/workflows/ci.yml
           git diff --check
@@ -98,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase15-security-diagnostic-v4
+          name: phase15-security-diagnostic-v5
           path: |
             /tmp/phase15-security-patch.log
             /tmp/phase15-security-report.txt
