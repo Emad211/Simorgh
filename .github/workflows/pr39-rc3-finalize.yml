@@ -7,10 +7,12 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: pr39-rc3-finalize
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   finalize:
@@ -24,6 +26,15 @@ jobs:
         with:
           ref: core/durable-agent-invocation-store
           fetch-depth: 0
+
+      - name: Report finalizer start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/issues/39/comments" \
+            -f body="PR39 RC3 finalizer started on exact head ${GITHUB_SHA}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -147,3 +158,23 @@ jobs:
           git diff --cached --check
           git commit -m 'core: harden durable invocation replay and recovery'
           git push origin "HEAD:$BRANCH"
+
+      - name: Report finalizer success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/issues/39/comments" \
+            -f body="PR39 RC3 finalizer passed all targeted, Core, and Android gates and pushed the validated product commit. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Report finalizer failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/issues/39/comments" \
+            -f body="PR39 RC3 finalizer failed closed; no product commit was claimed. Inspect run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
