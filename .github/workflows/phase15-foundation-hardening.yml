@@ -1,4 +1,4 @@
-name: Phase 1.5 GitHub Read Foundation Finalizer v2
+name: Phase 1.5 GitHub Read Foundation Finalizer v3
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Apply exact policy type and lint hardening
+      - name: Apply exact contract policy type and lint hardening
         shell: bash
         run: |
           set -euo pipefail
@@ -38,22 +38,6 @@ jobs:
               if count != 1:
                   raise SystemExit(f'{label} anchor count={count}, expected=1')
               file.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          replace_once(
-              'services/core/src/simorgh_core/agents/defaults.py',
-              '            tool_allowlist=frozenset(),\n'
-              '            connector_allowlist=frozenset({"github"}),\n',
-              '            tool_allowlist=frozenset(\n'
-              '                {\n'
-              '                    "github.search",\n'
-              '                    "github.fetch-file",\n'
-              '                    "github.fetch-issue",\n'
-              '                    "github.fetch-pr",\n'
-              '                }\n'
-              '            ),\n'
-              '            connector_allowlist=frozenset({"github"}),\n',
-              label='github read tool allowlist',
-          )
 
           contracts = 'services/core/src/simorgh_core/agents/github_read_contracts.py'
           replace_once(
@@ -171,6 +155,7 @@ jobs:
           )
           PY
           rm -f .github/workflows/phase15-foundation-hardening.yml
+          rm -f .github/workflows/phase15-foundation-diagnostic.yml
           git diff --check
 
       - uses: actions/setup-python@v5
