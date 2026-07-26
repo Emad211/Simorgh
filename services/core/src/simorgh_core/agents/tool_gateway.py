@@ -61,6 +61,10 @@ class ToolMutationBlockedError(ToolGatewayError):
     pass
 
 
+class ToolResultRejectedError(ToolGatewayError):
+    """Sanitized deterministic rejection after a structured tool returned."""
+
+
 class ToolInvoker(Protocol):
     async def invoke(
         self,
@@ -127,9 +131,7 @@ class ToolCallResult(BaseModel):
         try:
             canonical_json(value)
         except ValueError:
-            raise ValueError(
-                "tool result payload must be strict JSON data"
-            ) from None
+            raise ValueError("tool result payload must be strict JSON data") from None
         return value
 
 
@@ -174,9 +176,7 @@ class BudgetedToolGateway:
                 connector_id=request.connector_id,
             )
         except InvocationStoreError as exc:
-            raise ToolGatewayError(
-                "tool invocation identity could not be durably claimed"
-            ) from exc
+            raise ToolGatewayError("tool invocation identity could not be durably claimed") from exc
 
         if started.kind == InvocationStartKind.REPLAY:
             return self._replay_result(
@@ -232,9 +232,7 @@ class BudgetedToolGateway:
                 outcome="invocation_store_failure",
                 reason="tool was not issued because durable reservation failed",
             )
-            raise ToolGatewayError(
-                "tool invocation could not be durably reserved"
-            ) from None
+            raise ToolGatewayError("tool invocation could not be durably reserved") from None
 
         self._emit(
             request=request,
@@ -255,6 +253,44 @@ class BudgetedToolGateway:
                 tool_id=request.tool_id,
                 arguments=request.arguments,
             )
+        except ToolResultRejectedError:
+            actual_usage = UsageVector(tool_calls=1)
+            try:
+                budget.reconcile(
+                    reservation_id=reservation.reservation_id,
+                    actual_usage=actual_usage,
+                )
+            except BudgetError as exc:
+                self._record_failure(
+                    invocation_id=request.invocation_id,
+                    failure_code="budget_reconciliation_failed",
+                    failure_detail="tool_result_rejection_reconciliation_failed",
+                    committed_usage=actual_usage,
+                )
+                self._emit(
+                    request=request,
+                    kind=TraceEventKind.TOOL_FAILED,
+                    usage=actual_usage,
+                    outcome="budget_reconciliation_failed",
+                    reason="rejected tool result usage could not be reconciled",
+                )
+                raise ToolGatewayError(
+                    "rejected structured tool usage could not be reconciled"
+                ) from exc
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="tool_result_rejected",
+                failure_detail="typed_tool_result_rejected",
+                committed_usage=actual_usage,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=actual_usage,
+                outcome="tool_result_rejected",
+                reason="structured tool returned a deterministic policy-invalid projection",
+            )
+            raise ToolGatewayError("structured tool result was rejected") from None
         except asyncio.CancelledError:
             with suppress(ToolGatewayError):
                 self._mark_unknown_and_settle(
@@ -376,9 +412,7 @@ class BudgetedToolGateway:
                 outcome="invocation_store_failure",
                 reason="tool result could not be durably committed",
             )
-            raise ToolGatewayError(
-                "tool result could not be durably committed"
-            ) from None
+            raise ToolGatewayError("tool result could not be durably committed") from None
         self._emit(
             request=request,
             kind=TraceEventKind.TOOL_COMPLETED,
@@ -402,9 +436,7 @@ class BudgetedToolGateway:
             outcome="budget_identity_mismatch",
             reason="tool request and request budget identities do not match",
         )
-        raise ToolGatewayError(
-            "tool request budget identity does not match request"
-        )
+        raise ToolGatewayError("tool request budget identity does not match request")
 
     def _require_policy(self, request: ToolCallRequest) -> None:
         try:
@@ -456,20 +488,11 @@ class BudgetedToolGateway:
         replayed = ToolCallResult.model_validate(payload)
         expected_usage = UsageVector(tool_calls=1)
         if replayed.invocation_id != request.invocation_id:
-            raise ToolGatewayError(
-                "durable tool result invocation identity does not match request"
-            )
-        if (
-            replayed.tool_id != request.tool_id
-            or replayed.connector_id != request.connector_id
-        ):
-            raise ToolGatewayError(
-                "durable tool result target identity does not match request"
-            )
+            raise ToolGatewayError("durable tool result invocation identity does not match request")
+        if replayed.tool_id != request.tool_id or replayed.connector_id != request.connector_id:
+            raise ToolGatewayError("durable tool result target identity does not match request")
         if committed_usage != expected_usage:
-            raise ToolGatewayError(
-                "durable tool result usage does not match invocation accounting"
-            )
+            raise ToolGatewayError("durable tool result usage does not match invocation accounting")
         self._emit(
             request=request,
             kind=TraceEventKind.INVOCATION_REPLAYED,
@@ -526,9 +549,7 @@ class BudgetedToolGateway:
                 committed_usage=committed_usage,
             )
         except InvocationStoreError as exc:
-            raise ToolGatewayError(
-                "tool invocation failure could not be durably recorded"
-            ) from exc
+            raise ToolGatewayError("tool invocation failure could not be durably recorded") from exc
 
     def _mark_unknown(
         self,

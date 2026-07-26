@@ -45,7 +45,7 @@ Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
 Phase 1.3 Specialist Execution           COMPLETE — PR #44
 Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
-Phase 1.5 Governed GitHub Read Tools     QUEUED
+Phase 1.5 Governed GitHub Read Tools     VALIDATING — PR #52
 Phase 1.6 Cancellation Propagation       QUEUED
 Phase 1.7 Context Compiler               QUEUED
 Phase 1.8 End-to-End Trace               QUEUED
@@ -314,7 +314,9 @@ Separate durable structured results and evidence from user-facing natural-langua
 - no production artifact-byte storage;
 - no live provider, GitHub connector, MCP, mutation executor, Voice, Notification, Memory or new Android effect.
 
-## 1.5 Governed read-only tool execution — QUEUED
+## 1.5 Governed read-only tool execution — VALIDATING
+
+Implementation is active in PR #52 for issue #51. The product scope remains one read-only GitHub trust boundary; final merge status requires exact-head Core and Android CI plus review audit.
 
 ### Objective
 
