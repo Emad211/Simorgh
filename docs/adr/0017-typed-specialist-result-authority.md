@@ -1,6 +1,6 @@
 # ADR 0017: Typed specialist result authority
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Governing issue: #46
 - Implementation PR: #48
@@ -144,12 +144,17 @@ Costs and limits:
 - there is no public result endpoint yet;
 - there are no live connectors, model calls, mutations, MCP, Voice, Notification, Memory or new Android effects.
 
-## Validation required before acceptance
+## Acceptance evidence
 
-- Ruff, strict MyPy and full Core tests pass on the exact PR Head;
-- Android build, JVM tests, lint and debug APK pass on the exact PR Head;
-- restart replay returns the identical result and does not duplicate usage;
-- corruption, schema mismatch, identity mismatch and changed references fail closed;
-- private payload markers do not appear in errors or traces;
-- all review threads are resolved;
-- Phase 1.4 documentation and validation evidence are synchronized.
+The implementation boundary was accepted after exact-head validation on commit `6af7f8d8ccb5e22c57dd8b0c50cfe6aa4e2a3e89`, GitHub Actions run `30216134239`:
+
+- Ruff passed;
+- strict MyPy passed;
+- 317 Core tests passed;
+- Android build, JVM tests and lint passed;
+- debug APK artifact was produced;
+- restart replay preserved result identity and committed usage;
+- corruption, schema mismatch, identity mismatch and changed references failed closed;
+- private payload markers remained absent from errors and traces;
+- no unresolved review thread existed;
+- Phase 1.4 operational and validation documentation was synchronized.
