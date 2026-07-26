@@ -42,8 +42,8 @@ A step is not complete because code exists. It is complete only when its failure
 ```text
 Phase 0 Governance                       COMPLETE
 Phase 1.1 Durable Task Store             COMPLETE — PR #37
-Phase 1.2 Durable Invocation Store       VALIDATING — issue #38 / PR #39
-Phase 1.3 Specialist Execution           QUEUED
+Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
+Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #41
 Phase 1.4 Typed Results and Artifacts    QUEUED
 Phase 1.5 Governed GitHub Read Tools     QUEUED
 Phase 1.6 Cancellation Propagation       QUEUED
@@ -114,9 +114,9 @@ Make task identity, routing state, budget snapshot, cancellation, expiry and rep
 
 Task replay protection currently follows retained task payloads. Compact long-lived tombstones are a future retention design.
 
-## 1.2 Durable invocation store — VALIDATING
+## 1.2 Durable invocation store — COMPLETE
 
-Issue #38; Draft PR #39.
+Merged through PR #39 at `49026c89a2a0ba05b179665a993bb66385d880f4`.
 
 ### Objective
 
@@ -203,7 +203,20 @@ durable completed result or terminal uncertainty
 - no Voice/Notification/MCP work;
 - no distributed multi-process store lease.
 
-## 1.3 Specialist execution interface — QUEUED
+## 1.3 Specialist execution interface — VALIDATING
+
+Issue #40; Draft PR #41.
+
+Implemented in the open PR:
+
+- immutable request/result contracts derived from durable route and compiled policy;
+- explicit capability subset and task/policy budget intersection;
+- exact-version implementation registry and deterministic zero-cost proposal executor;
+- durable `InvocationStore(kind=specialist)` execution and SQLite restart replay;
+- cancellation, expiry, changed-context conflict, failure sanitization and result terminalization;
+- routed-task adapter with widened/exhausted budget rejection;
+- internal zero-external execution control plane with active cancellation and duplicate suppression;
+- no public execution endpoint, connector, MCP, model, mutation or Android side effect.
 
 ### Objective
 
