@@ -1,0 +1,267 @@
+name: PR47 Result Linkage and Control Finalizer
+
+on:
+  push:
+    branches:
+      - core/typed-results-artifacts
+    paths:
+      - .github/workflows/pr47-linkage-control-final.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr47-result-linkage-control-final
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply nonduplicating invocation linkage across authority control and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, *, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} anchor count={count}, expected=1')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          authority = 'services/core/src/simorgh_core/agents/result_authority.py'
+          replace_once(
+              authority,
+              'from simorgh_core.agents.contracts import UsageVector\n',
+              '',
+              label='remove duplicate usage authority import',
+          )
+          replace_once(
+              authority,
+              '    committed_usage: UsageVector = Field(default_factory=UsageVector)\n'
+              '    invocation_result_sha256: str = Field(\n',
+              '    invocation_usage_sha256: str = Field(\n'
+              '        min_length=64,\n'
+              '        max_length=64,\n'
+              '        pattern=_SHA256_PATTERN,\n'
+              '    )\n'
+              '    invocation_result_sha256: str = Field(\n',
+              label='usage hash field',
+          )
+          replace_once(
+              authority,
+              '    committed_usage: UsageVector | None = None,\n'
+              '    invocation_result_sha256: str | None = None,\n',
+              '    invocation_usage_sha256: str,\n'
+              '    invocation_result_sha256: str,\n',
+              label='required invocation hashes',
+          )
+          replace_once(
+              authority,
+              '        committed_usage=committed_usage or UsageVector(),\n'
+              '        invocation_result_sha256=(\n'
+              '            invocation_result_sha256\n'
+              '            or canonical_fingerprint(\n'
+              '                {"invocation_id": str(producer.invocation_id)}\n'
+              '            )\n'
+              '        ),\n',
+              '        invocation_usage_sha256=invocation_usage_sha256,\n'
+              '        invocation_result_sha256=invocation_result_sha256,\n',
+              label='remove synthetic invocation linkage',
+          )
+
+          terminalizer = 'services/core/src/simorgh_core/agents/result_terminalizer.py'
+          replace_once(
+              terminalizer,
+              '            committed_usage=invocation.committed_usage,\n'
+              '            invocation_result_sha256=canonical_fingerprint(durable_result_payload),\n',
+              '            invocation_usage_sha256=canonical_fingerprint(\n'
+              '                invocation.committed_usage\n'
+              '            ),\n'
+              '            invocation_result_sha256=canonical_fingerprint(\n'
+              '                durable_result_payload\n'
+              '            ),\n',
+              label='terminalizer invocation hash linkage',
+          )
+
+          control = 'services/core/src/simorgh_core/agents/result_control.py'
+          replace_once(
+              control,
+              '    payload_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")\n'
+              '    result_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")\n',
+              '    payload_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")\n'
+              '    result_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")\n'
+              '    invocation_usage_sha256: str = Field(\n'
+              '        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"\n'
+              '    )\n'
+              '    invocation_result_sha256: str = Field(\n'
+              '        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"\n'
+              '    )\n',
+              label='status invocation hashes',
+          )
+          replace_once(
+              control,
+              '                usage=record.committed_usage,\n'
+              '                outcome=f"result_{disposition.value}",\n',
+              '                outcome=f"result_{disposition.value}",\n',
+              label='remove duplicated usage trace',
+          )
+          replace_once(
+              control,
+              '                    "payload_sha256": record.payload_sha256,\n'
+              '                    "output_contract": record.output_contract,\n',
+              '                    "payload_sha256": record.payload_sha256,\n'
+              '                    "invocation_usage_sha256": record.invocation_usage_sha256,\n'
+              '                    "invocation_result_sha256": record.invocation_result_sha256,\n'
+              '                    "output_contract": record.output_contract,\n',
+              label='trace invocation hashes',
+          )
+          replace_once(
+              control,
+              '        payload_sha256=record.payload_sha256,\n'
+              '        result_sha256=record.result_sha256,\n',
+              '        payload_sha256=record.payload_sha256,\n'
+              '        result_sha256=record.result_sha256,\n'
+              '        invocation_usage_sha256=record.invocation_usage_sha256,\n'
+              '        invocation_result_sha256=record.invocation_result_sha256,\n',
+              label='status mapping hashes',
+          )
+
+          authority_tests = 'services/core/tests/test_result_authority.py'
+          replace_once(
+              authority_tests,
+              '        retention=RetentionClass.PROJECT,\n'
+              '        created_at_ms=1_000,\n'
+              '        completed_at_ms=3_000,\n',
+              '        retention=RetentionClass.PROJECT,\n'
+              '        invocation_usage_sha256="c" * 64,\n'
+              '        invocation_result_sha256="d" * 64,\n'
+              '        created_at_ms=1_000,\n'
+              '        completed_at_ms=3_000,\n',
+              label='authority fixture hashes',
+          )
+          replace_once(
+              authority_tests,
+              '            retention=RetentionClass.PROJECT,\n'
+              '            created_at_ms=1_000,\n'
+              '            completed_at_ms=2_000,\n',
+              '            retention=RetentionClass.PROJECT,\n'
+              '            invocation_usage_sha256="c" * 64,\n'
+              '            invocation_result_sha256="d" * 64,\n'
+              '            created_at_ms=1_000,\n'
+              '            completed_at_ms=2_000,\n',
+              label='invalid payload fixture hashes',
+          )
+
+          store_tests = 'services/core/tests/test_result_store_terminalizer.py'
+          replace_once(
+              store_tests,
+              '    InvocationKind,\n'
+              ')\n',
+              '    InvocationKind,\n'
+              '    canonical_fingerprint,\n'
+              ')\n',
+              label='test canonical fingerprint import',
+          )
+          replace_once(
+              store_tests,
+              '        committed_usage=UsageVector(),\n'
+              '        invocation_result_sha256="c" * 64,\n',
+              '        invocation_usage_sha256="d" * 64,\n'
+              '        invocation_result_sha256="c" * 64,\n',
+              label='store fixture hashes',
+          )
+          replace_once(
+              store_tests,
+              '        committed_usage=record.committed_usage,\n'
+              '        invocation_result_sha256=record.invocation_result_sha256,\n',
+              '        invocation_usage_sha256=record.invocation_usage_sha256,\n'
+              '        invocation_result_sha256=record.invocation_result_sha256,\n',
+              label='changed result fixture hashes',
+          )
+          replace_once(
+              store_tests,
+              '    assert created.record.committed_usage == invocation.committed_usage\n'
+              '    assert created.record.invocation_result_sha256 != "0" * 64\n',
+              '    assert created.record.invocation_usage_sha256 == canonical_fingerprint(\n'
+              '        invocation.committed_usage\n'
+              '    )\n'
+              '    assert created.record.invocation_result_sha256 == canonical_fingerprint(\n'
+              '        invocation.result_payload\n'
+              '    )\n',
+              label='terminalizer invocation assertions',
+          )
+
+          control_tests = 'services/core/tests/test_result_control.py'
+          replace_once(
+              control_tests,
+              '    assert status.result_sha256 == created.record.result_sha256\n'
+              '    assert status.privacy == PrivacyClassification.PRIVATE\n',
+              '    assert status.result_sha256 == created.record.result_sha256\n'
+              '    assert status.invocation_usage_sha256 == created.record.invocation_usage_sha256\n'
+              '    assert status.invocation_result_sha256 == created.record.invocation_result_sha256\n'
+              '    assert status.privacy == PrivacyClassification.PRIVATE\n',
+              label='control status invocation hashes',
+          )
+          replace_once(
+              control_tests,
+              '    assert created.record.payload_sha256 in encoded\n'
+              '    assert "result_created" in encoded\n',
+              '    assert created.record.payload_sha256 in encoded\n'
+              '    assert created.record.invocation_usage_sha256 in encoded\n'
+              '    assert created.record.invocation_result_sha256 in encoded\n'
+              '    assert "result_created" in encoded\n',
+              label='control trace invocation hashes',
+          )
+          PY
+          rm -f .github/workflows/pr47-linkage-control-final.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run complete nonduplicating result authority gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Commit validated linkage control and trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: link typed results to invocation hashes without duplicate usage'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/typed-results-artifacts
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
