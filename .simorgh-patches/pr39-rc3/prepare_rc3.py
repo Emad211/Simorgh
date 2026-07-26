@@ -4,13 +4,12 @@ import argparse
 import ast
 import base64
 import hashlib
-import os
-from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import subprocess
 import sys
 import zipfile
+from pathlib import Path, PurePosixPath
 
 ARCHIVE_SHA256 = "dde9c1eed40d319b1fde9e913b3510aa0fd4fa0e36b31436d58c8d231fa2f2a4"
 ARCHIVE_BYTES = 53_811
