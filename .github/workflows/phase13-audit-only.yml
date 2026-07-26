@@ -30,6 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo 'Audit trigger version: 2'
           patch_dir=.simorgh-patches/phase13
           test "$(find "$patch_dir" -maxdepth 1 -name 'part-*.b64' -type f | wc -l)" -eq 3
           cat "$patch_dir"/part-00.b64 "$patch_dir"/part-01.b64 "$patch_dir"/part-02.b64 \
