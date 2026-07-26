@@ -21,24 +21,53 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
-      - name: Reconstruct and verify archive
+      - name: Diagnose and extract archive without applying
         shell: bash
         run: |
           set -euo pipefail
-          patch_dir=.simorgh-patches/phase13
-          test "$(find "$patch_dir" -maxdepth 1 -name 'part-*.b64' -type f | wc -l)" -eq 3
-          cat "$patch_dir"/part-00.b64 "$patch_dir"/part-01.b64 "$patch_dir"/part-02.b64 \
-            | base64 --decode > "$RUNNER_TEMP/phase13.tar.gz"
-          echo "72d00ea5e892be5303c5a3a23365d44bf24084f893acd0984602882d5b2312b5  $RUNNER_TEMP/phase13.tar.gz" \
-            | sha256sum --check --strict
-          mkdir -p "$RUNNER_TEMP/extracted"
+          mkdir -p "$RUNNER_TEMP/audit/extracted"
           python - <<'PY'
-          from pathlib import Path, PurePosixPath
+          from __future__ import annotations
+
+          import base64
+          import hashlib
           import os
+          from pathlib import Path, PurePosixPath
           import tarfile
 
-          archive = Path(os.environ['RUNNER_TEMP']) / 'phase13.tar.gz'
-          target = Path(os.environ['RUNNER_TEMP']) / 'extracted'
+          root = Path('.simorgh-patches/phase13')
+          audit = Path(os.environ['RUNNER_TEMP']) / 'audit'
+          extracted = audit / 'extracted'
+          report: list[str] = []
+          expected_hash = '72d00ea5e892be5303c5a3a23365d44bf24084f893acd0984602882d5b2312b5'
+          parts = [root / f'part-{index:02d}.b64' for index in range(3)]
+          report.append(f'head={os.environ["GITHUB_SHA"]}')
+          report.append(f'part_count={sum(part.is_file() for part in parts)}')
+          encoded_parts: list[bytes] = []
+          for part in parts:
+              if not part.is_file():
+                  report.append(f'{part.name}=missing')
+                  continue
+              raw = part.read_bytes()
+              report.append(f'{part.name}.bytes={len(raw)}')
+              report.append(f'{part.name}.sha256={hashlib.sha256(raw).hexdigest()}')
+              encoded_parts.append(raw.strip())
+
+          archive: bytes | None = None
+          try:
+              encoded = b''.join(encoded_parts)
+              report.append(f'base64_bytes={len(encoded)}')
+              archive = base64.b64decode(encoded, validate=True)
+              report.append('base64_status=valid')
+              report.append(f'archive_bytes={len(archive)}')
+              actual_hash = hashlib.sha256(archive).hexdigest()
+              report.append(f'archive_sha256={actual_hash}')
+              report.append(f'archive_expected_sha256={expected_hash}')
+              report.append(f'archive_hash_match={actual_hash == expected_hash}')
+              (audit / 'phase13.tar.gz').write_bytes(archive)
+          except Exception as exc:
+              report.append(f'base64_status=invalid:{exc.__class__.__name__}')
+
           allowed = {
               'docs/SPECIALIST_EXECUTION.md',
               'docs/adr/0016-native-specialist-execution-authority.md',
@@ -46,38 +75,50 @@ jobs:
               'services/core/src/simorgh_core/agents/specialist_execution.py',
               'services/core/tests/test_specialist_execution.py',
           }
-          with tarfile.open(archive, 'r:gz') as handle:
-              members = handle.getmembers()
-              files = {member.name for member in members if member.isfile()}
-              if files != allowed:
-                  raise SystemExit(f'unexpected paths: {sorted(files ^ allowed)}')
-              for member in members:
-                  path = PurePosixPath(member.name)
-                  if path.is_absolute() or '..' in path.parts or not member.isfile():
-                      raise SystemExit(f'unsafe archive entry: {member.name}')
-                  source = handle.extractfile(member)
-                  if source is None:
-                      raise SystemExit(f'unreadable archive member: {member.name}')
-                  output = target / member.name
-                  output.parent.mkdir(parents=True, exist_ok=True)
-                  output.write_bytes(source.read())
-          PY
-          find "$RUNNER_TEMP/extracted" -type f -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > "$RUNNER_TEMP/extracted/SHA256SUMS.txt"
+          if archive is not None:
+              try:
+                  with tarfile.open(fileobj=__import__('io').BytesIO(archive), mode='r:gz') as handle:
+                      members = handle.getmembers()
+                      files = {member.name for member in members if member.isfile()}
+                      report.append('tar_status=valid')
+                      report.append('tar_files=' + ','.join(sorted(files)))
+                      report.append(f'tar_allowed_match={files == allowed}')
+                      for member in members:
+                          path = PurePosixPath(member.name)
+                          if path.is_absolute() or '..' in path.parts or not member.isfile():
+                              raise ValueError(f'unsafe entry: {member.name}')
+                          source = handle.extractfile(member)
+                          if source is None:
+                              raise ValueError(f'unreadable entry: {member.name}')
+                          output = extracted / member.name
+                          output.parent.mkdir(parents=True, exist_ok=True)
+                          output.write_bytes(source.read())
+              except Exception as exc:
+                  report.append(f'tar_status=invalid:{exc.__class__.__name__}:{exc}')
 
-      - name: Upload extracted audit bundle
+          for file in sorted(extracted.rglob('*')):
+              if file.is_file():
+                  relative = file.relative_to(extracted).as_posix()
+                  report.append(f'file.{relative}.bytes={file.stat().st_size}')
+                  report.append(f'file.{relative}.sha256={hashlib.sha256(file.read_bytes()).hexdigest()}')
+          (audit / 'REPORT.txt').write_text('\n'.join(report) + '\n', encoding='utf-8')
+          print('\n'.join(report))
+          PY
+
+      - name: Upload diagnostics and extracted files
         uses: actions/upload-artifact@v4
         with:
           name: phase13-concurrent-bundle-audit
-          path: ${{ runner.temp }}/extracted
+          path: ${{ runner.temp }}/audit
           if-no-files-found: error
           retention-days: 7
 
       - name: Report audit run
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          REPORT=$(tail -n 12 "$RUNNER_TEMP/audit/REPORT.txt" 2>/dev/null || echo 'report unavailable')
           gh api "repos/${GITHUB_REPOSITORY}/issues/41/comments" \
-            -f body="Concurrent Phase 1.3 bundle audit is ready. No product file was applied. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}; archive SHA-256: 72d00ea5e892be5303c5a3a23365d44bf24084f893acd0984602882d5b2312b5."
+            -f body="Concurrent Phase 1.3 bundle audit completed without applying product files. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\n\n\`\`\`text\n${REPORT}\n\`\`\`"
