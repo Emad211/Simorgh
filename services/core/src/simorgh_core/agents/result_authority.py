@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from simorgh_core.agents.contracts import UsageVector
 from simorgh_core.agents.invocations import (
     InvocationPayloadError,
     canonical_fingerprint,
@@ -209,6 +210,12 @@ class SpecialistResultRecord(BaseModel):
     evidence: tuple[EvidenceReference, ...] = Field(default=(), max_length=512)
     unresolved_risks: tuple[str, ...] = Field(default=(), max_length=128)
     verification_requirements: tuple[str, ...] = Field(default=(), max_length=128)
+    committed_usage: UsageVector = Field(default_factory=UsageVector)
+    invocation_result_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=_SHA256_PATTERN,
+    )
     privacy: PrivacyClassification
     retention: RetentionClass
     created_at_ms: int = Field(ge=0)
@@ -527,6 +534,8 @@ def create_specialist_plan_result(
     evidence: Iterable[EvidenceReference] = (),
     privacy: PrivacyClassification,
     retention: RetentionClass,
+    committed_usage: UsageVector | None = None,
+    invocation_result_sha256: str | None = None,
     created_at_ms: int | None = None,
     completed_at_ms: int | None = None,
     registry: ResultSchemaRegistry | None = None,
@@ -570,6 +579,13 @@ def create_specialist_plan_result(
         evidence=evidence_tuple,
         unresolved_risks=plan_payload.unresolved_risks,
         verification_requirements=plan_payload.verification_requirements,
+        committed_usage=committed_usage or UsageVector(),
+        invocation_result_sha256=(
+            invocation_result_sha256
+            or canonical_fingerprint(
+                {"invocation_id": str(producer.invocation_id)}
+            )
+        ),
         privacy=privacy,
         retention=retention,
         created_at_ms=created,
