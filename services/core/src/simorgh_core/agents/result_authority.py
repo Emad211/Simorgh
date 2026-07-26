@@ -31,6 +31,7 @@ _RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"
 _MEDIA_TYPE_PATTERN = r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
 _AGENT_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
 _POLICY_VERSION_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
+_SCHEMA_VERSION_PATTERN = r"^[0-9]+\.[0-9]+$"
 
 
 class ResultAuthorityError(RuntimeError):
@@ -427,7 +428,7 @@ class ResultSchemaRegistry:
         for handler in handlers:
             if re.fullmatch(_RESOURCE_ID_PATTERN, handler.schema_id) is None:
                 raise ResultContractError("result schema ID is invalid")
-            if re.fullmatch(_POLICY_VERSION_PATTERN, handler.schema_version) is None:
+            if re.fullmatch(_SCHEMA_VERSION_PATTERN, handler.schema_version) is None:
                 raise ResultContractError("result schema version is invalid")
             if re.fullmatch(_RESOURCE_ID_PATTERN, handler.output_contract) is None:
                 raise ResultContractError("result output contract is invalid")
