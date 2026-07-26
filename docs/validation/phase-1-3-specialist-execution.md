@@ -1,10 +1,10 @@
 # Phase 1.3 specialist execution validation
 
-Status: exact-head validation candidate
+Status: Accepted under ADR 0016; merge remains gated on exact-head CI.
 
 Authoritative implementation: PR #44 / issue #40.
 
-The candidate includes:
+Accepted scope:
 
 - exact specialist/version registry validation;
 - durable `InvocationStore(kind=specialist)` execution and restart replay;
@@ -14,4 +14,12 @@ The candidate includes:
 - privacy-safe specialist start, completion, failure and replay traces;
 - zero live provider, connector, MCP or Android side-effect calls in ordinary CI.
 
-This document does not claim acceptance by itself. Phase 1.3 is accepted only after the exact commit containing this record passes Core Ruff, strict MyPy, full Core tests, Android build, JVM tests, lint and APK generation, and the PR has no unresolved review threads.
+Product validation evidence:
+
+- product authority commit: `4e34e19ca00f0f512adacd3d6b09ee3344399295`;
+- independently triggered exact-head candidate: `9b9231465c3a0f3440b63ccd4be2b4527804b252`;
+- CI run `30213193745`: Core install, Ruff, strict MyPy and full tests passed;
+- CI run `30213193745`: Android assemble, JVM tests, lint and debug APK generation passed;
+- PR #44 had no unresolved review threads at the candidate head.
+
+Final evidence rule: the commit containing this record must itself have successful `core-quality` and `android-quality` jobs. Its run ID is intentionally not embedded here, because recording that ID would create a new commit and invalidate the exact-head claim.
