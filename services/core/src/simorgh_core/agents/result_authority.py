@@ -21,7 +21,7 @@ from simorgh_core.agents.specialist_results import (
     SpecialistPlanPayload,
 )
 
-RESULT_AUTHORITY_SCHEMA_VERSION = "1.0"
+RESULT_AUTHORITY_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 MAX_INLINE_RESULT_BYTES = 256_000
 MAX_PRESENTATION_CHARACTERS = 32_000
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
