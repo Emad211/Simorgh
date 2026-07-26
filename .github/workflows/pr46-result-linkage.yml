@@ -1,0 +1,113 @@
+name: PR46 Result Invocation Linkage
+
+on:
+  push:
+    branches:
+      - core/typed-results-artifacts
+    paths:
+      - .github/workflows/pr46-result-linkage.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr46-result-invocation-linkage
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact result-to-invocation linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('services/core/src/simorgh_core/agents/result_authority.py')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'anchor count={count}, expected=1: {old[:100]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'from pydantic import BaseModel, ConfigDict, Field, model_validator\n\n'
+              'from simorgh_core.agents.invocations import (\n',
+              'from pydantic import BaseModel, ConfigDict, Field, model_validator\n\n'
+              'from simorgh_core.agents.contracts import UsageVector\n'
+              'from simorgh_core.agents.invocations import (\n',
+          )
+          replace_once(
+              '    verification_requirements: tuple[str, ...] = Field(default=(), max_length=128)\n'
+              '    privacy: PrivacyClassification\n',
+              '    verification_requirements: tuple[str, ...] = Field(default=(), max_length=128)\n'
+              '    committed_usage: UsageVector = Field(default_factory=UsageVector)\n'
+              '    invocation_result_sha256: str = Field(\n'
+              '        min_length=64,\n'
+              '        max_length=64,\n'
+              '        pattern=_SHA256_PATTERN,\n'
+              '    )\n'
+              '    privacy: PrivacyClassification\n',
+          )
+          replace_once(
+              '    retention: RetentionClass,\n'
+              '    created_at_ms: int | None = None,\n',
+              '    retention: RetentionClass,\n'
+              '    committed_usage: UsageVector | None = None,\n'
+              '    invocation_result_sha256: str | None = None,\n'
+              '    created_at_ms: int | None = None,\n',
+          )
+          replace_once(
+              '        verification_requirements=plan_payload.verification_requirements,\n'
+              '        privacy=privacy,\n',
+              '        verification_requirements=plan_payload.verification_requirements,\n'
+              '        committed_usage=committed_usage or UsageVector(),\n'
+              '        invocation_result_sha256=(\n'
+              '            invocation_result_sha256\n'
+              '            or canonical_fingerprint(\n'
+              '                {"invocation_id": str(producer.invocation_id)}\n'
+              '            )\n'
+              '        ),\n'
+              '        privacy=privacy,\n',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm -f .github/workflows/pr46-result-linkage.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Validate linkage contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check services/core/src/simorgh_core/agents/result_authority.py services/core/tests/test_result_authority.py
+          mypy services/core/src/simorgh_core/agents/result_authority.py
+          pytest -q services/core/tests/test_result_authority.py
+
+      - name: Commit validated linkage
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: bind authoritative results to invocation usage and payload'
+          git push origin HEAD:core/typed-results-artifacts
