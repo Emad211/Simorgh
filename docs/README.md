@@ -16,16 +16,18 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`AGENT_RUNTIME.md`](AGENT_RUNTIME.md) — Persian-first deterministic routing, specialist policy, budgets, durable invocation behavior, model/tool gateways, traces and current limitations.
 - [`AGENT_TASK_STORE.md`](AGENT_TASK_STORE.md) — durable SQLite task identity, replay, cancellation, crash recovery, integrity, retention, backup and incident handling.
 - [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.
+- [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 adds the durable invocation authority used by governed model and structured read-tool gateways. Specialist execution and typed artifacts remain later Phase 1 steps.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 validates an internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
 Current roadmap dependencies:
 
 - issue #36 — complete durable native runtime and one GitHub read workflow;
-- issue #38 / PR #39 — durable invocation identity and restart replay;
+- issue #38 / PR #39 — durable invocation identity and restart replay, complete;
+- issue #40 / PR #44 — native typed specialist execution, validating;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
@@ -82,7 +84,8 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0012 — bounded Core clock normalization on Android;
 - ADR 0013 — native specialist-agent runtime and deterministic cost governance;
 - ADR 0014 — crash-safe durable agent-task identity and routing recovery;
-- ADR 0015 — durable invocation identity, reservation and exact restart replay.
+- ADR 0015 — durable invocation identity, reservation and exact restart replay;
+- ADR 0016 — native specialist execution authority and zero-external initial boundary.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
