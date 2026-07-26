@@ -19,7 +19,7 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 validates an internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -27,7 +27,7 @@ Current roadmap dependencies:
 
 - issue #36 — complete durable native runtime and one GitHub read workflow;
 - issue #38 / PR #39 — durable invocation identity and restart replay, complete;
-- issue #40 / PR #44 — native typed specialist execution, validating;
+- issue #40 / PR #44 — native typed specialist execution, complete;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
