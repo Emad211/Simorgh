@@ -17,9 +17,10 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`AGENT_TASK_STORE.md`](AGENT_TASK_STORE.md) — durable SQLite task identity, replay, cancellation, crash recovery, integrity, retention, backup and incident handling.
 - [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.
 - [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.
+- [`RESULT_AUTHORITY.md`](RESULT_AUTHORITY.md) — immutable typed results, artifact/evidence metadata, SQLite replay, privacy/retention, terminalization, status, rendering and incident handling.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #47 validates typed result/artifact authority. The public API remains routing-only.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -85,7 +86,8 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0013 — native specialist-agent runtime and deterministic cost governance;
 - ADR 0014 — crash-safe durable agent-task identity and routing recovery;
 - ADR 0015 — durable invocation identity, reservation and exact restart replay;
-- ADR 0016 — native specialist execution authority and zero-external initial boundary.
+- ADR 0016 — native specialist execution authority and zero-external initial boundary;
+- ADR 0017 — typed result, evidence and artifact authority.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 

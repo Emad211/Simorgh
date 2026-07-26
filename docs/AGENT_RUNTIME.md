@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result/artifact authority is validating in PR #47. The default API remains routing-only.
 
 ## Purpose
 
@@ -341,6 +341,16 @@ The Phase 1.3 result family is a concrete `SpecialistPlanPayload`; arbitrary fin
 Completed results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.
 
 Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.
+
+## Typed result and artifact authority
+
+A completed specialist invocation may be terminalized into one immutable `SpecialistResultRecord`. The result authority validates an exact output-contract/schema pair, producer identity and the typed invocation result before writing.
+
+`InvocationStore` remains the detailed usage authority. Result records store canonical usage/result hashes rather than copying the usage vector. Artifacts and evidence carry typed identity, hashes, privacy, retention, freshness, cache and taint metadata. Bounded Core-local artifact bytes are committed only after exact ID, size and SHA-256 checks.
+
+`SQLiteResultStore` uses WAL, FULL synchronization, foreign keys, an exclusive process-path lock and startup integrity/hash validation. Exact replay preserves result identity; conflicting result or invocation reuse fails closed.
+
+The internal result control plane provides terminalize, status and Persian-render methods without accepting client-selected schemas or permissions. Status and traces exclude payload text and artifact bytes. See [`RESULT_AUTHORITY.md`](RESULT_AUTHORITY.md) and ADR 0017.
 
 ## Task and invocation cost reconciliation
 

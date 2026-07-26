@@ -44,7 +44,7 @@ Phase 0 Governance                       COMPLETE
 Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
 Phase 1.3 Specialist Execution           COMPLETE — PR #44
-Phase 1.4 Typed Results and Artifacts    QUEUED
+Phase 1.4 Typed Results and Artifacts    VALIDATING — issue #46 / PR #47
 Phase 1.5 Governed GitHub Read Tools     QUEUED
 Phase 1.6 Cancellation Propagation       QUEUED
 Phase 1.7 Context Compiler               QUEUED
@@ -273,27 +273,40 @@ SpecialistExecutionResult
 - output-contract failure;
 - no private context leakage to traces.
 
-## 1.4 Typed result and artifact model — QUEUED
+## 1.4 Typed result and artifact model — VALIDATING
+
+Issue #46; Draft PR #47.
 
 ### Objective
 
-Separate durable structured results and evidence from user-facing natural-language presentation.
+Separate durable structured results and evidence from user-facing natural-language presentation without duplicating task, invocation or cost authority.
 
-### Deliverables
+### Implemented in the open PR
 
-- `SpecialistResult` contract;
-- artifact ID, hash, media type, size and producer identity;
-- evidence references with source, retrieval time and freshness;
-- explicit uncertainty and unresolved risks;
-- result schema/version identity;
-- bounded inline result and external artifact references;
-- Persian renderer outside authority fields;
-- immutable completed result;
-- privacy classification and retention metadata.
+- exact result-schema registry for `simorgh.typed-plan.v1@1.0`;
+- immutable producer/result identity and canonical SHA-256;
+- invocation usage/result hash linkage without a second usage authority;
+- typed artifact and evidence references;
+- compositional privacy and retention metadata;
+- strict in-memory result store;
+- SQLite WAL result/artifact store with process-path lock;
+- artifact-byte registration, size and SHA-256 enforcement;
+- completed specialist invocation terminalization;
+- internal status and deterministic Persian rendering;
+- privacy-safe result trace containing IDs, hashes, classes and counts only;
+- exact replay, corruption and unsupported-schema tests;
+- no live connector, provider, MCP, mutation or Android side effect.
 
-### Gate
+### Merge gate
 
-No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this contract.
+- ADR 0017 accepted and operations documentation complete;
+- exact PR head passes Core Ruff, strict MyPy and full tests;
+- exact PR head passes Android build, JVM tests, lint and debug APK;
+- artifact bytes, result payloads and private markers are absent from traces;
+- no unresolved review thread;
+- ordinary CI makes no live or paid external call.
+
+No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this authority.
 
 ## 1.5 Governed read-only tool execution — QUEUED
 
