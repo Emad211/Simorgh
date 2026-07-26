@@ -1,0 +1,103 @@
+name: PR39 Canonical Invocation State Anchor Fix
+
+on:
+  push:
+    branches:
+      - core/durable-agent-invocation-store
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr39-invocation-state-anchor-fix
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Apply exact canonical-state correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('services/core/src/simorgh_core/agents/invocations.py')
+          text = path.read_text(encoding='utf-8')
+          old_imports = '''from typing import Any, Protocol, Self
+          from uuid import NAMESPACE_URL, UUID, uuid5
+
+          from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+          from simorgh_core.agents.contracts import UsageVector
+          '''.replace('          ', '')
+          new_imports = '''from typing import Any, Literal, Protocol, Self, TypeAlias
+          from uuid import NAMESPACE_URL, UUID, uuid5
+
+          from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+          from simorgh_core.agents.contracts import InvocationState, UsageVector
+          '''.replace('          ', '')
+          old_phase = '''class InvocationPhase(StrEnum):
+              PENDING = "pending"
+              RESERVED = "reserved"
+              COMPLETED = "completed"
+              FAILED = "failed"
+              CANCELLED = "cancelled"
+              EXPIRED = "expired"
+              UNKNOWN = "unknown"
+              UNKNOWN_SIDE_EFFECT = "unknown_side_effect"
+
+
+          class InvocationKind(StrEnum):
+          '''.replace('          ', '').replace('    ', '    ')
+          new_phase = '''InvocationPhase: TypeAlias = InvocationState
+
+
+          class InvocationKind(StrEnum):
+          '''.replace('          ', '')
+
+          if text.count(old_imports) != 1:
+              raise SystemExit(f'import anchor count was {text.count(old_imports)}, expected 1')
+          if text.count(old_phase) != 1:
+              raise SystemExit(f'phase anchor count was {text.count(old_phase)}, expected 1')
+          updated = text.replace(old_imports, new_imports, 1).replace(old_phase, new_phase, 1)
+          if updated == text:
+              raise SystemExit('canonical invocation-state correction produced no change')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          python -m py_compile services/core/src/simorgh_core/agents/invocations.py
+
+      - name: Install and validate focused Core contracts
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check services/core/src/simorgh_core/agents/invocations.py
+          mypy services/core/src/simorgh_core/agents/invocations.py
+          pytest -q services/core/tests/test_agent_invocations.py services/core/tests/test_durable_invocation_store.py
+
+      - name: Commit correction and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/pr39-invocation-state-anchor-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: use canonical invocation state contract'
+          git push origin HEAD:core/durable-agent-invocation-store
