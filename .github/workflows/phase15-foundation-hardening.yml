@@ -147,3 +147,5 @@ jobs:
             exit 1
           fi
           git push origin "HEAD:refs/heads/$BRANCH"
+
+# trigger: registered workflow update
