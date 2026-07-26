@@ -1,4 +1,4 @@
-name: PR39 RC3 AST-Normalized Finalize
+name: PR39 RC3 Runtime-Alias Finalize
 
 on:
   push:
@@ -36,7 +36,7 @@ jobs:
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 AST-normalized finalizer: **running**
+          PR39 RC3 runtime-alias finalizer: **running**
 
           - Exact head: \`${GITHUB_SHA}\`
           - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -138,15 +138,11 @@ jobs:
 
           invocations = Path('services/core/src/simorgh_core/agents/invocations.py')
           text = invocations.read_text(encoding='utf-8')
-          old_import = 'from typing import Any, Literal, Protocol, Self, TypeAlias\n'
           old_alias = 'InvocationPhase: TypeAlias = InvocationState\n'
-          if text.count(old_import) != 1 or text.count(old_alias) != 1:
+          final_alias = 'InvocationPhase: TypeAlias = InvocationState  # noqa: UP040\n'
+          if text.count(old_alias) != 1 or text.count(final_alias) != 0:
               raise SystemExit('unexpected post-RC3 alias state')
-          invocations.write_text(
-              text.replace(old_import, 'from typing import Any, Literal, Protocol, Self\n', 1)
-                  .replace(old_alias, 'type InvocationPhase = InvocationState\n', 1),
-              encoding='utf-8',
-          )
+          invocations.write_text(text.replace(old_alias, final_alias, 1), encoding='utf-8')
 
           def handler_names(node: ast.expr | None) -> set[str]:
               if isinstance(node, ast.Name):
@@ -157,13 +153,10 @@ jobs:
 
           def statement_text(lines: list[str], statement: ast.stmt, indent: str) -> str:
               segment = lines[statement.lineno - 1 : statement.end_lineno]
-              dedented = []
-              for line in segment:
-                  if line.strip():
-                      dedented.append(line[statement.col_offset:])
-                  else:
-                      dedented.append(line)
-              return ''.join(indent + line for line in dedented)
+              return ''.join(
+                  indent + (line[statement.col_offset:] if line.strip() else line)
+                  for line in segment
+              )
 
           for filename, gateway_error in (
               ('services/core/src/simorgh_core/agents/model_gateway.py', 'ModelGatewayError'),
@@ -182,22 +175,19 @@ jobs:
                   statement = node.body[0]
                   if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
                       continue
-                  call = statement.value
                   handler = node.handlers[0]
-                  if handler.body != [handler.body[0]] or not isinstance(handler.body[0], ast.Pass):
+                  if len(handler.body) != 1 or not isinstance(handler.body[0], ast.Pass):
                       continue
+                  call = statement.value
+                  func = call.func
                   indent = ' ' * node.col_offset
                   body_indent = indent + '    '
-                  func = call.func
                   if (
                       isinstance(func, ast.Attribute)
                       and isinstance(func.value, ast.Name)
                       and func.value.id == 'budget'
                       and func.attr == 'release'
-                      and handler_names(handler.type) == {
-                          'BudgetCancelledError',
-                          'BudgetReservationNotFoundError',
-                      }
+                      and handler_names(handler.type) == {'BudgetCancelledError', 'BudgetReservationNotFoundError'}
                   ):
                       replacement = (
                           indent + 'with suppress(\n'
@@ -222,21 +212,14 @@ jobs:
                       edits.append((node.lineno - 1, node.end_lineno, replacement))
                       cancel_count += 1
               if (release_count, cancel_count) != (1, 1):
-                  raise SystemExit(
-                      f'{filename}: expected one release and one cancellation Try, '
-                      f'found {(release_count, cancel_count)}'
-                  )
+                  raise SystemExit(f'{filename}: unexpected Try counts {(release_count, cancel_count)}')
               for start, end, replacement in sorted(edits, reverse=True):
                   lines[start:end] = [replacement]
               updated = ''.join(lines)
-              if updated.count('from contextlib import suppress\n') == 0:
+              if 'from contextlib import suppress\n' not in updated:
                   if updated.count('import asyncio\n') != 1:
                       raise SystemExit(f'{filename}: asyncio import anchor mismatch')
-                  updated = updated.replace(
-                      'import asyncio\n',
-                      'import asyncio\nfrom contextlib import suppress\n',
-                      1,
-                  )
+                  updated = updated.replace('import asyncio\n', 'import asyncio\nfrom contextlib import suppress\n', 1)
               path.write_text(updated, encoding='utf-8')
 
           test_path = Path('services/core/tests/test_gateway_failure_semantics_rc3.py')
@@ -245,11 +228,7 @@ jobs:
           if test_text.count(old_default) != 1:
               raise SystemExit('B008 default anchor mismatch')
           test_path.write_text(
-              test_text.replace(
-                  old_default,
-                  '        committed_usage: UsageVector | None = None,\n',
-                  1,
-              ),
+              test_text.replace(old_default, '        committed_usage: UsageVector | None = None,\n', 1),
               encoding='utf-8',
           )
           PY
@@ -284,7 +263,7 @@ jobs:
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 AST-normalized finalizer: **running**
+          PR39 RC3 runtime-alias finalizer: **running**
 
           - RC3 / targeted regressions / Ruff / strict MyPy / full Core: passed
           - Current gate: Android build, JVM tests, lint, and APK
@@ -343,7 +322,7 @@ jobs:
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 AST-normalized finalizer: **failed closed**
+          PR39 RC3 runtime-alias finalizer: **failed closed**
 
           - Exact triggering head: \`${GITHUB_SHA}\`
           - No validated product commit was claimed.
