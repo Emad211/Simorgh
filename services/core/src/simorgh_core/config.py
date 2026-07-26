@@ -46,6 +46,11 @@ class Settings(BaseSettings):
         min_length=1,
         max_length=4_096,
     )
+    simorgh_result_store_path: str = Field(
+        default=".simorgh/results.sqlite3",
+        min_length=1,
+        max_length=4_096,
+    )
 
     avalai_api_key: SecretStr | None = None
     avalai_base_url: str = "https://api.avalai.ir/v1"
