@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from simorgh_core.agents.invocations import (
@@ -40,6 +40,7 @@ class ResultInvocationMismatchError(ResultTerminalizationError):
     pass
 
 
+@runtime_checkable
 class ArtifactAwareResultStore(Protocol):
     def put_with_artifacts(
         self,
@@ -80,6 +81,11 @@ class SpecialistResultAuthorityService:
             raise ResultTerminalizationError(
                 "completed specialist execution has no typed payload"
             )
+        durable_result_payload = invocation.result_payload
+        if durable_result_payload is None:
+            raise ResultTerminalizationError(
+                "completed specialist invocation has no durable result payload"
+            )
         record = create_specialist_plan_result(
             producer=ResultProducer(
                 request_id=invocation.request_id,
@@ -93,19 +99,20 @@ class SpecialistResultAuthorityService:
             privacy=privacy,
             retention=retention,
             committed_usage=invocation.committed_usage,
-            invocation_result_sha256=canonical_fingerprint(invocation.result_payload),
+            invocation_result_sha256=canonical_fingerprint(durable_result_payload),
             created_at_ms=invocation.created_at_ms,
             completed_at_ms=invocation.updated_at_ms,
             registry=self._schemas,
         )
         blobs = dict(artifact_bytes or {})
         if blobs:
-            writer = getattr(self._store, "put_with_artifacts", None)
-            if writer is None or not callable(writer):
+            if not isinstance(self._store, ArtifactAwareResultStore):
                 raise ResultTerminalizationError(
                     "configured result store cannot persist local artifact bytes"
                 )
-            return writer(record, artifact_bytes=blobs)
+            return self._store.put_with_artifacts(
+                record, artifact_bytes=blobs
+            )
         return self._store.put(record)
 
     def get(self, result_id: UUID) -> SpecialistResultRecord:

@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 from uuid import UUID
 
 from simorgh_core.agents.invocations import canonical_fingerprint, canonical_json
@@ -278,7 +278,8 @@ class SQLiteResultStore:
 
     def _initialize_schema(self) -> None:
         self._connection.execute(
-            "CREATE TABLE IF NOT EXISTS result_store_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS result_store_meta("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         row = self._connection.execute(
             "SELECT value FROM result_store_meta WHERE key = 'schema_version'"
@@ -370,7 +371,7 @@ class SQLiteResultStore:
         if self._failure is not None:
             raise ResultStoreUnhealthyError("result store is unhealthy") from self._failure
 
-    def _latch_failure_locked(self, failure: ResultAuthorityError) -> None:
+    def _latch_failure_locked(self, failure: ResultAuthorityError) -> NoReturn:
         self._failure = failure
         raise failure
 
