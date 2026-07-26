@@ -23,446 +23,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Apply projection privacy and uncertainty hardening
+      - name: Apply reviewed security patch
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          from textwrap import dedent
-
-          def replace_once(path: str, old: str, new: str, label: str) -> None:
-              file = Path(path)
-              text = file.read_text(encoding="utf-8")
-              if text.count(old) != 1:
-                  raise SystemExit(f"{label}: expected one anchor")
-              file.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          contracts = "services/core/src/simorgh_core/agents/github_read_contracts.py"
-          replace_once(
-              contracts,
-              '''    @model_validator(mode="after")
-              def validate_text_shape(self) -> Self:
-                  if self.text_disposition == GitHubTextDisposition.COMPLETE:
-                      if (
-                          self.object_kind != GitHubObjectKind.REGULAR
-                          or self.text is None
-                          or self.truncation_reason is not None
-                      ):
-                          raise ValueError("non-regular GitHub objects require metadata-only handling")
-                      if len(self.text.encode("utf-8")) != self.byte_count:
-                          raise ValueError("complete GitHub file byte count must match UTF-8 text")
-                  elif self.text_disposition == GitHubTextDisposition.TRUNCATED:
-                      if (
-                          self.object_kind != GitHubObjectKind.REGULAR
-                          or self.text is None
-                          or self.truncation_reason is None
-                      ):
-                          raise ValueError(
-                              "truncated GitHub file projection requires regular text and reason"
-                          )
-                      if len(self.text.encode("utf-8")) > self.byte_count:
-                          raise ValueError("truncated GitHub text cannot exceed source byte count")
-                  elif self.text is not None or self.truncation_reason is None:
-                      raise ValueError("metadata-only or binary GitHub file requires no text and a reason")
-                  if (
-                      self.object_kind == GitHubObjectKind.BINARY
-                      and self.text_disposition != GitHubTextDisposition.BINARY_REJECTED
-                  ):
-                      raise ValueError("binary GitHub object must use binary_rejected disposition")
-                  if (
-                      self.object_kind
-                      in {
-                          GitHubObjectKind.SYMLINK,
-                          GitHubObjectKind.SUBMODULE,
-                          GitHubObjectKind.LFS_POINTER,
-                      }
-                      and self.text_disposition != GitHubTextDisposition.METADATA_ONLY
-                  ):
-                      raise ValueError("non-regular GitHub object must remain metadata-only")
-                  return self
-          ''',
-              '''    @model_validator(mode="after")
-              def validate_text_shape(self) -> Self:
-                  non_regular = self.object_kind in {
-                      GitHubObjectKind.SYMLINK,
-                      GitHubObjectKind.SUBMODULE,
-                      GitHubObjectKind.LFS_POINTER,
-                  }
-                  if non_regular and self.text_disposition != GitHubTextDisposition.METADATA_ONLY:
-                      raise ValueError("non-regular GitHub object must remain metadata-only")
-                  if (
-                      self.object_kind == GitHubObjectKind.BINARY
-                      and self.text_disposition != GitHubTextDisposition.BINARY_REJECTED
-                  ):
-                      raise ValueError("binary GitHub object must use binary_rejected disposition")
-                  if self.text_disposition == GitHubTextDisposition.COMPLETE:
-                      if self.object_kind != GitHubObjectKind.REGULAR:
-                          raise ValueError("complete GitHub file projection requires a regular object")
-                      if self.text is None or self.truncation_reason is not None:
-                          raise ValueError("complete GitHub file projection requires full text only")
-                      if len(self.text.encode("utf-8")) != self.byte_count:
-                          raise ValueError("complete GitHub file byte count must match UTF-8 text")
-                  elif self.text_disposition == GitHubTextDisposition.TRUNCATED:
-                      if (
-                          self.object_kind != GitHubObjectKind.REGULAR
-                          or self.text is None
-                          or self.truncation_reason is None
-                      ):
-                          raise ValueError(
-                              "truncated GitHub file projection requires regular text and reason"
-                          )
-                      if len(self.text.encode("utf-8")) > self.byte_count:
-                          raise ValueError("truncated GitHub text cannot exceed source byte count")
-                  elif self.text is not None or self.truncation_reason is None:
-                      raise ValueError("metadata-only or binary GitHub file requires no text and a reason")
-                  return self
-          ''',
-              "file projection validator",
-          )
-
-          service = "services/core/src/simorgh_core/agents/github_read_service.py"
-          replace_once(
-              service,
-              "from pydantic import BaseModel, ConfigDict\n",
-              "from pydantic import BaseModel, ConfigDict, ValidationError\n",
-              "pydantic validation import",
-          )
-          replace_once(
-              service,
-              '''    GitHubReadProjectionEnvelope,
-                  GovernedGitHubReadRequest,
-              )
-          ''',
-              '''    GitHubReadProjectionEnvelope,
-                  GitHubSearchProjection,
-                  GitHubVisibility,
-                  GovernedGitHubReadRequest,
-              )
-          ''',
-              "projection visibility imports",
-          )
-          replace_once(
-              service,
-              "except (GitHubReadContractError, GitHubResponseLimitError, ValueError):",
-              "except (GitHubReadContractError, GitHubResponseLimitError, ValidationError):",
-              "narrow adapter rejection",
-          )
-          replace_once(
-              service,
-              '''        except ValueError:
-                      raise GitHubReadServiceError(
-                          "GitHub tool result failed typed projection validation"
-                      ) from None
-          ''',
-              '''        except ValidationError:
-                      raise GitHubReadServiceError(
-                          "GitHub tool result failed typed projection validation"
-                      ) from None
-          ''',
-              "narrow replay validation",
-          )
-          replace_once(
-              service,
-              '''def _require_projection_policy(
-                  *,
-                  request: GovernedGitHubReadRequest,
-                  envelope: GitHubReadProjectionEnvelope,
-                  manifest: GitHubReadConnectorManifest,
-              ) -> None:
-                  if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:
-          ''',
-              '''def _require_projection_policy(
-                  *,
-                  request: GovernedGitHubReadRequest,
-                  envelope: GitHubReadProjectionEnvelope,
-                  manifest: GitHubReadConnectorManifest,
-              ) -> None:
-                  required_privacy = _required_projection_privacy(envelope)
-                  if _PRIVACY_RANK[envelope.privacy] < _PRIVACY_RANK[required_privacy]:
-                      raise GitHubReadPolicyError(
-                          "GitHub projection privacy under-classifies repository visibility"
-                      )
-                  if (
-                      required_privacy != PrivacyClassification.PUBLIC
-                      and not manifest.private_repositories_allowed
-                  ):
-                      raise GitHubReadPolicyError(
-                          "reviewed GitHub manifest does not allow non-public projections"
-                      )
-                  if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:
-          ''',
-              "projection visibility policy",
-          )
-          replace_once(
-              service,
-              '''def _require_manifest_limits(
-          ''',
-              '''def _required_projection_privacy(
-                  envelope: GitHubReadProjectionEnvelope,
-              ) -> PrivacyClassification:
-                  projection = envelope.projection
-                  if isinstance(projection, GitHubSearchProjection):
-                      visibilities = tuple(item.visibility for item in projection.items)
-                  else:
-                      visibilities = (projection.visibility,)
-                  required = PrivacyClassification.PUBLIC
-                  for visibility in visibilities:
-                      candidate = {
-                          GitHubVisibility.PUBLIC: PrivacyClassification.PUBLIC,
-                          GitHubVisibility.INTERNAL: PrivacyClassification.INTERNAL,
-                          GitHubVisibility.PRIVATE: PrivacyClassification.PRIVATE,
-                      }[visibility]
-                      if _PRIVACY_RANK[candidate] > _PRIVACY_RANK[required]:
-                          required = candidate
-                  return required
-
-
-              def _require_manifest_limits(
-          ''',
-              "projection privacy helper",
-          )
-
-          test_path = Path("services/core/tests/test_github_read_security_boundary.py")
-          if test_path.exists():
-              raise SystemExit("security boundary test file already exists")
-          test_path.write_text(
-              dedent(
-                  r'''
-                  from __future__ import annotations
-
-                  from uuid import uuid4
-
-                  import pytest
-
-                  from simorgh_core.agents.budget import BudgetAccount
-                  from simorgh_core.agents.contracts import (
-                      ExecutionMode,
-                      FreshnessClass,
-                      RiskClass,
-                      RoutingDecision,
-                      RoutingMethod,
-                      RoutingState,
-                      TaskBudget,
-                      TaskEnvelope,
-                      TaskKind,
-                  )
-                  from simorgh_core.agents.defaults import default_specialist_registry
-                  from simorgh_core.agents.github_read_adapter import (
-                      FakeGitHubReadAdapter,
-                      default_github_read_manifest,
-                      github_fixture_key,
-                  )
-                  from simorgh_core.agents.github_read_contracts import (
-                      GitHubFileArguments,
-                      GitHubFileProjection,
-                      GitHubReadProjectionEnvelope,
-                      GitHubTextDisposition,
-                      GitHubVisibility,
-                  )
-                  from simorgh_core.agents.github_read_service import (
-                      GitHubReadRequestCompiler,
-                      GitHubReadToolInvoker,
-                      GovernedGitHubReadService,
-                  )
-                  from simorgh_core.agents.invocations import (
-                      InMemoryInvocationStore,
-                      InvocationPhase,
-                      canonical_fingerprint,
-                      canonical_json,
-                      canonical_size_bytes,
-                  )
-                  from simorgh_core.agents.result_authority import (
-                      EvidenceCacheDisposition,
-                      PrivacyClassification,
-                  )
-                  from simorgh_core.agents.tool_gateway import BudgetedToolGateway, ToolGatewayError
-                  from simorgh_core.agents.tracing import InMemoryTraceSink
-
-
-                  def _task() -> TaskEnvelope:
-                      return TaskEnvelope(
-                          request_id=uuid4(),
-                          received_at_ms=1_000,
-                          deadline_at_ms=60_000,
-                          locale="fa-IR",
-                          input_text="ریپازیتوری را بررسی کن",
-                          requested_outcome="پروژکشن تایپ‌شده",
-                          explicit_task_kind=TaskKind.REPOSITORY_RESEARCH,
-                          risk_class=RiskClass.READ_ONLY,
-                          freshness=FreshnessClass.CACHED_OK,
-                          execution_mode=ExecutionMode.READ_ONLY,
-                          allowed_data_sources=frozenset({"github"}),
-                          budget=TaskBudget(
-                              max_model_calls=0,
-                              max_tool_calls=1,
-                              max_input_tokens=0,
-                              max_output_tokens=0,
-                              max_estimated_cost_microusd=0,
-                              max_elapsed_ms=30_000,
-                              max_retries=0,
-                              max_parallel_branches=1,
-                          ),
-                      )
-
-
-                  def _request(task: TaskEnvelope):
-                      routing = RoutingDecision(
-                          request_id=task.request_id,
-                          state=RoutingState.ROUTED,
-                          selected_agent_id="github.read",
-                          selected_agent_version="1.0.0",
-                          method=RoutingMethod.EXPLICIT_TASK_KIND,
-                          confidence_bps=10_000,
-                          reason="explicit repository research",
-                      )
-                      return GitHubReadRequestCompiler(
-                          registry=default_specialist_registry(),
-                          manifest=default_github_read_manifest(),
-                          wall_clock_millis=lambda: 2_000,
-                      ).compile(
-                          task=task,
-                          routing=routing,
-                          arguments=GitHubFileArguments(
-                              repository="Emad211/Simorgh",
-                              ref="main",
-                              path="README.md",
-                          ),
-                          invocation_id=uuid4(),
-                          cancellation_owner_id=uuid4(),
-                      )
-
-
-                  def _budget(task: TaskEnvelope) -> BudgetAccount:
-                      registry = default_specialist_registry()
-                      return BudgetAccount(
-                          request_id=task.request_id,
-                          limits=registry.effective_budget(
-                              agent_id="github.read",
-                              request_budget=task.budget,
-                          ),
-                          monotonic_millis=lambda: 0,
-                      )
-
-
-                  def _service(*, adapter, store, traces) -> GovernedGitHubReadService:
-                      registry = default_specialist_registry()
-                      manifest = default_github_read_manifest()
-                      gateway = BudgetedToolGateway(
-                          registry=registry,
-                          invoker=GitHubReadToolInvoker(manifest=manifest, adapter=adapter),
-                          invocation_store=store,
-                          trace_sink=traces,
-                      )
-                      return GovernedGitHubReadService(
-                          registry=registry,
-                          gateway=gateway,
-                          manifest=manifest,
-                          wall_clock_millis=lambda: 2_500,
-                      )
-
-
-                  def _envelope(*, projection, privacy: PrivacyClassification):
-                      return GitHubReadProjectionEnvelope(
-                          tool_id="github.fetch-file",
-                          projection=projection,
-                          projection_sha256=canonical_fingerprint(projection),
-                          response_bytes=canonical_size_bytes(projection),
-                          observed_at_ms=2_000,
-                          fresh_until_ms=12_000,
-                          cache_disposition=EvidenceCacheDisposition.LIVE,
-                          citation_reference="github:evidence:security-boundary",
-                          privacy=privacy,
-                      )
-
-
-                  @pytest.mark.asyncio
-                  async def test_non_public_visibility_cannot_be_laundered_as_public() -> None:
-                      marker = "PRIVATE_VISIBILITY_MARKER_91df"
-                      task = _task()
-                      request = _request(task)
-                      text = marker + "\n"
-                      projection = GitHubFileProjection(
-                          repository="Emad211/Simorgh",
-                          visibility=GitHubVisibility.PRIVATE,
-                          ref="main",
-                          path="README.md",
-                          blob_sha="a" * 40,
-                          byte_count=len(text.encode("utf-8")),
-                          text=text,
-                          text_disposition=GitHubTextDisposition.COMPLETE,
-                      )
-                      adapter = FakeGitHubReadAdapter(
-                          fixtures={
-                              github_fixture_key(request): _envelope(
-                                  projection=projection,
-                                  privacy=PrivacyClassification.PUBLIC,
-                              )
-                          }
-                      )
-                      store = InMemoryInvocationStore(wall_clock_millis=lambda: 3_000)
-                      traces = InMemoryTraceSink()
-                      budget = _budget(task)
-
-                      with pytest.raises(ToolGatewayError, match="rejected"):
-                          await _service(adapter=adapter, store=store, traces=traces).execute(
-                              task=task,
-                              request=request,
-                              budget=budget,
-                          )
-
-                      record = store.get(request.invocation_id)
-                      persisted = canonical_json(record.model_dump(mode="json"))
-                      traced = canonical_json([event.model_dump(mode="json") for event in traces.events])
-                      assert record.phase == InvocationPhase.FAILED
-                      assert record.committed_usage.tool_calls == 1
-                      assert marker not in persisted
-                      assert marker not in traced
-
-
-                  class _ValueErrorAdapter:
-                      connector_id = "github"
-                      connector_version = "1.0.0"
-
-                      def __init__(self, marker: str) -> None:
-                          self.marker = marker
-                          self.calls = 0
-
-                      async def invoke(self, request):
-                          self.calls += 1
-                          raise ValueError(self.marker)
-
-
-                  @pytest.mark.asyncio
-                  async def test_unexpected_adapter_value_error_remains_unknown_and_sanitized() -> None:
-                      marker = "ADAPTER_SECRET_MARKER_42aa"
-                      task = _task()
-                      request = _request(task)
-                      adapter = _ValueErrorAdapter(marker)
-                      store = InMemoryInvocationStore(wall_clock_millis=lambda: 3_000)
-                      traces = InMemoryTraceSink()
-                      budget = _budget(task)
-
-                      with pytest.raises(ToolGatewayError, match="invocation failed"):
-                          await _service(adapter=adapter, store=store, traces=traces).execute(
-                              task=task,
-                              request=request,
-                              budget=budget,
-                          )
-
-                      record = store.get(request.invocation_id)
-                      persisted = canonical_json(record.model_dump(mode="json"))
-                      traced = canonical_json([event.model_dump(mode="json") for event in traces.events])
-                      assert adapter.calls == 1
-                      assert record.phase == InvocationPhase.UNKNOWN
-                      assert record.failure_detail == "ValueError"
-                      assert marker not in persisted
-                      assert marker not in traced
-                  '''
-              ).lstrip(),
-              encoding="utf-8",
-          )
-          PY
+          base64 --decode .github/phase15-security-patch.py.b64 > /tmp/phase15_security_patch.py
+          python -m py_compile /tmp/phase15_security_patch.py
+          python /tmp/phase15_security_patch.py | tee /tmp/phase15-security-patch.log
+          rm -f .github/phase15-security-patch.py.b64
           git show "${{ github.event.pull_request.base.sha }}:.github/workflows/ci.yml" > .github/workflows/ci.yml
           git diff --check
 
@@ -472,7 +40,7 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Validate security hardening and full Core suite
+      - name: Validate full Core security boundary
         id: validate
         shell: bash
         run: |
@@ -482,13 +50,11 @@ jobs:
           pip install -e '.[dev]' > /tmp/install.log 2>&1
           install_status=$?
           ruff format \
-            services/core/src/simorgh_core/agents/github_read_contracts.py \
             services/core/src/simorgh_core/agents/github_read_service.py \
             services/core/tests/test_github_read_security_boundary.py \
             > /tmp/ruff-format.log 2>&1
           format_status=$?
           ruff check --fix \
-            services/core/src/simorgh_core/agents/github_read_contracts.py \
             services/core/src/simorgh_core/agents/github_read_service.py \
             services/core/tests/test_github_read_security_boundary.py \
             > /tmp/ruff-fix.log 2>&1
@@ -510,9 +76,17 @@ jobs:
             echo "mypy_status=$mypy_status"
             echo "pytest_status=$pytest_status"
             echo "diff_status=$diff_status"
+            echo
+            echo "=== ruff ==="
             cat /tmp/ruff.log
+            echo
+            echo "=== mypy ==="
             cat /tmp/mypy.log
-            tail -n 100 /tmp/pytest.log
+            echo
+            echo "=== pytest tail ==="
+            tail -n 120 /tmp/pytest.log
+            echo
+            echo "=== diff stat ==="
             git diff --stat
           } | tee /tmp/phase15-security-report.txt
           if (( pip_upgrade_status || install_status || format_status || ruff_fix_status || ruff_status || mypy_status || pytest_status || diff_status )); then
@@ -523,8 +97,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase15-security-diagnostic
+          name: phase15-security-diagnostic-v2
           path: |
+            /tmp/phase15-security-patch.log
             /tmp/phase15-security-report.txt
             /tmp/install.log
             /tmp/ruff-format.log
