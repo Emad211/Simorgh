@@ -1,4 +1,4 @@
-name: PR39 Canonical Invocation State Anchor Fix
+name: PR39 Canonical Invocation State Diagnostic
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - core/durable-agent-invocation-store
 
 permissions:
-  contents: write
+  contents: read
   issues: write
   pull-requests: write
 
@@ -18,7 +18,7 @@ env:
   STATUS_COMMENT_ID: '5083518493'
 
 jobs:
-  patch:
+  diagnose:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,7 +34,7 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Apply exact canonical-state correction
+      - name: Apply correction in diagnostic workspace
         shell: bash
         run: |
           set -euo pipefail
@@ -44,18 +44,9 @@ jobs:
           path = Path('services/core/src/simorgh_core/agents/invocations.py')
           text = path.read_text(encoding='utf-8')
           replacements = [
+              ('from typing import Any, Protocol, Self\n', 'from typing import Any, Literal, Protocol, Self, TypeAlias\n'),
+              ('from simorgh_core.agents.contracts import UsageVector\n', 'from simorgh_core.agents.contracts import InvocationState, UsageVector\n'),
               (
-                  'typing import',
-                  'from typing import Any, Protocol, Self\n',
-                  'from typing import Any, Literal, Protocol, Self, TypeAlias\n',
-              ),
-              (
-                  'canonical state import',
-                  'from simorgh_core.agents.contracts import UsageVector\n',
-                  'from simorgh_core.agents.contracts import InvocationState, UsageVector\n',
-              ),
-              (
-                  'duplicate phase enum',
                   '''class InvocationPhase(StrEnum):
               PENDING = "pending"
               RESERVED = "reserved"
@@ -77,73 +68,91 @@ jobs:
               ),
           ]
           current = text
-          for label, old, new in replacements:
-              old_count = current.count(old)
-              final_count = current.count(new)
-              if old_count == 1 and final_count == 0:
-                  current = current.replace(old, new, 1)
-              elif old_count == 0 and final_count == 1:
-                  pass
-              else:
+          for old, new in replacements:
+              if current.count(old) != 1 or current.count(new) != 0:
                   raise SystemExit(
-                      f'{label}: invalid anchor state old={old_count}, final={final_count}'
+                      f'invalid anchor state old={current.count(old)} final={current.count(new)}'
                   )
-          if current == text:
-              raise SystemExit('canonical state correction was already fully applied')
+              current = current.replace(old, new, 1)
           path.write_text(current, encoding='utf-8')
           PY
           python -m py_compile services/core/src/simorgh_core/agents/invocations.py
 
-      - name: Install and validate focused contracts
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+
+      - name: Ruff diagnostic
+        id: ruff
+        continue-on-error: true
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
-          ruff check services/core/src/simorgh_core/agents/invocations.py
-          mypy services/core/src/simorgh_core/agents/invocations.py
+          set -o pipefail
+          ruff check services/core/src/simorgh_core/agents/invocations.py \
+            2>&1 | tee "$RUNNER_TEMP/ruff.log"
+
+      - name: MyPy diagnostic
+        id: mypy
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mypy services/core/src/simorgh_core/agents/invocations.py \
+            2>&1 | tee "$RUNNER_TEMP/mypy.log"
+
+      - name: Focused test diagnostic
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
           pytest -q \
             services/core/tests/test_agent_invocations.py \
-            services/core/tests/test_durable_invocation_store.py
+            services/core/tests/test_durable_invocation_store.py \
+            2>&1 | tee "$RUNNER_TEMP/tests.log"
 
-      - name: Commit correction and remove one-shot workflow
+      - name: Publish validation diagnostic
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUFF_OUTCOME: ${{ steps.ruff.outcome }}
+          MYPY_OUTCOME: ${{ steps.mypy.outcome }}
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
         shell: bash
         run: |
           set -euo pipefail
-          rm -f .github/workflows/pr39-invocation-state-anchor-fix.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'core: use canonical invocation state contract'
-          git push origin HEAD:core/durable-agent-invocation-store
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
 
-      - name: Report success
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          NEW_HEAD=$(git rev-parse HEAD)
+          temp = Path(os.environ['RUNNER_TEMP'])
+          sections = [
+              '<!-- pr39-rc3-status -->',
+              'Canonical InvocationState validation diagnostic:',
+              '',
+              f"- Head: `{os.environ['GITHUB_SHA']}`",
+              f"- Ruff: **{os.environ.get('RUFF_OUTCOME', 'not-run')}**",
+              f"- MyPy: **{os.environ.get('MYPY_OUTCOME', 'not-run')}**",
+              f"- Focused tests: **{os.environ.get('TEST_OUTCOME', 'not-run')}**",
+              f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          ]
+          for title, filename in (
+              ('Ruff tail', 'ruff.log'),
+              ('MyPy tail', 'mypy.log'),
+              ('Test tail', 'tests.log'),
+          ):
+              path = temp / filename
+              if path.is_file():
+                  sections.extend([
+                      '',
+                      f'### {title}',
+                      '```text',
+                      path.read_text(encoding='utf-8', errors='replace')[-5000:],
+                      '```',
+                  ])
+          body = '\n'.join(sections)
+          (temp / 'comment.json').write_text(json.dumps({'body': body}), encoding='utf-8')
+          PY
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            -f body="<!-- pr39-rc3-status -->
-          Canonical InvocationState correction: **passed and pushed**
-
-          - Triggering head: \`${GITHUB_SHA}\`
-          - Corrected head: \`${NEW_HEAD}\`
-          - Focused Ruff / MyPy / tests: passed
-          - Next: rerun RC3 exact-head preflight"
-
-      - name: Report failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            -f body="<!-- pr39-rc3-status -->
-          Canonical InvocationState correction: **failed closed**
-
-          - Triggering head: \`${GITHUB_SHA}\`
-          - No product correction was claimed.
-          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            --input "$RUNNER_TEMP/comment.json"
