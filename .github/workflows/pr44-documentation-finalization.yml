@@ -1,0 +1,248 @@
+name: PR44 Phase 1.3 Documentation Finalization
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-runtime-clean
+    paths:
+      - .github/workflows/pr44-documentation-finalization.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr44-phase13-documentation-finalization
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact accepted-documentation transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'{path}: expected one anchor, found {count}: {old[:120]!r}'
+                  )
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              '- Status: Proposed\n',
+              '- Status: Accepted\n',
+          )
+          replace_once(
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              '- Implementation PR: #41\n',
+              '- Implementation PR: #44\n',
+          )
+          replace_once(
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              'context fingerprint\n'
+              'explicit capability subset\n'
+              'effective budget\n'
+              'stable creation identity\n'
+              'absolute deadline\n'
+              'attempt = 1\n'
+              'no retry/delegation parent\n',
+              'context fingerprint and stable context_bundle_id\n'
+              'cancellation_owner_id\n'
+              'explicit capability subset\n'
+              'effective budget and monotonic timeout\n'
+              'stable creation identity\n'
+              'absolute deadline\n'
+              'attempt = 1\n'
+              'optional parent invocation identity without retry or delegation\n',
+          )
+          replace_once(
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              '- bounded strict-JSON inline payload for completion;\n',
+              '- concrete bounded `SpecialistPlanPayload` for the Phase 1.3 completion family;\n',
+          )
+          replace_once(
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              '- full task-to-all-child cancellation enumeration remains Step 1.6.\n',
+              '- cancellation tokens are bound to a stable per-invocation owner identity;\n'
+              '- absolute deadline and monotonic elapsed budget are checked before and after execution;\n'
+              '- full task-to-all-child cancellation enumeration remains Step 1.6.\n',
+          )
+
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              'Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #41\n',
+              'Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #44\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              'Issue #40; Draft PR #41.\n',
+              'Issue #40; Draft PR #44. ADR 0016 accepted.\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              '- immutable request/result contracts derived from durable route and compiled policy;\n'
+              '- explicit capability subset and task/policy budget intersection;\n'
+              '- exact-version implementation registry and deterministic zero-cost proposal executor;\n'
+              '- durable `InvocationStore(kind=specialist)` execution and SQLite restart replay;\n'
+              '- cancellation, expiry, changed-context conflict, failure sanitization and result terminalization;\n'
+              '- routed-task adapter with widened/exhausted budget rejection;\n'
+              '- internal zero-external execution control plane with active cancellation and duplicate suppression;\n'
+              '- no public execution endpoint, connector, MCP, model, mutation or Android side effect.\n',
+              '- immutable request/result contracts derived from durable route and compiled policy;\n'
+              '- concrete `SpecialistPlanPayload`; arbitrary final dictionaries and raw model text rejected;\n'
+              '- stable context-bundle and cancellation-owner identities;\n'
+              '- explicit capability subset and task/policy budget intersection;\n'
+              '- exact-version implementation registry and deterministic zero-cost proposal executor;\n'
+              '- durable `InvocationStore(kind=specialist)` execution and SQLite restart replay;\n'
+              '- absolute and monotonic deadline checks before and after executor entry;\n'
+              '- cancellation, expiry, changed-context conflict, failure sanitization and result terminalization;\n'
+              '- privacy-safe process-local specialist start/completion/failure/replay traces;\n'
+              '- routed-task adapter with widened/exhausted budget rejection;\n'
+              '- internal zero-external execution control plane with active cancellation and duplicate suppression;\n'
+              '- no public execution endpoint, connector, MCP, model, mutation or Android side effect.\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              '- model-backed implementation adapter;\n',
+              '- deterministic zero-external proposal implementation;\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              '- budget reserved before specialist entry;\n',
+              '- durable invocation claimed before specialist entry;\n'
+              '- no external reservation for the zero-external fixture;\n'
+              '- monotonic elapsed budget enforced before and after execution;\n',
+          )
+
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'a zero-external native specialist execution runtime is validating in PR #41.',
+              'a zero-external native specialist execution runtime is validating in PR #44.',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'PR #41 adds an internal control-plane method for one zero-external specialist;',
+              'PR #44 adds an internal control-plane method for one zero-external specialist;',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'The initial implementation executes only deterministic local proposal specialists with zero model calls, zero tool calls and zero external cost. Capabilities are selected by Core; clients cannot submit arbitrary tools, connectors, model tiers or mutation authority.\n\n'
+              'Completed results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.\n\n'
+              'Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.\n',
+              'The initial implementation executes only deterministic local proposal specialists with zero model calls, zero tool calls and zero external cost. Capabilities are selected by Core; clients cannot submit arbitrary tools, connectors, model tiers or mutation authority.\n\n'
+              'The Phase 1.3 result family is a concrete `SpecialistPlanPayload`; arbitrary final dictionaries and raw model text are rejected. Each request binds a stable context-bundle identity, a per-invocation cancellation-owner identity, the effective budget and its monotonic timeout.\n\n'
+              'Completed results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.\n\n'
+              'Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'including token, password, authorization, API key, raw input, email body, document content and Accessibility tree.\n',
+              'including token, password, authorization, API key, raw input, prompt, context content, result payload, tool arguments/results, email body, document content, audio, notification and Accessibility tree.\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              '- #40 / PR #41 validate the native specialist execution interface;\n',
+              '- #40 / PR #44 validate the native specialist execution interface;\n',
+          )
+
+          replace_once(
+              'docs/README.md',
+              'PR #41 validates an internal zero-external specialist execution runtime.',
+              'PR #44 validates an internal zero-external specialist execution runtime.',
+          )
+          replace_once(
+              'docs/README.md',
+              '- issue #40 / PR #41 — native typed specialist execution, validating;\n',
+              '- issue #40 / PR #44 — native typed specialist execution, validating;\n',
+          )
+
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              'Status: Phase 1 Step 1.3 is under implementation in issue #40 and Draft PR #41.\n',
+              'Status: Phase 1 Step 1.3 is validating in issue #40 and Draft PR #44; ADR 0016 is accepted.\n',
+          )
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              '- context-bundle fingerprint;\n'
+              '- explicit capability subset;\n'
+              '- effective budget after task/policy intersection;\n'
+              '- stable creation identity and absolute deadline;\n'
+              '- no retry or delegation parent in this increment.\n',
+              '- context-bundle fingerprint and stable `context_bundle_id`;\n'
+              '- stable per-invocation `cancellation_owner_id`;\n'
+              '- explicit capability subset;\n'
+              '- effective budget and its monotonic timeout after task/policy intersection;\n'
+              '- stable creation identity and absolute deadline;\n'
+              '- optional parent invocation identity without enabling retry or delegation.\n',
+          )
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              '- bounded strict-JSON payload for completed results;\n',
+              '- concrete bounded `SpecialistPlanPayload` for completed Phase 1.3 results;\n',
+          )
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              'Inline payloads are limited to 256,000 canonical JSON bytes. Arbitrary Python objects, raw connector responses, and private validation values are rejected.\n',
+              'Inline payloads are limited to 256,000 canonical JSON bytes. Arbitrary final dictionaries, raw model text, Python objects, raw connector responses, and private validation values are rejected.\n',
+          )
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              '- cancellation before executor entry durably cancels the pending specialist invocation;\n'
+              '- a cancelled parent `BudgetAccount` blocks execution;\n'
+              '- an expired new invocation is durably expired before executor entry;\n',
+              '- cancellation tokens are bound to the request’s stable owner identity;\n'
+              '- cancellation before executor entry durably cancels the pending specialist invocation;\n'
+              '- a cancelled parent `BudgetAccount` blocks execution;\n'
+              '- an expired new invocation is durably expired before executor entry;\n'
+              '- monotonic elapsed budget is checked before and after executor execution;\n',
+          )
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              '- stable specialist invocation fingerprinting.\n',
+              '- stable specialist invocation fingerprinting;\n'
+              '- concrete plan-payload validation and arbitrary-field rejection;\n'
+              '- stable context-bundle and cancellation-owner identities;\n'
+              '- wrong cancellation-owner rejection;\n'
+              '- monotonic expiry before and during execution;\n'
+              '- privacy-safe specialist start/completion/failure/replay traces.\n',
+          )
+          PY
+          rm -f .github/workflows/pr44-documentation-finalization.yml
+          git diff --check
+
+      - name: Validate accepted documentation state
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F -- '- Status: Accepted' docs/adr/0016-native-specialist-execution-authority.md
+          grep -F -- '- Implementation PR: #44' docs/adr/0016-native-specialist-execution-authority.md
+          grep -F 'Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #44' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F 'Draft PR #44; ADR 0016 accepted.' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F 'concrete `SpecialistPlanPayload`' docs/SPECIALIST_EXECUTION.md
+          grep -F 'PR #44 validates an internal zero-external specialist execution runtime.' docs/README.md
+          grep -F '#40 / PR #44 validate the native specialist execution interface' docs/AGENT_RUNTIME.md
+
+      - name: Commit accepted Phase 1.3 documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: accept ADR 0016 and align Phase 1.3 with PR 44'
+          git push origin HEAD:core/specialist-execution-runtime-clean
