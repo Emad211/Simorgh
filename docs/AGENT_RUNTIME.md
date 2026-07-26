@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence persistence is validating in PR #48. The default API remains routing-only.
 
 ## Purpose
 
@@ -27,20 +27,25 @@ RoutingDecision
 internal typed specialist execution
     ↓
 durable specialist invocation result or honest terminal uncertainty
+    ↓
+immutable typed result / artifact / evidence metadata authority
 ```
 
-The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #44 merged an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint.
+The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #44 merged an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint. PR #48 adds an internal result terminalization boundary and does not expose a public result endpoint.
 
 ## Native durable authorities
 
-Three independent operational stores exist:
+Four independent operational stores exist:
 
 ```text
 AgentTaskStore
   task identity, routing state, task budget, cancellation and expiry
 
 InvocationStore
-  model/tool/future-specialist call identity, reservation, result and uncertainty
+  model/tool/specialist call identity, reservation, execution payload and uncertainty
+
+ResultStore
+  immutable final typed result, artifact/evidence metadata, privacy, retention and replay
 
 AndroidActionJournal
   device command delivery, ACK, result and Android side-effect uncertainty
@@ -273,7 +278,7 @@ unknown_side_effect
 
 Identity binds the parent task, agent/version, operation, canonical input fingerprint, kind/effect and provider/model or tool/connector target.
 
-Completed results are immutable, typed, hashed and limited to one million canonical JSON bytes.
+Completed execution payloads are immutable, typed, hashed and limited to one million canonical JSON bytes. The separate final result authority has its own smaller inline limit and schema registry.
 
 At restart:
 
@@ -338,9 +343,17 @@ The initial implementation executes only deterministic local proposal specialist
 
 The Phase 1.3 result family is a concrete `SpecialistPlanPayload`; arbitrary final dictionaries and raw model text are rejected. Each request binds a stable context-bundle identity, a per-invocation cancellation-owner identity, the effective budget and its monotonic timeout.
 
-Completed results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.
+Completed execution results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.
 
 Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.
+
+## Typed result and artifact authority
+
+Phase 1.4 terminalization loads the completed specialist invocation, verifies its exact typed payload and committed usage, resolves an exact result-schema version, and claims one immutable `AuthoritativeSpecialistResult` in a separate `ResultStore` before reporting result-authority success.
+
+The initial family is `simorgh.typed-plan.v1` → `simorgh.specialist-plan-result` schema `1.0`. Artifact bytes and raw connector bodies remain outside the authority; only bounded hash-addressed artifact metadata and tainted evidence projections are admitted. Effective result privacy and retention cannot be weaker than linked references.
+
+SQLite restart replay returns the identical result ID and canonical hash without re-entering the specialist or charging new usage. Persian presentation is rendered deterministically outside authority fields and cannot alter the result hash. See [`TYPED_RESULTS.md`](TYPED_RESULTS.md) and ADR 0017.
 
 ## Task and invocation cost reconciliation
 
@@ -359,103 +372,3 @@ do not double-count already-accounted calls
     ↓
 mark over-limit recovered budgets exhausted
 ```
-
-If a parent task payload has already been pruned, the invocation record remains authoritative but the deleted task is not recreated automatically.
-
-## Direct model endpoint
-
-`POST /v1/model/text` is disabled with HTTP 410:
-
-```text
-ungoverned_model_endpoint_disabled
-```
-
-A generic direct provider call has no task budget, pricing policy or stable invocation authority. It will not be re-enabled as a bypass.
-
-## Trace model
-
-Trace events may include:
-
-```text
-request/invocation IDs
-agent/version
-routing method/rule
-provider/model/tool identity
-cache or replay state
-usage and estimated cost
-typed outcome and reason
-bounded metadata such as connector/effect/tier
-```
-
-Trace metadata rejects keys associated with secrets or raw private content, including token, password, authorization, API key, raw input, prompt, context content, result payload, tool arguments/results, email body, document content, audio, notification and Accessibility tree.
-
-Current traces are bounded and process-local. They are diagnostic evidence, not durable task or invocation authority.
-
-## Cost behavior
-
-Common deterministic routing:
-
-```text
-model calls = 0
-tool calls = 0
-estimated model cost = 0
-```
-
-Completed invocation replay:
-
-```text
-new model calls = 0
-new tool calls = 0
-new tokens = 0
-new cost = 0
-```
-
-An interrupted reserved invocation conservatively retains worst-case usage. Startup reconciliation prevents that usage from remaining invisible in a retained parent task.
-
-CI uses fake providers and fake tools only. It must not contact AvalAI, MCP servers, Gmail, GitHub or another paid/external service.
-
-## Retry policy
-
-Retry execution is not enabled.
-
-The invocation schema includes parent identity and attempt metadata for future explicit retry chains, but PR #39 does not create retries. A future retry must use a new invocation ID and new retry/call budget, and cannot proceed while mutation outcome is uncertain.
-
-## Adding a specialist safely
-
-1. Choose one stable `agent_id` and semantic version.
-2. Define narrow task kinds and locale support.
-3. Define exact input/output contracts.
-4. Start with no tools and no model when possible.
-5. Add only necessary tool and connector IDs.
-6. Choose `NONE`, `PROPOSE_ONLY` or a separately reviewed typed executor policy.
-7. Set per-agent model/tool/token/cost/time ceilings.
-8. Add deterministic Persian and English routing rules.
-9. Add negative routing tests to prevent overlap and substring accidents.
-10. Add fake provider/tool restart-replay tests proving no CI spending.
-11. Add trace and durable-error tests proving private content is absent.
-12. Do not add mutation authority in the same change as a planning specialist.
-
-## Current limitations
-
-- the public API remains routing-only; specialist execution is currently an internal zero-external control-plane method;
-- no live semantic classifier is configured by default;
-- no explicit retry API exists;
-- complete task-to-invocation cancellation propagation is deferred to Step 1.6;
-- no MCP server is connected;
-- no Voice/Wake-word or Notification event reaches this API yet;
-- no proactive task graph or persistent personal memory exists yet;
-- no mutation specialist is enabled;
-- invocation result payloads are not application-level encrypted;
-- the invocation store has no terminal retention policy yet;
-- task and invocation stores each support one active Core process per path;
-- traces remain process-local;
-- Android supports only the separately reviewed `open_app` side effect.
-
-Follow-up issues:
-
-- #36 complete the native runtime and GitHub workflow;
-- #40 / PR #44 native specialist execution interface, complete;
-- #31 Persian Voice/Wake word;
-- #32 Notification intelligence;
-- #33 governed MCP registry;
-- #34 durable Personal Work Graph and proactive crew.

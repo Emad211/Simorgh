@@ -15,6 +15,10 @@ from simorgh_core.agents.invocation_store import (
     SQLiteInvocationStore,
     invocation_store_registry,
 )
+from simorgh_core.agents.result_store import (
+    SQLiteResultStore,
+    result_store_registry,
+)
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
 from simorgh_core.agents.usage_recovery import (
     reconcile_task_store_invocation_usage,
@@ -35,6 +39,7 @@ def _require_distinct_store_paths(settings: Settings) -> None:
         "action_journal": settings.simorgh_action_journal_path,
         "agent_tasks": settings.simorgh_agent_task_store_path,
         "invocations": settings.simorgh_invocation_store_path,
+        "results": settings.simorgh_result_store_path,
     }
     normalized: dict[str, Path] = {}
     for name, raw_path in configured.items():
@@ -57,7 +62,7 @@ def _require_distinct_store_paths(settings: Settings) -> None:
                 ) from None
             if same_authority:
                 raise RuntimeError(
-                    "Core durable task, invocation, and Android action store paths "
+                    "Core durable task, invocation, result, and Android action store paths "
                     f"must be distinct ({left_name}, {right_name})"
                 )
 
@@ -68,16 +73,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     action_journal: SQLiteActionJournal | None = None
     task_store: SQLiteAgentTaskStore | None = None
     invocation_store: SQLiteInvocationStore | None = None
+    result_store: SQLiteResultStore | None = None
     action_journal_configured = False
     task_store_configured = False
     invocation_store_configured = False
+    result_store_configured = False
     try:
         _require_distinct_store_paths(settings)
-        # The invocation store owns the process-level lock, so acquire it before
-        # opening or recovering any other durable authority.
+        # Invocation identity is recovered before any dependent result authority is loaded.
         invocation_store = SQLiteInvocationStore(
             settings.simorgh_invocation_store_path,
         )
+        result_store = SQLiteResultStore(settings.simorgh_result_store_path)
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
             max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
@@ -101,7 +108,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         task_store_configured = True
         invocation_store_registry.configure(invocation_store)
         invocation_store_configured = True
+        result_store_registry.configure(result_store)
+        result_store_configured = True
     except BaseException:
+        if result_store_configured:
+            result_store_registry.reset_to_memory()
+        elif result_store is not None:
+            result_store.close()
         if invocation_store_configured:
             invocation_store_registry.reset_to_memory()
         elif invocation_store is not None:
@@ -120,12 +133,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            invocation_store_registry.reset_to_memory()
+            result_store_registry.reset_to_memory()
         finally:
             try:
-                await agent_task_control_plane.reset_to_memory_store()
+                invocation_store_registry.reset_to_memory()
             finally:
-                await action_broker.reset_to_memory_journal()
+                try:
+                    await agent_task_control_plane.reset_to_memory_store()
+                finally:
+                    await action_broker.reset_to_memory_journal()
 
 
 app = FastAPI(

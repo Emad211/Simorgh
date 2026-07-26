@@ -17,9 +17,10 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`AGENT_TASK_STORE.md`](AGENT_TASK_STORE.md) — durable SQLite task identity, replay, cancellation, crash recovery, integrity, retention, backup and incident handling.
 - [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.
 - [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.
+- [`TYPED_RESULTS.md`](TYPED_RESULTS.md) — immutable typed result, artifact/evidence metadata, privacy, retention, canonical replay and Persian rendering authority.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 is validating the separate typed result, artifact and evidence metadata authority. The public API remains routing-only.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -28,6 +29,7 @@ Current roadmap dependencies:
 - issue #36 — complete durable native runtime and one GitHub read workflow;
 - issue #38 / PR #39 — durable invocation identity and restart replay, complete;
 - issue #40 / PR #44 — native typed specialist execution, complete;
+- issue #46 / PR #48 — typed result, artifact and evidence authority, validating;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
@@ -85,7 +87,8 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0013 — native specialist-agent runtime and deterministic cost governance;
 - ADR 0014 — crash-safe durable agent-task identity and routing recovery;
 - ADR 0015 — durable invocation identity, reservation and exact restart replay;
-- ADR 0016 — native specialist execution authority and zero-external initial boundary.
+- ADR 0016 — native specialist execution authority and zero-external initial boundary;
+- ADR 0017 — typed specialist result, artifact and evidence metadata authority.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
@@ -96,8 +99,8 @@ An ADR records why a design was selected, its consequences, rejected alternative
 - `SIMORGH_OPERATOR_TOKEN` authenticates trusted action, refresh and specialist-task APIs.
 - Provider, operator, and device credentials are not interchangeable.
 - Accessibility snapshots and refresh messages never carry model-provider credentials.
-- Android action, task and invocation stores contain operational state but never provider keys or device/operator bearer tokens.
-- Invocation identity stores input fingerprints rather than prompts/tool arguments; completed typed result payloads remain durable operational data and must be minimized by contract.
+- Android action, task, invocation and result stores contain operational state but never provider keys or device/operator bearer tokens.
+- Invocation identity stores input fingerprints rather than prompts/tool arguments; completed typed execution payloads and authoritative typed results remain durable operational data and must be minimized by contract.
 - Provider/tool exception messages are not persisted; only bounded typed failure metadata is retained.
 - Clock probes contain protocol identity and timing metadata only; they never contain credentials.
 - Agent traces reject configured secret/raw-content metadata and never include prompts or tool arguments by default.
@@ -132,10 +135,12 @@ For specialist-agent changes, distinguish:
 - Android action execution has an encrypted device-side write-ahead ledger.
 - Core persists Android action identity, delivery uncertainty, cancellation, result identity, and ACK bookkeeping in a versioned SQLite journal.
 - Core persists agent task identity, routing state, cancellation and expiry in a separate SQLite task store.
-- Core persists model/tool/future-specialist invocation identity, pre-call usage reservation, terminal state and typed result in a separate SQLite invocation store.
+- Core persists model/tool/specialist invocation identity, pre-call usage reservation, terminal state and typed execution payload in a separate SQLite invocation store.
+- Core persists immutable final typed results plus bounded artifact/evidence metadata, privacy and retention in a separate SQLite result store.
 - A routing claim interrupted by Core restart becomes `unknown`; it is not automatically routed again.
 - A pending/reserved invocation interrupted by restart becomes `unknown`; an uncertain mutation becomes `unknown_side_effect`.
 - Completed model/tool invocations replay without another provider/tool call or new budget reservation.
+- Completed typed specialist results replay without another specialist call, result rewrite or new usage charge.
 - Crash-recovered committed invocation usage is reconciled into retained parent task budgets without double counting.
 - A command or invocation that may already have crossed an external boundary is not blindly redispatched after restart.
 - The ungoverned direct model endpoint is disabled with HTTP 410.
