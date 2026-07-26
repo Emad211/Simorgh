@@ -45,6 +45,20 @@ Live external cost: zero in ordinary CI
 
 Production artifact-byte storage was intentionally excluded from PR #48. The useful bounded byte-storage idea found during audit of superseded PR #47 is preserved in issue #49 and is not part of Phase 1.5.
 
+## Documentation closeout review
+
+PR #50 synchronizes every primary status surface rather than only the master plan:
+
+```text
+docs/IMPLEMENTATION_MASTER_PLAN.md
+docs/AGENT_RUNTIME.md
+docs/SPECIALIST_EXECUTION.md
+docs/README.md
+docs/TYPED_RESULTS.md
+```
+
+All now identify PR #48 as merged and Phase 1.5 issue #51 as the next active trust boundary. The exact head containing this review fix must pass independent Core and Android CI before PR #50 merges.
+
 ## Next execution position
 
 Phase 1 Step 1.5 is now the active development boundary: governed read-only tool execution with the first GitHub read-only projections. Voice, Notification, MCP, Memory, Work Graph and Android side-effect expansion remain blocked by the Phase 1 sequence.
