@@ -1,4 +1,4 @@
-name: PR47 Invocation Linkage Diagnostic
+name: PR47 Invocation Linkage Diagnostic v2
 
 on:
   push:
@@ -91,7 +91,7 @@ jobs:
           echo "$?" > "$RUNNER_TEMP/pytest.status"
           exit 0
 
-      - name: Report exact diagnostic
+      - name: Publish stable exact diagnostic
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -120,4 +120,6 @@ jobs:
           print('PR #47 linkage diagnostic — no product files persisted.\n\n```text\n' + text + '\n```')
           PY
           )
-          gh api "repos/${GITHUB_REPOSITORY}/issues/47/comments" -f body="$body"
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/5084832788" \
+            --raw-field body="$body"
