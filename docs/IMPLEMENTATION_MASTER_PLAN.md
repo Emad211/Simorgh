@@ -43,7 +43,7 @@ A step is not complete because code exists. It is complete only when its failure
 Phase 0 Governance                       COMPLETE
 Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
-Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #41
+Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #44
 Phase 1.4 Typed Results and Artifacts    QUEUED
 Phase 1.5 Governed GitHub Read Tools     QUEUED
 Phase 1.6 Cancellation Propagation       QUEUED
@@ -205,15 +205,19 @@ durable completed result or terminal uncertainty
 
 ## 1.3 Specialist execution interface — VALIDATING
 
-Issue #40; Draft PR #41.
+Issue #40; Draft PR #44. ADR 0016 accepted.
 
 Implemented in the open PR:
 
 - immutable request/result contracts derived from durable route and compiled policy;
+- concrete `SpecialistPlanPayload`; arbitrary final dictionaries and raw model text rejected;
+- stable context-bundle and cancellation-owner identities;
 - explicit capability subset and task/policy budget intersection;
 - exact-version implementation registry and deterministic zero-cost proposal executor;
 - durable `InvocationStore(kind=specialist)` execution and SQLite restart replay;
+- absolute and monotonic deadline checks before and after executor entry;
 - cancellation, expiry, changed-context conflict, failure sanitization and result terminalization;
+- privacy-safe process-local specialist start/completion/failure/replay traces;
 - routed-task adapter with widened/exhausted budget rejection;
 - internal zero-external execution control plane with active cancellation and duplicate suppression;
 - no public execution endpoint, connector, MCP, model, mutation or Android side effect.
@@ -247,7 +251,7 @@ SpecialistExecutionResult
 - runtime-neutral specialist interface;
 - native implementation registry;
 - fake/no-op implementation;
-- model-backed implementation adapter;
+- deterministic zero-external proposal implementation;
 - durable specialist invocation identity;
 - in-process cancellation token;
 - strict task/specialist/capability intersection;
@@ -260,7 +264,9 @@ SpecialistExecutionResult
 - one selected owner only;
 - wrong specialist version rejected;
 - capability widening rejected;
-- budget reserved before specialist entry;
+- durable invocation claimed before specialist entry;
+- no external reservation for the zero-external fixture;
+- monotonic elapsed budget enforced before and after execution;
 - completed specialist replay;
 - interrupted specialist recovery to unknown;
 - cancellation before execution;

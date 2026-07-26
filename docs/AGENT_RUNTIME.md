@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; a zero-external native specialist execution runtime is validating in PR #41. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; a zero-external native specialist execution runtime is validating in PR #44. The default API remains routing-only.
 
 ## Purpose
 
@@ -29,7 +29,7 @@ internal typed specialist execution
 durable specialist invocation result or honest terminal uncertainty
 ```
 
-The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #41 adds an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint.
+The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #44 adds an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint.
 
 ## Native durable authorities
 
@@ -336,9 +336,11 @@ The native specialist runtime accepts only a durable `routed` task record, resol
 
 The initial implementation executes only deterministic local proposal specialists with zero model calls, zero tool calls and zero external cost. Capabilities are selected by Core; clients cannot submit arbitrary tools, connectors, model tiers or mutation authority.
 
+The Phase 1.3 result family is a concrete `SpecialistPlanPayload`; arbitrary final dictionaries and raw model text are rejected. Each request binds a stable context-bundle identity, a per-invocation cancellation-owner identity, the effective budget and its monotonic timeout.
+
 Completed results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.
 
-Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.
+Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.
 
 ## Task and invocation cost reconciliation
 
@@ -385,7 +387,7 @@ typed outcome and reason
 bounded metadata such as connector/effect/tier
 ```
 
-Trace metadata rejects keys associated with secrets or raw private content, including token, password, authorization, API key, raw input, email body, document content and Accessibility tree.
+Trace metadata rejects keys associated with secrets or raw private content, including token, password, authorization, API key, raw input, prompt, context content, result payload, tool arguments/results, email body, document content, audio, notification and Accessibility tree.
 
 Current traces are bounded and process-local. They are diagnostic evidence, not durable task or invocation authority.
 
@@ -452,7 +454,7 @@ The invocation schema includes parent identity and attempt metadata for future e
 Follow-up issues:
 
 - #36 complete the native runtime and GitHub workflow;
-- #40 / PR #41 validate the native specialist execution interface;
+- #40 / PR #44 validate the native specialist execution interface;
 - #31 Persian Voice/Wake word;
 - #32 Notification intelligence;
 - #33 governed MCP registry;

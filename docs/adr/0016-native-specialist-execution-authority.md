@@ -1,11 +1,11 @@
 # ADR 0016: Native typed specialist execution authority
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-26
 - Governing directive: `docs/SIMORGH_MASTER_DIRECTIVE.md`
 - Parent implementation issue: #36
 - Step issue: #40
-- Implementation PR: #41
+- Implementation PR: #44
 
 ## Context
 
@@ -58,13 +58,14 @@ task kind
 execution mode and effect
 input/output contract identity
 canonical task fingerprint
-context fingerprint
+context fingerprint and stable context_bundle_id
+cancellation_owner_id
 explicit capability subset
-effective budget
+effective budget and monotonic timeout
 stable creation identity
 absolute deadline
 attempt = 1
-no retry/delegation parent
+optional parent invocation identity without retry or delegation
 ```
 
 Set-like task and capability fields are sorted before canonical hashing. Process-local current time is excluded from the durable invocation fingerprint.
@@ -169,7 +170,7 @@ Replay performs zero new specialist, model, tool, connector or reservation calls
 
 - task, invocation, specialist/version, effect and output-contract identity;
 - typed terminal outcome;
-- bounded strict-JSON inline payload for completion;
+- concrete bounded `SpecialistPlanPayload` for the Phase 1.3 completion family;
 - typed evidence/artifact reference placeholders;
 - direct committed usage;
 - replay disposition;
@@ -188,6 +189,8 @@ Evidence and artifact references are placeholders only. Durable artifact/result 
 - completed replay is not erased by later cancellation or deadline expiry;
 - coroutine interruption before durable completion becomes `unknown` or `unknown_side_effect` according to effect class;
 - no interrupted execution is automatically retried;
+- cancellation tokens are bound to a stable per-invocation owner identity;
+- absolute deadline and monotonic elapsed budget are checked before and after execution;
 - full task-to-all-child cancellation enumeration remains Step 1.6.
 
 ### Control-plane exposure

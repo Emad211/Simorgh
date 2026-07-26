@@ -1,6 +1,6 @@
 # Simorgh specialist execution runtime
 
-Status: Phase 1 Step 1.3 is under implementation in issue #40 and Draft PR #41.
+Status: Phase 1 Step 1.3 is validating in issue #40 and Draft PR #44; ADR 0016 is accepted.
 
 This runtime executes exactly one specialist that has already been selected by the durable routing control plane. It does not route a task, discover permissions, connect to external systems, or authorize a side effect.
 
@@ -55,11 +55,12 @@ The request binds:
 - execution mode and invocation effect;
 - input and output contract identities;
 - canonical task fingerprint;
-- context-bundle fingerprint;
+- context-bundle fingerprint and stable `context_bundle_id`;
+- stable per-invocation `cancellation_owner_id`;
 - explicit capability subset;
-- effective budget after task/policy intersection;
+- effective budget and its monotonic timeout after task/policy intersection;
 - stable creation identity and absolute deadline;
-- no retry or delegation parent in this increment.
+- optional parent invocation identity without enabling retry or delegation.
 
 Task fingerprints sort set-like data-source identities before hashing so the same typed task remains stable across processes.
 
@@ -126,14 +127,14 @@ Completed replay does not depend on the current in-process executor registry. If
 
 - request, invocation, agent, version, effect, and output-contract identity;
 - typed terminal outcome;
-- bounded strict-JSON payload for completed results;
+- concrete bounded `SpecialistPlanPayload` for completed Phase 1.3 results;
 - zero or more typed evidence/artifact reference placeholders;
 - committed direct usage;
 - replay disposition;
 - start and completion chronology;
 - bounded reason for non-completed outcomes.
 
-Inline payloads are limited to 256,000 canonical JSON bytes. Arbitrary Python objects, raw connector responses, and private validation values are rejected.
+Inline payloads are limited to 256,000 canonical JSON bytes. Arbitrary final dictionaries, raw model text, Python objects, raw connector responses, and private validation values are rejected.
 
 Artifact and evidence references are placeholders only. Their durable storage and provenance contract are Phase 1 Step 1.4.
 
@@ -175,9 +176,11 @@ Invocation fingerprints exclude process-local execution creation time but includ
 
 ## Cancellation and deadlines
 
+- cancellation tokens are bound to the request’s stable owner identity;
 - cancellation before executor entry durably cancels the pending specialist invocation;
 - a cancelled parent `BudgetAccount` blocks execution;
 - an expired new invocation is durably expired before executor entry;
+- monotonic elapsed budget is checked before and after executor execution;
 - cancellation after durable completion does not erase a completed replay;
 - completed replay can be returned after the original deadline because no work is re-executed;
 - coroutine interruption before durable completion becomes `unknown` or `unknown_side_effect` according to effect class;
@@ -230,7 +233,12 @@ The current test slice covers:
 - invalid result terminalization;
 - direct cost-bypass rejection;
 - exception-message sanitization;
-- stable specialist invocation fingerprinting.
+- stable specialist invocation fingerprinting;
+- concrete plan-payload validation and arbitrary-field rejection;
+- stable context-bundle and cancellation-owner identities;
+- wrong cancellation-owner rejection;
+- monotonic expiry before and during execution;
+- privacy-safe specialist start/completion/failure/replay traces.
 
 Ordinary CI must remain fake/local and cost-free.
 
