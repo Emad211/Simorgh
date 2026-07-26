@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           base64 --decode .github/phase15-security-patch.py.b64 > /tmp/phase15_security_patch.py
           python -m py_compile /tmp/phase15_security_patch.py
-          python /tmp/phase15_security_patch.py | tee /tmp/phase15-security-patch.log
+          python /tmp/phase15_security_patch.py 2>&1 | tee /tmp/phase15-security-patch.log
           rm -f .github/phase15-security-patch.py.b64
           git show "${{ github.event.pull_request.base.sha }}:.github/workflows/ci.yml" > .github/workflows/ci.yml
           git diff --check
@@ -97,7 +97,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase15-security-diagnostic-v2
+          name: phase15-security-diagnostic-v3
           path: |
             /tmp/phase15-security-patch.log
             /tmp/phase15-security-report.txt
