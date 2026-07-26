@@ -1,0 +1,163 @@
+name: PR47 Result Authority Documentation Sync
+
+on:
+  push:
+    branches:
+      - core/typed-results-artifacts
+    paths:
+      - .github/workflows/pr47-docs-sync.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr47-result-authority-docs-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact roadmap and index updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, *, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} anchor count={count}, expected=1')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          master = 'docs/IMPLEMENTATION_MASTER_PLAN.md'
+          replace_once(
+              master,
+              'Phase 1.4 Typed Results and Artifacts    QUEUED\n',
+              'Phase 1.4 Typed Results and Artifacts    VALIDATING — issue #46 / PR #47\n',
+              label='roadmap status',
+          )
+          replace_once(
+              master,
+              '## 1.4 Typed result and artifact model — QUEUED\n\n'
+              '### Objective\n\n'
+              'Separate durable structured results and evidence from user-facing natural-language presentation.\n\n'
+              '### Deliverables\n\n'
+              '- `SpecialistResult` contract;\n'
+              '- artifact ID, hash, media type, size and producer identity;\n'
+              '- evidence references with source, retrieval time and freshness;\n'
+              '- explicit uncertainty and unresolved risks;\n'
+              '- result schema/version identity;\n'
+              '- bounded inline result and external artifact references;\n'
+              '- Persian renderer outside authority fields;\n'
+              '- immutable completed result;\n'
+              '- privacy classification and retention metadata.\n\n'
+              '### Gate\n\n'
+              'No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this contract.\n',
+              '## 1.4 Typed result and artifact model — VALIDATING\n\n'
+              'Issue #46; Draft PR #47.\n\n'
+              '### Objective\n\n'
+              'Separate durable structured results and evidence from user-facing natural-language presentation without duplicating task, invocation or cost authority.\n\n'
+              '### Implemented in the open PR\n\n'
+              '- exact result-schema registry for `simorgh.typed-plan.v1@1.0`;\n'
+              '- immutable producer/result identity and canonical SHA-256;\n'
+              '- invocation usage/result hash linkage without a second usage authority;\n'
+              '- typed artifact and evidence references;\n'
+              '- compositional privacy and retention metadata;\n'
+              '- strict in-memory result store;\n'
+              '- SQLite WAL result/artifact store with process-path lock;\n'
+              '- artifact-byte registration, size and SHA-256 enforcement;\n'
+              '- completed specialist invocation terminalization;\n'
+              '- internal status and deterministic Persian rendering;\n'
+              '- privacy-safe result trace containing IDs, hashes, classes and counts only;\n'
+              '- exact replay, corruption and unsupported-schema tests;\n'
+              '- no live connector, provider, MCP, mutation or Android side effect.\n\n'
+              '### Merge gate\n\n'
+              '- ADR 0017 accepted and operations documentation complete;\n'
+              '- exact PR head passes Core Ruff, strict MyPy and full tests;\n'
+              '- exact PR head passes Android build, JVM tests, lint and debug APK;\n'
+              '- artifact bytes, result payloads and private markers are absent from traces;\n'
+              '- no unresolved review thread;\n'
+              '- ordinary CI makes no live or paid external call.\n\n'
+              'No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this authority.\n',
+              label='roadmap step 1.4',
+          )
+
+          runtime = 'docs/AGENT_RUNTIME.md'
+          replace_once(
+              runtime,
+              'Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44. The default API remains routing-only.\n',
+              'Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result/artifact authority is validating in PR #47. The default API remains routing-only.\n',
+              label='runtime status',
+          )
+          replace_once(
+              runtime,
+              'Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.\n\n'
+              '## Task and invocation cost reconciliation\n',
+              'Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.\n\n'
+              '## Typed result and artifact authority\n\n'
+              'A completed specialist invocation may be terminalized into one immutable `SpecialistResultRecord`. The result authority validates an exact output-contract/schema pair, producer identity and the typed invocation result before writing.\n\n'
+              '`InvocationStore` remains the detailed usage authority. Result records store canonical usage/result hashes rather than copying the usage vector. Artifacts and evidence carry typed identity, hashes, privacy, retention, freshness, cache and taint metadata. Bounded Core-local artifact bytes are committed only after exact ID, size and SHA-256 checks.\n\n'
+              '`SQLiteResultStore` uses WAL, FULL synchronization, foreign keys, an exclusive process-path lock and startup integrity/hash validation. Exact replay preserves result identity; conflicting result or invocation reuse fails closed.\n\n'
+              'The internal result control plane provides terminalize, status and Persian-render methods without accepting client-selected schemas or permissions. Status and traces exclude payload text and artifact bytes. See [`RESULT_AUTHORITY.md`](RESULT_AUTHORITY.md) and ADR 0017.\n\n'
+              '## Task and invocation cost reconciliation\n',
+              label='runtime result authority section',
+          )
+
+          index = 'docs/README.md'
+          replace_once(
+              index,
+              '- [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.\n',
+              '- [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.\n'
+              '- [`RESULT_AUTHORITY.md`](RESULT_AUTHORITY.md) — immutable typed results, artifact/evidence metadata, SQLite replay, privacy/retention, terminalization, status, rendering and incident handling.\n',
+              label='docs result authority link',
+          )
+          replace_once(
+              index,
+              'The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.\n',
+              'The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #47 validates typed result/artifact authority. The public API remains routing-only.\n',
+              label='docs current authority status',
+          )
+          replace_once(
+              index,
+              '- ADR 0016 — native specialist execution authority and zero-external initial boundary.\n',
+              '- ADR 0016 — native specialist execution authority and zero-external initial boundary;\n'
+              '- ADR 0017 — typed result, evidence and artifact authority.\n',
+              label='ADR 0017 index',
+          )
+          PY
+          rm -f .github/workflows/pr47-docs-sync.yml
+          git diff --check
+
+      - name: Commit synchronized documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: align roadmap and runtime with typed result authority'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/typed-results-artifacts
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during documentation sync" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
