@@ -38,7 +38,7 @@ class RecordingProposalExecutor:
         *,
         agent_id: str = "development.planner",
         agent_version: str = "1.0.0",
-        output_contract: str = "development.plan.v1",
+        output_contract: str = "simorgh.typed-plan.v1",
         monotonic_clock: dict[str, int] | None = None,
         expire_during_execution: bool = False,
     ) -> None:
@@ -121,8 +121,8 @@ def _execution_inputs() -> tuple[
 @pytest.mark.parametrize(
     ("agent_id", "agent_version", "output_contract"),
     (
-        ("bad/agent", "1.0.0", "development.plan.v1"),
-        ("development.planner", "version-one", "development.plan.v1"),
+        ("bad/agent", "1.0.0", "simorgh.typed-plan.v1"),
+        ("development.planner", "version-one", "simorgh.typed-plan.v1"),
         ("development.planner", "1.0.0", "Bad Contract!"),
     ),
 )
