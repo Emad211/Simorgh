@@ -1,6 +1,6 @@
 # Simorgh typed specialist result authority
 
-Status: Phase 1 Step 1.4 is accepted in PR #48 under issue #46. ADR 0017 is accepted; merge remains conditioned on exact-head CI.
+Status: Phase 1 Step 1.4 merged through PR #48 at `98d56689df4442541e30c77451ab56550e473479`. Issue #46 is complete, ADR 0017 is accepted, and exact-head Core/Android CI passed. Production artifact-byte storage remains separate issue #49; Phase 1.5 is issue #51.
 
 ## Purpose
 

@@ -44,7 +44,7 @@ Phase 0 Governance                       COMPLETE
 Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
 Phase 1.3 Specialist Execution           COMPLETE — PR #44
-Phase 1.4 Typed Results and Artifacts    VALIDATING — PR #48
+Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
 Phase 1.5 Governed GitHub Read Tools     QUEUED
 Phase 1.6 Cancellation Propagation       QUEUED
 Phase 1.7 Context Compiler               QUEUED
@@ -273,15 +273,15 @@ SpecialistExecutionResult
 - output-contract failure;
 - no private context leakage to traces.
 
-## 1.4 Typed result and artifact model — VALIDATING
+## 1.4 Typed result and artifact model — COMPLETE
 
-Implementation is under review in PR #48 for issue #46; ADR 0017 is proposed until the exact-head merge gate closes.
+Merged through PR #48 at `98d56689df4442541e30c77451ab56550e473479`. Issue #46 completed; ADR 0017 accepted. Exact candidate `6bf234e15956203a3efb4f8c1b8fd8e7cb92cd8e` passed CI run `30216281897` with 317 Core tests and full Android build/JVM/lint/APK gates.
 
 ### Objective
 
 Separate durable structured results and evidence from user-facing natural-language presentation.
 
-### Implemented in PR #48
+### Delivered in PR #48
 
 - exact-version result registry for `simorgh.typed-plan.v1`, `simorgh.specialist-plan-result`, schema `1.0`;
 - immutable `AuthoritativeSpecialistResult` tied to request, invocation, producer, output contract and direct usage identity;
@@ -297,16 +297,16 @@ Separate durable structured results and evidence from user-facing natural-langua
 - dedicated Core lifespan store path and startup unwind;
 - fake/local restart, conflict, corruption, privacy and presentation tests.
 
-### Merge gate
+### Merge gate satisfied
 
-- no live connector payload, arbitrary model text or presentation text is admitted as an authoritative result;
-- completed replay performs no specialist/model/tool/connector call and no new usage charge;
-- artifact bytes remain outside this metadata authority until a separate storage boundary;
-- ADR 0017 and operational/validation documentation are synchronized;
-- no unresolved review thread;
-- exact PR Head has green Core Ruff, strict MyPy and full tests;
-- exact PR Head has green Android build, JVM tests, lint and APK;
-- PR remains limited to Phase 1.4.
+- no live connector payload, arbitrary model text or presentation text admitted;
+- completed replay added no specialist/model/tool/connector call or new usage charge;
+- artifact bytes remained outside this metadata authority and are tracked separately in issue #49;
+- ADR 0017 and operational/validation documentation synchronized;
+- zero unresolved review threads;
+- exact candidate passed Core Ruff, strict MyPy and 317 tests;
+- exact candidate passed Android build, JVM tests, lint and APK;
+- merged scope remained limited to Phase 1.4.
 
 ### Explicit non-goals
 

@@ -20,7 +20,7 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`TYPED_RESULTS.md`](TYPED_RESULTS.md) — immutable typed result, artifact/evidence metadata, privacy, retention, canonical replay and Persian rendering authority.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 is validating the separate typed result, artifact and evidence metadata authority. The public API remains routing-only.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 merged the separate typed result, artifact and evidence metadata authority. Phase 1.5 governed GitHub read tools are next. The public API remains routing-only.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -29,7 +29,8 @@ Current roadmap dependencies:
 - issue #36 — complete durable native runtime and one GitHub read workflow;
 - issue #38 / PR #39 — durable invocation identity and restart replay, complete;
 - issue #40 / PR #44 — native typed specialist execution, complete;
-- issue #46 / PR #48 — typed result, artifact and evidence authority, validating;
+- issue #46 / PR #48 — typed result, artifact and evidence authority, complete;
+- issue #51 — governed read-only GitHub tools and typed evidence, next;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
