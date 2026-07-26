@@ -1,0 +1,78 @@
+name: PR47 Result Store Quality
+
+on:
+  push:
+    branches:
+      - core/typed-results-artifacts
+    paths:
+      - .github/workflows/pr47-store-quality.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr47-result-store-quality
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact formatting correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('services/core/src/simorgh_core/agents/result_store.py')
+          text = path.read_text(encoding='utf-8')
+          old = (
+              '        self._connection.execute(\n'
+              '            "CREATE TABLE IF NOT EXISTS result_store_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"\n'
+              '        )\n'
+          )
+          new = (
+              '        self._connection.execute(\n'
+              '            "CREATE TABLE IF NOT EXISTS result_store_meta("\n'
+              '            "key TEXT PRIMARY KEY, value TEXT NOT NULL)"\n'
+              '        )\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit(f'result-store formatting anchor count={text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm -f .github/workflows/pr47-store-quality.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run Core result authority gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Commit validated store foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: validate SQLite typed result and artifact authority'
+          git push origin HEAD:core/typed-results-artifacts
