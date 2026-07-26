@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence persistence is validating in PR #48. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence metadata authority merged in PR #48. Phase 1.5 governed GitHub read tools are the next active boundary. The default API remains routing-only.
 
 ## Purpose
 
