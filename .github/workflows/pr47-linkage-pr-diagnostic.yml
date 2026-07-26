@@ -1,4 +1,4 @@
-name: PR47 Linkage PR Diagnostic v2
+name: PR47 Linkage PR Diagnostic v3
 
 on:
   pull_request:
@@ -46,7 +46,6 @@ jobs:
           print('patch_complete=true')
           PY
           echo "$?" > "$RUNNER_TEMP/patch.status"
-          cat "$RUNNER_TEMP/patch.log"
           exit 0
 
       - uses: actions/setup-python@v5
@@ -59,32 +58,48 @@ jobs:
         run: |
           set +e
           patch_status=$(cat "$RUNNER_TEMP/patch.status")
-          if [[ "$patch_status" != "0" ]]; then
-            echo "patch_status=$patch_status"
-            echo "install_status=99"
-            echo "ruff_status=99"
-            echo "mypy_status=99"
-            echo "pytest_status=99"
-            exit 0
+          if [[ "$patch_status" == "0" ]]; then
+            python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
+            pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
+            install_status=$?
+            ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
+            ruff_status=$?
+            mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
+            mypy_status=$?
+            pytest -q > "$RUNNER_TEMP/pytest.log" 2>&1
+            pytest_status=$?
+          else
+            install_status=99
+            ruff_status=99
+            mypy_status=99
+            pytest_status=99
+            : > "$RUNNER_TEMP/install.log"
+            : > "$RUNNER_TEMP/ruff.log"
+            : > "$RUNNER_TEMP/mypy.log"
+            : > "$RUNNER_TEMP/pytest.log"
           fi
-          python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
-          pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
-          install_status=$?
-          ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
-          ruff_status=$?
-          mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
-          mypy_status=$?
-          pytest -q > "$RUNNER_TEMP/pytest.log" 2>&1
-          pytest_status=$?
-          echo "patch_status=$patch_status"
-          echo "install_status=$install_status"
-          echo "ruff_status=$ruff_status"
-          echo "mypy_status=$mypy_status"
-          echo "pytest_status=$pytest_status"
-          echo "--- ruff_tail ---"
-          tail -c 6000 "$RUNNER_TEMP/ruff.log"
-          echo "--- mypy_tail ---"
-          tail -c 6000 "$RUNNER_TEMP/mypy.log"
-          echo "--- pytest_tail ---"
-          tail -c 10000 "$RUNNER_TEMP/pytest.log"
+          {
+            echo "patch_status=$patch_status"
+            echo "install_status=$install_status"
+            echo "ruff_status=$ruff_status"
+            echo "mypy_status=$mypy_status"
+            echo "pytest_status=$pytest_status"
+            echo "--- patch_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/patch.log"
+            echo "--- ruff_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/ruff.log"
+            echo "--- mypy_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/mypy.log"
+            echo "--- pytest_tail ---"
+            tail -c 10000 "$RUNNER_TEMP/pytest.log"
+          } > "$RUNNER_TEMP/report.txt"
+          cat "$RUNNER_TEMP/report.txt"
           exit 0
+
+      - name: Upload exact diagnostic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr47-linkage-diagnostic
+          path: ${{ runner.temp }}/report.txt
+          if-no-files-found: error
+          retention-days: 2
