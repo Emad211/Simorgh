@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Iterable
 from enum import StrEnum
@@ -31,6 +32,8 @@ from simorgh_core.agents.registry import intersect_budgets
 
 SPECIALIST_EXECUTION_CONTRACT_VERSION: Literal["1.0"] = "1.0"
 MAX_SPECIALIST_INLINE_RESULT_BYTES = 256_000
+_AGENT_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+_POLICY_VERSION_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
 _RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"
 _FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -131,8 +134,8 @@ class SpecialistExecutionRequest(BaseModel):
     schema_version: Literal["1.0"] = SPECIALIST_EXECUTION_CONTRACT_VERSION
     request_id: UUID
     invocation_id: UUID
-    agent_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
-    agent_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$", max_length=32)
+    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)
+    agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)
     task_kind: TaskKind
     execution_mode: ExecutionMode
     effect: InvocationEffect
@@ -202,8 +205,8 @@ class SpecialistExecutionResult(BaseModel):
     schema_version: Literal["1.0"] = SPECIALIST_EXECUTION_CONTRACT_VERSION
     request_id: UUID
     invocation_id: UUID
-    agent_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
-    agent_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$", max_length=32)
+    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)
+    agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)
     effect: InvocationEffect
     outcome: SpecialistExecutionOutcome
     output_contract: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
@@ -263,10 +266,12 @@ class SpecialistCancellation:
             return self._reason
 
     def cancel(self, reason: str = "specialist execution cancelled") -> None:
-        normalized = reason.strip()[:1_000]
-        if not normalized:
-            raise ValueError("cancellation reason cannot be empty")
         with self._lock:
+            if self._cancelled:
+                return
+            normalized = reason.strip()[:1_000]
+            if not normalized:
+                raise ValueError("cancellation reason cannot be empty")
             self._cancelled = True
             self._reason = normalized
 
@@ -303,6 +308,18 @@ class SpecialistExecutorRegistry:
     def __init__(self, executors: Iterable[SpecialistExecutor] = ()) -> None:
         compiled: dict[tuple[str, str], SpecialistExecutor] = {}
         for executor in executors:
+            if re.fullmatch(_AGENT_ID_PATTERN, executor.agent_id) is None:
+                raise SpecialistExecutionPolicyError(
+                    "specialist executor agent_id is invalid"
+                )
+            if re.fullmatch(_POLICY_VERSION_PATTERN, executor.agent_version) is None:
+                raise SpecialistExecutionPolicyError(
+                    "specialist executor version is invalid"
+                )
+            if re.fullmatch(_RESOURCE_ID_PATTERN, executor.output_contract) is None:
+                raise SpecialistExecutionPolicyError(
+                    "specialist executor output contract is invalid"
+                )
             identity = (executor.agent_id, executor.agent_version)
             if identity in compiled:
                 raise DuplicateSpecialistExecutorError(

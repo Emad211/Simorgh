@@ -141,6 +141,7 @@ class SpecialistExecutionRuntime:
                 cancellation=token,
             )
             self._require_not_expired(request)
+            self._require_elapsed_available(budget)
             # Executor availability is required only for a new invocation. Completed durable
             # replay must not depend on the current in-process implementation registry.
             executor = self._executors.require_definition(definition)
@@ -158,6 +159,7 @@ class SpecialistExecutionRuntime:
                 cancellation=token,
             )
             self._require_not_expired(request)
+            self._require_elapsed_available(budget)
         except SpecialistExecutionCancelledError:
             self._cancel_invocation(request.invocation_id)
             raise
@@ -251,6 +253,18 @@ class SpecialistExecutionRuntime:
         if budget.limits != request.effective_budget:
             raise SpecialistExecutionPolicyError(
                 "specialist budget limits do not match the effective policy intersection"
+            )
+        snapshot = budget.snapshot()
+        if snapshot.exhausted_dimension is not None:
+            raise SpecialistExecutionPolicyError(
+                "exhausted specialist budget cannot enter execution"
+            )
+
+    def _require_elapsed_available(self, budget: BudgetAccount) -> None:
+        snapshot = budget.snapshot()
+        if snapshot.elapsed_ms > budget.limits.max_elapsed_ms:
+            raise SpecialistExecutionExpiredError(
+                "specialist elapsed budget has expired"
             )
 
     def _require_not_cancelled(
