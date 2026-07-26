@@ -1,6 +1,6 @@
 # ADR 0015: Durable invocation identity, reservation and exact replay
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-25
 - Governing directive: `docs/SIMORGH_MASTER_DIRECTIVE.md`
 - Parent implementation issue: #36
