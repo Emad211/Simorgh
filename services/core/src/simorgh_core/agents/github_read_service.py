@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from simorgh_core.agents.budget import BudgetAccount
 from simorgh_core.agents.contracts import (
@@ -29,6 +29,8 @@ from simorgh_core.agents.github_read_contracts import (
     GitHubReadLimits,
     GitHubReadPolicyError,
     GitHubReadProjectionEnvelope,
+    GitHubSearchProjection,
+    GitHubVisibility,
     GovernedGitHubReadRequest,
 )
 from simorgh_core.agents.invocations import canonical_size_bytes
@@ -105,7 +107,7 @@ class GitHubReadToolInvoker(ToolInvoker):
             envelope = await self._adapter.invoke(request)
             enforce_github_projection_limits(request=request, envelope=envelope)
             _require_projection_policy(request=request, envelope=envelope, manifest=self._manifest)
-        except (GitHubReadContractError, GitHubResponseLimitError, ValueError):
+        except (GitHubReadContractError, GitHubResponseLimitError, ValidationError):
             raise ToolResultRejectedError(
                 "GitHub adapter returned a rejected typed projection"
             ) from None
@@ -339,7 +341,7 @@ class GovernedGitHubReadService:
             raise GitHubReadServiceError("GitHub tool result identity is inconsistent")
         try:
             envelope = GitHubReadProjectionEnvelope.model_validate(tool_result.payload)
-        except ValueError:
+        except ValidationError:
             raise GitHubReadServiceError(
                 "GitHub tool result failed typed projection validation"
             ) from None
@@ -387,6 +389,18 @@ def _require_projection_policy(
     envelope: GitHubReadProjectionEnvelope,
     manifest: GitHubReadConnectorManifest,
 ) -> None:
+    required_privacy = _required_projection_privacy(envelope)
+    if _PRIVACY_RANK[envelope.privacy] < _PRIVACY_RANK[required_privacy]:
+        raise GitHubReadPolicyError(
+            "GitHub projection privacy under-classifies repository visibility"
+        )
+    if (
+        required_privacy != PrivacyClassification.PUBLIC
+        and not manifest.private_repositories_allowed
+    ):
+        raise GitHubReadPolicyError(
+            "reviewed GitHub manifest does not allow non-public projections"
+        )
     if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:
         raise GitHubReadPolicyError("GitHub projection exceeds approved privacy ceiling")
     if request.cache_policy == GitHubCachePolicy.LIVE_ONLY and envelope.cache_disposition not in {
@@ -410,6 +424,26 @@ def _require_projection_policy(
         and not manifest.private_repositories_allowed
     ):
         raise GitHubReadPolicyError("reviewed GitHub manifest does not allow private projections")
+
+
+def _required_projection_privacy(
+    envelope: GitHubReadProjectionEnvelope,
+) -> PrivacyClassification:
+    projection = envelope.projection
+    if isinstance(projection, GitHubSearchProjection):
+        visibilities = tuple(item.visibility for item in projection.items)
+    else:
+        visibilities = (projection.visibility,)
+    required = PrivacyClassification.PUBLIC
+    for visibility in visibilities:
+        candidate = {
+            GitHubVisibility.PUBLIC: PrivacyClassification.PUBLIC,
+            GitHubVisibility.INTERNAL: PrivacyClassification.INTERNAL,
+            GitHubVisibility.PRIVATE: PrivacyClassification.PRIVATE,
+        }[visibility]
+        if _PRIVACY_RANK[candidate] > _PRIVACY_RANK[required]:
+            required = candidate
+    return required
 
 
 def _require_manifest_limits(
