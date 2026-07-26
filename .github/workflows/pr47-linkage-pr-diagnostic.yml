@@ -1,4 +1,4 @@
-name: PR47 Linkage PR Diagnostic v3
+name: PR47 Linkage PR Diagnostic v4
 
 on:
   pull_request:
@@ -25,9 +25,26 @@ jobs:
           from pathlib import Path
           from textwrap import dedent
 
-          source = Path(
+          source_path = Path(
               '.github/workflows/pr47-linkage-reconciliation.yml'
-          ).read_text(encoding='utf-8')
+          )
+          source = source_path.read_text(encoding='utf-8')
+          old_anchor = (
+              "              '            committed_usage=invocation.committed_usage,\\n'\n"
+              "              '            invocation_result_sha256=canonical_fingerprint(\\n'\n"
+              "              '                durable_result_payload\\n'\n"
+              "              '            ),\\n',\n"
+          )
+          new_anchor = (
+              "              '            committed_usage=invocation.committed_usage,\\n'\n"
+              "              '            invocation_result_sha256=canonical_fingerprint(durable_result_payload),\\n',\n"
+          )
+          print(f'terminalizer_payload_anchor_count={source.count(old_anchor)}')
+          if source.count(old_anchor) != 1:
+              raise SystemExit(
+                  'terminalizer reconciliation payload anchor is not unique'
+              )
+          source = source.replace(old_anchor, new_anchor, 1)
           start_marker = "          python - <<'PY'\n"
           end_marker = "\n          PY\n"
           print(f'start_count={source.count(start_marker)}')
