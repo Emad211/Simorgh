@@ -1,0 +1,82 @@
+name: Audit concurrent Phase 1.3 bundle
+
+on:
+  push:
+    branches:
+      - audit/phase13-concurrent-bundle
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Reconstruct and verify archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch_dir=.simorgh-patches/phase13
+          test "$(find "$patch_dir" -maxdepth 1 -name 'part-*.b64' -type f | wc -l)" -eq 3
+          cat "$patch_dir"/part-00.b64 "$patch_dir"/part-01.b64 "$patch_dir"/part-02.b64 \
+            | base64 --decode > "$RUNNER_TEMP/phase13.tar.gz"
+          echo "72d00ea5e892be5303c5a3a23365d44bf24084f893acd0984602882d5b2312b5  $RUNNER_TEMP/phase13.tar.gz" \
+            | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/extracted"
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import os
+          import tarfile
+
+          archive = Path(os.environ['RUNNER_TEMP']) / 'phase13.tar.gz'
+          target = Path(os.environ['RUNNER_TEMP']) / 'extracted'
+          allowed = {
+              'docs/SPECIALIST_EXECUTION.md',
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              'scripts/apply_phase13_docs.py',
+              'services/core/src/simorgh_core/agents/specialist_execution.py',
+              'services/core/tests/test_specialist_execution.py',
+          }
+          with tarfile.open(archive, 'r:gz') as handle:
+              members = handle.getmembers()
+              files = {member.name for member in members if member.isfile()}
+              if files != allowed:
+                  raise SystemExit(f'unexpected paths: {sorted(files ^ allowed)}')
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or '..' in path.parts or not member.isfile():
+                      raise SystemExit(f'unsafe archive entry: {member.name}')
+                  source = handle.extractfile(member)
+                  if source is None:
+                      raise SystemExit(f'unreadable archive member: {member.name}')
+                  output = target / member.name
+                  output.parent.mkdir(parents=True, exist_ok=True)
+                  output.write_bytes(source.read())
+          PY
+          find "$RUNNER_TEMP/extracted" -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > "$RUNNER_TEMP/extracted/SHA256SUMS.txt"
+
+      - name: Upload extracted audit bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase13-concurrent-bundle-audit
+          path: ${{ runner.temp }}/extracted
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Report audit run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/41/comments" \
+            -f body="Concurrent Phase 1.3 bundle audit is ready. No product file was applied. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}; archive SHA-256: 72d00ea5e892be5303c5a3a23365d44bf24084f893acd0984602882d5b2312b5."
