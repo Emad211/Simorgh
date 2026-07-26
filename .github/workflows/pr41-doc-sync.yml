@@ -1,0 +1,166 @@
+name: PR41 Specialist Execution Documentation Sync
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-interface
+    paths:
+      - docs/adr/0016-native-specialist-execution-authority.md
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr41-specialist-execution-doc-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact documentation transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              old_count = text.count(old)
+              new_count = text.count(new)
+              if old_count != 1 or new_count != 0:
+                  raise SystemExit(
+                      f'{path}: transition anchor invalid old={old_count} final={new_count}'
+                  )
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              'Phase 1.2 Durable Invocation Store       VALIDATING — issue #38 / PR #39\n'
+              'Phase 1.3 Specialist Execution           QUEUED\n',
+              'Phase 1.2 Durable Invocation Store       COMPLETE — PR #39\n'
+              'Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #41\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              '## 1.2 Durable invocation store — VALIDATING\n\n'
+              'Issue #38; Draft PR #39.\n',
+              '## 1.2 Durable invocation store — COMPLETE\n\n'
+              'Merged through PR #39 at `49026c89a2a0ba05b179665a993bb66385d880f4`.\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              '## 1.3 Specialist execution interface — QUEUED\n\n'
+              '### Objective\n',
+              '## 1.3 Specialist execution interface — VALIDATING\n\n'
+              'Issue #40; Draft PR #41.\n\n'
+              'Implemented in the open PR:\n\n'
+              '- immutable request/result contracts derived from durable route and compiled policy;\n'
+              '- explicit capability subset and task/policy budget intersection;\n'
+              '- exact-version implementation registry and deterministic zero-cost proposal executor;\n'
+              '- durable `InvocationStore(kind=specialist)` execution and SQLite restart replay;\n'
+              '- cancellation, expiry, changed-context conflict, failure sanitization and result terminalization;\n'
+              '- routed-task adapter with widened/exhausted budget rejection;\n'
+              '- internal zero-external execution control plane with active cancellation and duplicate suppression;\n'
+              '- no public execution endpoint, connector, MCP, model, mutation or Android side effect.\n\n'
+              '### Objective\n',
+          )
+
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable model/tool invocation authority implemented in PR #39. Specialist execution is not enabled by the default API yet.\n',
+              'Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; a zero-external native specialist execution runtime is validating in PR #41. The default API remains routing-only.\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'RoutingDecision\n'
+              '    ↓\n'
+              'future specialist invocation / proposal / typed executor\n',
+              'RoutingDecision\n'
+              '    ↓\n'
+              'internal typed specialist execution\n'
+              '    ↓\n'
+              'durable specialist invocation result or honest terminal uncertainty\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action.\n',
+              'The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #41 adds an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint.\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              '## Task and invocation cost reconciliation\n',
+              '## Specialist execution runtime\n\n'
+              'The native specialist runtime accepts only a durable `routed` task record, resolves the exact compiled specialist version, restores the durable budget snapshot, rejects widened/exhausted budgets, and derives a stable specialist invocation identity.\n\n'
+              'The initial implementation executes only deterministic local proposal specialists with zero model calls, zero tool calls and zero external cost. Capabilities are selected by Core; clients cannot submit arbitrary tools, connectors, model tiers or mutation authority.\n\n'
+              'Completed results are stored as `InvocationStore(kind=specialist)` records and replay after SQLite reopen without re-entering the executor. Replay remains valid after the original deadline or removal of the in-process executor because no work is repeated. Changed context, policy, capability, budget or output identity conflicts under the same invocation ID.\n\n'
+              'Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.\n\n'
+              '## Task and invocation cost reconciliation\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              '- the API routes but does not execute specialists;\n',
+              '- the public API remains routing-only; specialist execution is currently an internal zero-external control-plane method;\n',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              '- #36 complete the native runtime and GitHub workflow;\n',
+              '- #36 complete the native runtime and GitHub workflow;\n'
+              '- #40 / PR #41 validate the native specialist execution interface;\n',
+          )
+
+          replace_once(
+              'docs/README.md',
+              '- [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.\n',
+              '- [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.\n'
+              '- [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.\n',
+          )
+          replace_once(
+              'docs/README.md',
+              'The current agent-task API selects one primary owner and persists task/routing state. PR #39 adds the durable invocation authority used by governed model and structured read-tool gateways. Specialist execution and typed artifacts remain later Phase 1 steps.\n',
+              'The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #41 validates an internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.\n',
+          )
+          replace_once(
+              'docs/README.md',
+              '- issue #38 / PR #39 — durable invocation identity and restart replay;\n',
+              '- issue #38 / PR #39 — durable invocation identity and restart replay, complete;\n'
+              '- issue #40 / PR #41 — native typed specialist execution, validating;\n',
+          )
+          replace_once(
+              'docs/README.md',
+              '- ADR 0015 — durable invocation identity, reservation and exact restart replay.\n',
+              '- ADR 0015 — durable invocation identity, reservation and exact restart replay;\n'
+              '- ADR 0016 — native specialist execution authority and zero-external initial boundary.\n',
+          )
+          PY
+          rm -f .github/workflows/pr41-doc-sync.yml
+          git diff --check
+
+      - name: Validate documentation references
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/SPECIALIST_EXECUTION.md
+          test -f docs/adr/0016-native-specialist-execution-authority.md
+          grep -F 'Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #41' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F 'ADR 0016' docs/README.md
+          grep -F 'internal zero-external control-plane method' docs/AGENT_RUNTIME.md
+
+      - name: Commit synchronized documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: define native specialist execution authority'
+          git push origin HEAD:core/specialist-execution-interface
