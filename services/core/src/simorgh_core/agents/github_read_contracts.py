@@ -75,6 +75,20 @@ class GitHubCheckState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class GitHubCachePolicy(StrEnum):
+    LIVE_ONLY = "live_only"
+    CACHE_ALLOWED = "cache_allowed"
+    CACHE_ONLY = "cache_only"
+
+
+class GitHubObjectKind(StrEnum):
+    REGULAR = "regular"
+    BINARY = "binary"
+    SYMLINK = "symlink"
+    SUBMODULE = "submodule"
+    LFS_POINTER = "lfs_pointer"
+
+
 class GitHubReadLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -140,15 +154,10 @@ class GitHubPullRequestArguments(BaseModel):
 
 
 type GitHubReadArguments = Annotated[
-    GitHubSearchArguments
-    | GitHubFileArguments
-    | GitHubIssueArguments
-    | GitHubPullRequestArguments,
+    GitHubSearchArguments | GitHubFileArguments | GitHubIssueArguments | GitHubPullRequestArguments,
     Field(discriminator="operation"),
 ]
-_ARGUMENT_ADAPTER: TypeAdapter[GitHubReadArguments] = TypeAdapter(
-    GitHubReadArguments
-)
+_ARGUMENT_ADAPTER: TypeAdapter[GitHubReadArguments] = TypeAdapter(GitHubReadArguments)
 
 
 class GovernedGitHubReadRequest(BaseModel):
@@ -161,8 +170,15 @@ class GovernedGitHubReadRequest(BaseModel):
     agent_id: Literal["github.read"] = "github.read"
     agent_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$", max_length=32)
     connector_id: Literal["github"] = GITHUB_CONNECTOR_ID
+    allowed_data_sources: frozenset[str] = Field(
+        default_factory=lambda: frozenset({GITHUB_CONNECTOR_ID}),
+        min_length=1,
+        max_length=8,
+    )
     arguments: GitHubReadArguments
     limits: GitHubReadLimits = Field(default_factory=GitHubReadLimits)
+    cache_policy: GitHubCachePolicy = GitHubCachePolicy.CACHE_ALLOWED
+    minimum_fresh_until_ms: int | None = Field(default=None, ge=0)
     privacy_ceiling: PrivacyClassification = PrivacyClassification.INTERNAL
     deadline_at_ms: int | None = Field(default=None, ge=0)
     monotonic_timeout_ms: int = Field(ge=1, le=86_400_000)
@@ -172,6 +188,8 @@ class GovernedGitHubReadRequest(BaseModel):
     def validate_request(self) -> Self:
         if self.parent_invocation_id == self.invocation_id:
             raise ValueError("GitHub tool invocation cannot parent itself")
+        if self.allowed_data_sources != frozenset({GITHUB_CONNECTOR_ID}):
+            raise ValueError("GitHub read request must bind the exact effective data source")
         return self
 
     @property
@@ -187,10 +205,22 @@ class GitHubSearchItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     repository: str = Field(pattern=_REPOSITORY_PATTERN)
+    default_branch: str | None = Field(default=None, pattern=_REF_PATTERN, max_length=255)
+    visibility: GitHubVisibility = GitHubVisibility.PUBLIC
+    description: str | None = Field(default=None, max_length=2_000)
+    topics: tuple[str, ...] = Field(default=(), max_length=100)
     path: str | None = Field(default=None, max_length=1_024)
     title: str = Field(min_length=1, max_length=500)
     summary: str | None = Field(default=None, max_length=2_000)
+    match_count: int = Field(default=1, ge=1, le=10_000)
     source_reference: str = Field(min_length=1, max_length=2_048)
+
+    @field_validator("topics")
+    @classmethod
+    def validate_topics(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(set(value))):
+            raise ValueError("GitHub topics must be unique and canonically sorted")
+        return value
 
 
 class GitHubSearchProjection(BaseModel):
@@ -201,6 +231,18 @@ class GitHubSearchProjection(BaseModel):
     items: tuple[GitHubSearchItem, ...] = Field(max_length=100)
     total_count_lower_bound: int = Field(ge=0)
     truncated: bool
+    truncation_reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_search_shape(self) -> Self:
+        if self.total_count_lower_bound < len(self.items):
+            raise ValueError("GitHub search count cannot be smaller than projected items")
+        if self.truncated != (self.truncation_reason is not None):
+            raise ValueError("GitHub search truncation requires an explicit reason")
+        references = tuple(item.source_reference for item in self.items)
+        if len(references) != len(set(references)):
+            raise ValueError("GitHub search projection contains duplicate source references")
+        return self
 
 
 class GitHubFileProjection(BaseModel):
@@ -208,24 +250,56 @@ class GitHubFileProjection(BaseModel):
 
     kind: Literal["file"] = "file"
     repository: str = Field(pattern=_REPOSITORY_PATTERN)
+    visibility: GitHubVisibility = GitHubVisibility.PUBLIC
     ref: str = Field(pattern=_REF_PATTERN, max_length=255)
+    resolved_ref_sha: str | None = Field(default=None, pattern=_SHA_PATTERN, max_length=64)
     path: str = Field(min_length=1, max_length=1_024)
+    object_kind: GitHubObjectKind = GitHubObjectKind.REGULAR
     blob_sha: str = Field(pattern=_SHA_PATTERN, max_length=64)
     byte_count: int = Field(ge=0)
     text: str | None = Field(default=None, max_length=250_000)
     text_disposition: GitHubTextDisposition
-    truncation_reason: str | None = Field(default=None, max_length=500)
+    truncation_reason: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def validate_text_shape(self) -> Self:
         if self.text_disposition == GitHubTextDisposition.COMPLETE:
-            if self.text is None or self.truncation_reason is not None:
-                raise ValueError("complete GitHub file projection requires full text only")
+            if (
+                self.object_kind != GitHubObjectKind.REGULAR
+                or self.text is None
+                or self.truncation_reason is not None
+            ):
+                raise ValueError("non-regular GitHub objects require metadata-only handling")
+            if len(self.text.encode("utf-8")) != self.byte_count:
+                raise ValueError("complete GitHub file byte count must match UTF-8 text")
         elif self.text_disposition == GitHubTextDisposition.TRUNCATED:
-            if self.text is None or self.truncation_reason is None:
-                raise ValueError("truncated GitHub file projection requires text and reason")
-        elif self.text is not None:
-            raise ValueError("metadata-only or binary GitHub file cannot contain text")
+            if (
+                self.object_kind != GitHubObjectKind.REGULAR
+                or self.text is None
+                or self.truncation_reason is None
+            ):
+                raise ValueError(
+                    "truncated GitHub file projection requires regular text and reason"
+                )
+            if len(self.text.encode("utf-8")) > self.byte_count:
+                raise ValueError("truncated GitHub text cannot exceed source byte count")
+        elif self.text is not None or self.truncation_reason is None:
+            raise ValueError("metadata-only or binary GitHub file requires no text and a reason")
+        if (
+            self.object_kind == GitHubObjectKind.BINARY
+            and self.text_disposition != GitHubTextDisposition.BINARY_REJECTED
+        ):
+            raise ValueError("binary GitHub object must use binary_rejected disposition")
+        if (
+            self.object_kind
+            in {
+                GitHubObjectKind.SYMLINK,
+                GitHubObjectKind.SUBMODULE,
+                GitHubObjectKind.LFS_POINTER,
+            }
+            and self.text_disposition != GitHubTextDisposition.METADATA_ONLY
+        ):
+            raise ValueError("non-regular GitHub object must remain metadata-only")
         return self
 
 
@@ -234,6 +308,7 @@ class GitHubIssueProjection(BaseModel):
 
     kind: Literal["issue"] = "issue"
     repository: str = Field(pattern=_REPOSITORY_PATTERN)
+    visibility: GitHubVisibility = GitHubVisibility.PUBLIC
     issue_number: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     state: GitHubIssueState
@@ -242,6 +317,24 @@ class GitHubIssueProjection(BaseModel):
     author: str | None = Field(default=None, max_length=100)
     updated_at_ms: int = Field(ge=0)
     truncated: bool
+    truncation_reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_issue_shape(self) -> Self:
+        if self.labels != tuple(sorted(set(self.labels))):
+            raise ValueError("GitHub issue labels must be unique and canonically sorted")
+        if self.truncated != (self.truncation_reason is not None):
+            raise ValueError("GitHub issue truncation requires an explicit reason")
+        return self
+
+
+class GitHubReviewSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    approvals: int = Field(default=0, ge=0)
+    changes_requested: int = Field(default=0, ge=0)
+    comments: int = Field(default=0, ge=0)
+    unresolved_threads: int = Field(default=0, ge=0)
 
 
 class GitHubPullRequestProjection(BaseModel):
@@ -249,6 +342,7 @@ class GitHubPullRequestProjection(BaseModel):
 
     kind: Literal["pull_request"] = "pull_request"
     repository: str = Field(pattern=_REPOSITORY_PATTERN)
+    visibility: GitHubVisibility = GitHubVisibility.PUBLIC
     pull_request_number: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=500)
     state: GitHubPullRequestState
@@ -257,8 +351,16 @@ class GitHubPullRequestProjection(BaseModel):
     base_ref: str = Field(pattern=_REF_PATTERN, max_length=255)
     body: str | None = Field(default=None, max_length=250_000)
     check_state: GitHubCheckState
+    review_summary: GitHubReviewSummary = Field(default_factory=GitHubReviewSummary)
     updated_at_ms: int = Field(ge=0)
     truncated: bool
+    truncation_reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_pull_request_shape(self) -> Self:
+        if self.truncated != (self.truncation_reason is not None):
+            raise ValueError("GitHub pull-request truncation requires an explicit reason")
+        return self
 
 
 type GitHubReadProjection = Annotated[
@@ -268,9 +370,7 @@ type GitHubReadProjection = Annotated[
     | GitHubPullRequestProjection,
     Field(discriminator="kind"),
 ]
-_PROJECTION_ADAPTER: TypeAdapter[GitHubReadProjection] = TypeAdapter(
-    GitHubReadProjection
-)
+_PROJECTION_ADAPTER: TypeAdapter[GitHubReadProjection] = TypeAdapter(GitHubReadProjection)
 
 
 class GitHubReadProjectionEnvelope(BaseModel):
@@ -289,6 +389,14 @@ class GitHubReadProjectionEnvelope(BaseModel):
     tainted: Literal[True] = True
     citation_reference: str = Field(min_length=1, max_length=2_048)
     privacy: PrivacyClassification
+
+    @field_validator("citation_reference")
+    @classmethod
+    def validate_citation_reference(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "\n" in normalized or "\r" in normalized:
+            raise ValueError("GitHub citation reference must be one bounded line")
+        return normalized
 
     @model_validator(mode="after")
     def validate_envelope(self) -> Self:

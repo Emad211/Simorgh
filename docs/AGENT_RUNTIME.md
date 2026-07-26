@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence metadata authority merged in PR #48. Phase 1.5 governed GitHub read tools are the next active boundary. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48. Phase 1.5 governed GitHub read tools are validating in PR #52. The default API remains routing-only.
 
 ## Purpose
 
@@ -333,7 +333,9 @@ The current gateway executes read-only structured tools only. Mutation calls are
 
 Exact completed read-tool calls replay after restart without invoking the connector or consuming a new budget.
 
-Tool arguments and raw connector responses are not copied to traces. Provider/tool exception messages are not persisted.
+Phase 1.5 adds a Core request compiler and reviewed GitHub manifest for exactly `github.search`, `github.fetch-file`, `github.fetch-issue` and `github.fetch-pr`. Current/execution-bound tasks require live fresh evidence; cached tasks remain policy-bounded. Typed projections are hash/byte bound and always tainted. Private, stale, oversized, binary-content or traversal-widening responses fail closed. Deterministic post-call rejection is a sanitized failed invocation with committed usage; transport uncertainty remains unknown.
+
+Tool arguments and raw connector responses are not copied to traces. Provider/tool exception messages are not persisted. See [`GOVERNED_GITHUB_READ_TOOLS.md`](GOVERNED_GITHUB_READ_TOOLS.md) and ADR 0018.
 
 ## Specialist execution runtime
 

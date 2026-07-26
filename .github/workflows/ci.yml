@@ -2,61 +2,25 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  phase15-finalize:
-    if: github.head_ref == 'core/governed-github-read-tools'
+  core-quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
 
     steps:
-      - name: Check out exact PR head
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-
-      - name: Assemble and apply reviewed Phase 1.5 patch
-        id: patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/phase15/chunk-*.b64 | base64 --decode | gzip --decompress > /tmp/phase15_finalize.py
-          python -m py_compile /tmp/phase15_finalize.py
-          python /tmp/phase15_finalize.py | tee /tmp/phase15-patch.log
-          python - <<'PY'
-          from pathlib import Path
-
-          replacements = (
-              (
-                  Path("services/core/src/simorgh_core/agents/github_read_contracts.py"),
-                  'raise ValueError("complete GitHub file projection requires regular full text")',
-                  'raise ValueError("non-regular GitHub objects require metadata-only handling")',
-              ),
-              (
-                  Path("services/core/src/simorgh_core/agents/github_read_service.py"),
-                  '"GitHub request data sources do not match policy intersection"',
-                  '"task does not allow the GitHub connector or request exceeds policy intersection"',
-              ),
-          )
-          for path, old, new in replacements:
-              text = path.read_text(encoding="utf-8")
-              if text.count(old) != 1:
-                  raise SystemExit(f"acceptance message anchor mismatch: {path}")
-              path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
-          rm -rf .github/phase15
-          rm -f .github/workflows/phase15-acceptance-finalizer.yml
-          rm -f .github/workflows/phase15-foundation-hardening.yml
-          git show "${{ github.event.pull_request.base.sha }}:.github/workflows/ci.yml" > .github/workflows/ci.yml
-          git diff --check
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -64,102 +28,92 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Validate complete Core acceptance gate
-        id: validate
+      - name: Install project and development tools
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+
+      - name: Lint
         shell: bash
         run: |
-          set +e
-          python -m pip install --upgrade pip > /tmp/pip-upgrade.log 2>&1
-          pip_upgrade_status=$?
-          pip install -e '.[dev]' > /tmp/install.log 2>&1
-          install_status=$?
-          ruff format \
-            services/core/src/simorgh_core/agents/read_tool_contracts.py \
-            services/core/src/simorgh_core/agents/github_read_contracts.py \
-            services/core/src/simorgh_core/agents/github_read_adapter.py \
-            services/core/src/simorgh_core/agents/github_read_service.py \
-            services/core/src/simorgh_core/agents/tool_gateway.py \
-            services/core/tests/test_github_read_acceptance.py \
-            > /tmp/ruff-format.log 2>&1
-          format_status=$?
-          ruff check --fix \
-            services/core/src/simorgh_core/agents/read_tool_contracts.py \
-            services/core/src/simorgh_core/agents/github_read_contracts.py \
-            services/core/src/simorgh_core/agents/github_read_adapter.py \
-            services/core/src/simorgh_core/agents/github_read_service.py \
-            services/core/src/simorgh_core/agents/tool_gateway.py \
-            services/core/tests/test_github_read_acceptance.py \
-            > /tmp/ruff-fix.log 2>&1
-          ruff_fix_status=$?
-          ruff check . > /tmp/ruff.log 2>&1
-          ruff_status=$?
-          mypy services/core/src > /tmp/mypy.log 2>&1
-          mypy_status=$?
-          pytest > /tmp/pytest.log 2>&1
-          pytest_status=$?
-          git diff --check > /tmp/diff-check.log 2>&1
-          diff_status=$?
-          {
-            echo "patch_status=${{ steps.patch.outcome }}"
-            echo "pip_upgrade_status=$pip_upgrade_status"
-            echo "install_status=$install_status"
-            echo "format_status=$format_status"
-            echo "ruff_fix_status=$ruff_fix_status"
-            echo "ruff_status=$ruff_status"
-            echo "mypy_status=$mypy_status"
-            echo "pytest_status=$pytest_status"
-            echo "diff_status=$diff_status"
-            echo
-            cat /tmp/ruff.log
-            cat /tmp/mypy.log
-            tail -n 80 /tmp/pytest.log
-            git diff --stat
-          } | tee /tmp/phase15-acceptance-report.txt
-          if (( pip_upgrade_status || install_status || format_status || ruff_fix_status || ruff_status || mypy_status || pytest_status || diff_status )); then
-            exit 1
-          fi
+          set -o pipefail
+          mkdir -p artifacts
+          ruff check . 2>&1 | tee artifacts/ruff.log
 
-      - name: Upload acceptance diagnostics
+      - name: Type check
+        shell: bash
+        run: |
+          set -o pipefail
+          mypy services/core/src 2>&1 | tee artifacts/mypy.log
+
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest --junitxml=artifacts/junit.xml 2>&1 | tee artifacts/pytest.log
+
+      - name: Upload core quality diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase15-acceptance-diagnostic-v5
-          path: |
-            /tmp/phase15-patch.log
-            /tmp/phase15-acceptance-report.txt
-            /tmp/install.log
-            /tmp/ruff-format.log
-            /tmp/ruff-fix.log
-            /tmp/ruff.log
-            /tmp/mypy.log
-            /tmp/pytest.log
-            /tmp/diff-check.log
+          name: core-quality-diagnostics
+          path: artifacts/*.log
           if-no-files-found: warn
-          retention-days: 7
 
-      - name: Commit validated Phase 1.5 implementation
-        if: steps.validate.outcome == 'success'
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: artifacts/junit.xml
+          if-no-files-found: ignore
+
+  android-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install stable Android platform
+        run: sdkmanager "platforms;android-36"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.5.0"
+
+      - name: Build, lint, and unit test Android app
         shell: bash
         run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'core: complete governed GitHub read acceptance boundary'
+          set -o pipefail
+          mkdir -p artifacts
+          gradle \
+            :apps:android:assembleDebug \
+            :apps:android:testDebugUnitTest \
+            :apps:android:lintDebug \
+            --stacktrace 2>&1 | tee artifacts/android-build.log
 
-      - name: Protected fast-forward push
-        if: steps.validate.outcome == 'success'
-        shell: bash
-        env:
-          BRANCH: core/governed-github-read-tools
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          git fetch origin "$BRANCH"
-          remote_head=$(git rev-parse "origin/$BRANCH")
-          if [[ "$remote_head" != "$EXPECTED_HEAD" ]]; then
-            echo "Branch moved during validation: $remote_head != $EXPECTED_HEAD" >&2
-            exit 1
-          fi
-          git push origin "HEAD:refs/heads/$BRANCH"
+      - name: Upload Android build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-diagnostics
+          path: artifacts/android-build.log
+          if-no-files-found: error
+
+      - name: Upload debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simorgh-android-debug
+          path: apps/android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

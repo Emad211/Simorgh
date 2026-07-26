@@ -8,29 +8,44 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import BaseModel, ConfigDict
 
 from simorgh_core.agents.budget import BudgetAccount
-from simorgh_core.agents.contracts import TaskEnvelope
+from simorgh_core.agents.contracts import (
+    FreshnessClass,
+    RoutingDecision,
+    RoutingState,
+    TaskEnvelope,
+)
 from simorgh_core.agents.github_read_adapter import (
     GitHubReadAdapter,
     GitHubReadAdapterError,
     GitHubReadConnectorManifest,
+    GitHubResponseLimitError,
+    enforce_github_projection_limits,
 )
 from simorgh_core.agents.github_read_contracts import (
     GITHUB_CONNECTOR_ID,
+    GitHubCachePolicy,
+    GitHubReadArguments,
+    GitHubReadContractError,
+    GitHubReadLimits,
     GitHubReadPolicyError,
     GitHubReadProjectionEnvelope,
     GovernedGitHubReadRequest,
 )
+from simorgh_core.agents.invocations import canonical_size_bytes
 from simorgh_core.agents.registry import SpecialistRegistry
 from simorgh_core.agents.result_authority import (
+    EvidenceCacheDisposition,
     EvidenceReference,
     PrivacyClassification,
 )
+from simorgh_core.agents.specialist_execution import SpecialistCancellation
 from simorgh_core.agents.tool_gateway import (
     BudgetedToolGateway,
     ToolCallRequest,
     ToolCallResult,
     ToolEffect,
     ToolInvoker,
+    ToolResultRejectedError,
 )
 
 _GOVERNED_REQUEST_KEY = "governed_github_read_request"
@@ -79,20 +94,113 @@ class GitHubReadToolInvoker(ToolInvoker):
     ) -> dict[str, Any]:
         if set(arguments) != {_GOVERNED_REQUEST_KEY}:
             raise GitHubReadAdapterError("GitHub tool arguments are not a governed request")
-        request = GovernedGitHubReadRequest.model_validate(
-            arguments[_GOVERNED_REQUEST_KEY]
-        )
+        request = GovernedGitHubReadRequest.model_validate(arguments[_GOVERNED_REQUEST_KEY])
         if request.tool_id != tool_id:
             raise GitHubReadAdapterError("GitHub tool ID does not match governed request")
         definition = self._manifest.require_tool(tool_id)
         if definition.operation != request.operation:
             raise GitHubReadAdapterError("GitHub operation does not match reviewed manifest")
         _require_manifest_limits(request=request, manifest=self._manifest)
-        envelope = await self._adapter.invoke(request)
-        _require_projection_policy(
-            request=request, envelope=envelope, manifest=self._manifest
-        )
+        try:
+            envelope = await self._adapter.invoke(request)
+            enforce_github_projection_limits(request=request, envelope=envelope)
+            _require_projection_policy(request=request, envelope=envelope, manifest=self._manifest)
+        except (GitHubReadContractError, GitHubResponseLimitError, ValueError):
+            raise ToolResultRejectedError(
+                "GitHub adapter returned a rejected typed projection"
+            ) from None
         return envelope.model_dump(mode="json")
+
+
+class GitHubReadRequestCompiler:
+    """Compile one exact GitHub read request from durable route and policy."""
+
+    def __init__(
+        self,
+        *,
+        registry: SpecialistRegistry,
+        manifest: GitHubReadConnectorManifest,
+        wall_clock_millis: Callable[[], int] | None = None,
+    ) -> None:
+        self._registry = registry
+        self._manifest = manifest
+        self._wall_clock_millis = wall_clock_millis or (lambda: int(time.time() * 1_000))
+
+    def compile(
+        self,
+        *,
+        task: TaskEnvelope,
+        routing: RoutingDecision,
+        arguments: GitHubReadArguments,
+        invocation_id: UUID,
+        cancellation_owner_id: UUID,
+        parent_invocation_id: UUID | None = None,
+    ) -> GovernedGitHubReadRequest:
+        if routing.request_id != task.request_id or routing.state != RoutingState.ROUTED:
+            raise GitHubReadPolicyError("GitHub request requires the exact routed task")
+        if routing.selected_agent_id != "github.read":
+            raise GitHubReadPolicyError("routed specialist is not github.read")
+        definition = self._registry.get("github.read")
+        if routing.selected_agent_version != definition.version:
+            raise GitHubReadPolicyError("routed GitHub specialist version is not active")
+        if (
+            task.explicit_task_kind is not None
+            and task.explicit_task_kind not in definition.task_kinds
+        ):
+            raise GitHubReadPolicyError("task kind is outside GitHub specialist policy")
+        tool_id = arguments.operation.value
+        if tool_id not in definition.tool_allowlist:
+            raise GitHubReadPolicyError("GitHub operation is outside specialist policy")
+        try:
+            self._manifest.require_tool(tool_id)
+        except GitHubReadAdapterError:
+            raise GitHubReadPolicyError(
+                "GitHub operation is outside reviewed connector policy"
+            ) from None
+        effective_sources = (
+            task.allowed_data_sources
+            & definition.connector_allowlist
+            & frozenset({self._manifest.connector_id})
+        )
+        if effective_sources != frozenset({GITHUB_CONNECTOR_ID}):
+            raise GitHubReadPolicyError("task has no effective GitHub read authority")
+        effective_budget = self._registry.effective_budget(
+            agent_id=definition.agent_id,
+            request_budget=task.budget,
+        )
+        now_ms = max(0, int(self._wall_clock_millis()))
+        deadline_at_ms = now_ms + effective_budget.max_elapsed_ms
+        if task.deadline_at_ms is not None:
+            deadline_at_ms = min(deadline_at_ms, task.deadline_at_ms)
+        if deadline_at_ms <= now_ms:
+            raise GitHubReadPolicyError("GitHub read deadline has already expired")
+        if task.freshness in {FreshnessClass.CURRENT, FreshnessClass.EXECUTION_BOUND}:
+            cache_policy = GitHubCachePolicy.LIVE_ONLY
+            minimum_fresh_until_ms: int | None = now_ms
+        else:
+            cache_policy = GitHubCachePolicy.CACHE_ALLOWED
+            minimum_fresh_until_ms = None
+        request = GovernedGitHubReadRequest(
+            request_id=task.request_id,
+            invocation_id=invocation_id,
+            parent_invocation_id=parent_invocation_id,
+            agent_version=definition.version,
+            allowed_data_sources=effective_sources,
+            arguments=arguments,
+            limits=GitHubReadLimits(
+                max_response_bytes=min(128_000, self._manifest.maximum_response_bytes),
+                max_text_characters=min(32_000, self._manifest.maximum_text_characters),
+                max_items=min(25, self._manifest.maximum_items),
+            ),
+            cache_policy=cache_policy,
+            minimum_fresh_until_ms=minimum_fresh_until_ms,
+            privacy_ceiling=PrivacyClassification.INTERNAL,
+            deadline_at_ms=deadline_at_ms,
+            monotonic_timeout_ms=effective_budget.max_elapsed_ms,
+            cancellation_owner_id=cancellation_owner_id,
+        )
+        _require_manifest_limits(request=request, manifest=self._manifest)
+        return request
 
 
 class GovernedGitHubReadService:
@@ -109,9 +217,7 @@ class GovernedGitHubReadService:
         self._registry = registry
         self._gateway = gateway
         self._manifest = manifest
-        self._wall_clock_millis = wall_clock_millis or (
-            lambda: int(time.time() * 1_000)
-        )
+        self._wall_clock_millis = wall_clock_millis or (lambda: int(time.time() * 1_000))
 
     async def execute(
         self,
@@ -119,8 +225,14 @@ class GovernedGitHubReadService:
         task: TaskEnvelope,
         request: GovernedGitHubReadRequest,
         budget: BudgetAccount,
+        cancellation: SpecialistCancellation | None = None,
     ) -> GitHubReadResult:
-        self._require_authority(task=task, request=request, budget=budget)
+        self._require_authority(
+            task=task,
+            request=request,
+            budget=budget,
+            cancellation=cancellation,
+        )
         tool_result = await self._gateway.invoke(
             request=ToolCallRequest(
                 invocation_id=request.invocation_id,
@@ -129,7 +241,7 @@ class GovernedGitHubReadService:
                 agent_version=request.agent_version,
                 tool_id=request.tool_id,
                 connector_id=request.connector_id,
-                allowed_data_sources=task.allowed_data_sources,
+                allowed_data_sources=request.allowed_data_sources,
                 effect=ToolEffect.READ_ONLY,
                 arguments={
                     _GOVERNED_REQUEST_KEY: request.model_dump(mode="json"),
@@ -153,36 +265,52 @@ class GovernedGitHubReadService:
         task: TaskEnvelope,
         request: GovernedGitHubReadRequest,
         budget: BudgetAccount,
+        cancellation: SpecialistCancellation | None,
     ) -> None:
         if task.request_id != request.request_id:
             raise GitHubReadPolicyError("GitHub read request does not belong to task")
-        if budget.request_id != request.request_id or budget.limits != task.budget:
-            raise GitHubReadPolicyError("GitHub read budget does not match task authority")
-        if GITHUB_CONNECTOR_ID not in task.allowed_data_sources:
-            raise GitHubReadPolicyError("task does not allow the GitHub connector")
         definition = self._registry.get(request.agent_id)
+        effective_budget = self._registry.effective_budget(
+            agent_id=definition.agent_id,
+            request_budget=task.budget,
+        )
+        if budget.request_id != request.request_id or budget.limits != effective_budget:
+            raise GitHubReadPolicyError("GitHub read budget does not match effective authority")
+        effective_sources = (
+            task.allowed_data_sources
+            & definition.connector_allowlist
+            & frozenset({self._manifest.connector_id})
+        )
+        if request.allowed_data_sources != effective_sources:
+            raise GitHubReadPolicyError(
+                "task does not allow the GitHub connector or request exceeds policy intersection"
+            )
+        if effective_sources != frozenset({GITHUB_CONNECTOR_ID}):
+            raise GitHubReadPolicyError("task does not allow the GitHub connector")
         if definition.version != request.agent_version:
             raise GitHubReadPolicyError("GitHub specialist version does not match policy")
         if request.connector_id not in definition.connector_allowlist:
             raise GitHubReadPolicyError("GitHub connector is outside specialist policy")
         if request.tool_id not in definition.tool_allowlist:
             raise GitHubReadPolicyError("GitHub tool is outside specialist policy")
-        self._manifest.require_tool(request.tool_id)
+        try:
+            self._manifest.require_tool(request.tool_id)
+        except GitHubReadAdapterError:
+            raise GitHubReadPolicyError(
+                "GitHub tool is outside reviewed connector policy"
+            ) from None
         _require_manifest_limits(request=request, manifest=self._manifest)
-        if (
-            task.deadline_at_ms is not None
-            and (
-                request.deadline_at_ms is None
-                or request.deadline_at_ms > task.deadline_at_ms
-            )
+        if task.deadline_at_ms is not None and (
+            request.deadline_at_ms is None or request.deadline_at_ms > task.deadline_at_ms
         ):
             raise GitHubReadPolicyError("GitHub read deadline exceeds task authority")
         if request.deadline_at_ms is not None and self._now_ms() >= request.deadline_at_ms:
             raise GitHubReadPolicyError("GitHub read deadline has expired")
         if request.monotonic_timeout_ms > budget.limits.max_elapsed_ms:
-            raise GitHubReadPolicyError(
-                "GitHub read monotonic timeout exceeds task budget"
-            )
+            raise GitHubReadPolicyError("GitHub read monotonic timeout exceeds task budget")
+        if cancellation is not None:
+            cancellation.require_owner(request.cancellation_owner_id)
+            cancellation.raise_if_cancelled()
         snapshot = budget.snapshot()
         if snapshot.cancelled:
             raise GitHubReadPolicyError("cancelled task cannot execute GitHub read")
@@ -217,9 +345,8 @@ class GovernedGitHubReadService:
             ) from None
         if envelope.tool_id != request.tool_id:
             raise GitHubReadServiceError("GitHub projection tool identity is inconsistent")
-        _require_projection_policy(
-            request=request, envelope=envelope, manifest=self._manifest
-        )
+        enforce_github_projection_limits(request=request, envelope=envelope)
+        _require_projection_policy(request=request, envelope=envelope, manifest=self._manifest)
         return envelope
 
     def _now_ms(self) -> int:
@@ -261,17 +388,28 @@ def _require_projection_policy(
     manifest: GitHubReadConnectorManifest,
 ) -> None:
     if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:
-        raise GitHubReadPolicyError(
-            "GitHub projection exceeds approved privacy ceiling"
-        )
+        raise GitHubReadPolicyError("GitHub projection exceeds approved privacy ceiling")
+    if request.cache_policy == GitHubCachePolicy.LIVE_ONLY and envelope.cache_disposition not in {
+        EvidenceCacheDisposition.LIVE,
+        EvidenceCacheDisposition.CACHE_MISS,
+    }:
+        raise GitHubReadPolicyError("GitHub projection does not satisfy live-only policy")
     if (
-        _PRIVACY_RANK[envelope.privacy]
-        > _PRIVACY_RANK[PrivacyClassification.INTERNAL]
+        request.cache_policy == GitHubCachePolicy.CACHE_ONLY
+        and envelope.cache_disposition != EvidenceCacheDisposition.CACHE_HIT
+    ):
+        raise GitHubReadPolicyError("GitHub projection does not satisfy cache-only policy")
+    if request.minimum_fresh_until_ms is not None and (
+        envelope.fresh_until_ms is None
+        or envelope.fresh_until_ms < request.minimum_fresh_until_ms
+        or envelope.cache_disposition == EvidenceCacheDisposition.STALE
+    ):
+        raise GitHubReadPolicyError("GitHub projection does not satisfy freshness policy")
+    if (
+        _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[PrivacyClassification.INTERNAL]
         and not manifest.private_repositories_allowed
     ):
-        raise GitHubReadPolicyError(
-            "reviewed GitHub manifest does not allow private projections"
-        )
+        raise GitHubReadPolicyError("reviewed GitHub manifest does not allow private projections")
 
 
 def _require_manifest_limits(
@@ -279,15 +417,26 @@ def _require_manifest_limits(
     request: GovernedGitHubReadRequest,
     manifest: GitHubReadConnectorManifest,
 ) -> None:
+    if canonical_size_bytes(request) > manifest.maximum_request_bytes:
+        raise GitHubReadPolicyError("GitHub request exceeds manifest request-byte limit")
     if request.limits.max_response_bytes > manifest.maximum_response_bytes:
         raise GitHubReadPolicyError("GitHub request exceeds manifest response limit")
+    if request.limits.max_text_characters > manifest.maximum_text_characters:
+        raise GitHubReadPolicyError("GitHub request exceeds manifest text limit")
     if request.limits.max_items > manifest.maximum_items:
         raise GitHubReadPolicyError("GitHub request exceeds manifest item limit")
     if request.limits.max_pages > manifest.maximum_pages:
         raise GitHubReadPolicyError("GitHub request exceeds manifest page limit")
+    if request.monotonic_timeout_ms > manifest.maximum_timeout_ms:
+        raise GitHubReadPolicyError("GitHub request exceeds manifest timeout limit")
+    if request.cache_policy and not manifest.supports_cache_policy:
+        raise GitHubReadPolicyError("GitHub manifest does not support cache policy")
+    if request.minimum_fresh_until_ms is not None and not manifest.supports_freshness:
+        raise GitHubReadPolicyError("GitHub manifest does not support freshness policy")
 
 
 __all__ = [
+    "GitHubReadRequestCompiler",
     "GitHubReadResult",
     "GitHubReadServiceError",
     "GitHubReadToolInvoker",

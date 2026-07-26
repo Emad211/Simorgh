@@ -18,9 +18,10 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`INVOCATION_STORE.md`](INVOCATION_STORE.md) — durable model/tool/specialist invocation identity, pre-call reservation, restart replay, uncertainty, result integrity and cost reconciliation.
 - [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.
 - [`TYPED_RESULTS.md`](TYPED_RESULTS.md) — immutable typed result, artifact/evidence metadata, privacy, retention, canonical replay and Persian rendering authority.
+- [`GOVERNED_GITHUB_READ_TOOLS.md`](GOVERNED_GITHUB_READ_TOOLS.md) — exact GitHub read contracts, reviewed manifest, policy intersection, freshness/cache/taint, durable replay and incident handling.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 merged the separate typed result, artifact and evidence metadata authority. Phase 1.5 governed GitHub read tools are next. The public API remains routing-only.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged internal zero-external specialist execution; PR #48 merged typed result, artifact and evidence metadata authority. PR #52 is validating governed read-only GitHub tools behind an internal Core boundary. The public API remains routing-only.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -89,7 +90,8 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0014 — crash-safe durable agent-task identity and routing recovery;
 - ADR 0015 — durable invocation identity, reservation and exact restart replay;
 - ADR 0016 — native specialist execution authority and zero-external initial boundary;
-- ADR 0017 — typed specialist result, artifact and evidence metadata authority.
+- ADR 0017 — typed specialist result, artifact and evidence metadata authority;
+- ADR 0018 — governed read-tool authority and typed GitHub evidence.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
