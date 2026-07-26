@@ -43,7 +43,10 @@ jobs:
           )
           if text.count(old) != 2:
               raise SystemExit("trace serialization anchor mismatch")
-          path.write_text(text.replace(old, new), encoding="utf-8")
+          text = text.replace(old, new)
+          if text.count("record.phase") != 2:
+              raise SystemExit("invocation state anchor mismatch")
+          path.write_text(text.replace("record.phase", "record.state"), encoding="utf-8")
           PY
           rm -f .github/phase15-security-patch.py.b64
           git show "${{ github.event.pull_request.base.sha }}:.github/workflows/ci.yml" > .github/workflows/ci.yml
@@ -112,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase15-security-diagnostic-v6
+          name: phase15-security-diagnostic-v7
           path: |
             /tmp/phase15-security-patch.log
             /tmp/phase15-security-report.txt
