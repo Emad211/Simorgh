@@ -14,6 +14,10 @@ concurrency:
   group: pr39-rc3-finalize
   cancel-in-progress: true
 
+env:
+  STATUS_COMMENT_ID: '5083518493'
+  PR_BRANCH: core/durable-agent-invocation-store
+
 jobs:
   finalize:
     runs-on: ubuntu-latest
@@ -25,14 +29,20 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Report finalizer start
+      - name: Report exact-head start
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/issues/39/comments" \
-            -f body="PR39 RC3 full finalizer started on exact head ${GITHUB_SHA}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Current gate: checkout complete
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -113,20 +123,50 @@ jobs:
           print(f'RC3 archive verified: {archive_hash}, {len(archive)} bytes')
           PY
 
+      - name: Report archive integrity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Archive: verified \`dde9c1eed40d319b1fde9e913b3510aa0fd4fa0e36b31436d58c8d231fa2f2a4\`
+          - Current gate: install and exact-head preflight
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Install Core development dependencies
         run: python -m pip install --upgrade pip && pip install -e '.[dev]'
 
-      - name: Run bundle self-test
-        run: python "$RUNNER_TEMP/pr39-rc3-bundle/scripts/selftest_pr39_hardening_bundle.py"
-
-      - name: Run exact-head dry-run
+      - name: Run self-test and exact-head dry-run
         shell: bash
         run: |
           set -euo pipefail
           BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
+          python "$BUNDLE/scripts/selftest_pr39_hardening_bundle.py"
           bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
             --dry-run \
             --backup-dir "$RUNNER_TEMP/pr39-backups"
+
+      - name: Report preflight success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Archive integrity: passed
+          - Bundle self-test: passed
+          - Exact-head dry-run: passed
+          - Current gate: transactional apply and targeted regressions
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Apply RC3 transactionally with targeted regressions
         shell: bash
@@ -146,6 +186,23 @@ jobs:
           rm -f .github/workflows/pr39-rc3-finalize.yml
           git diff --check
 
+      - name: Report apply success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Transactional apply: passed
+          - Targeted RC3 regressions: passed
+          - Transient bundle/workflow cleanup: passed
+          - Current gate: Ruff, strict MyPy, and full Core tests
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Core lint
         run: ruff check .
 
@@ -154,6 +211,24 @@ jobs:
 
       - name: Full Core test suite
         run: pytest
+
+      - name: Report Core success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - RC3 regressions: passed
+          - Ruff: passed
+          - Strict MyPy: passed
+          - Full Core suite: passed
+          - Current gate: Android build, JVM tests, lint, and APK
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -182,10 +257,24 @@ jobs:
             :apps:android:lintDebug \
             --stacktrace
 
+      - name: Report Android success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Core quality gates: passed
+          - Android build/JVM/lint/APK: passed
+          - Current gate: commit and protected fast-forward push
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Commit and push only validated product changes
         shell: bash
-        env:
-          BRANCH: core/durable-agent-invocation-store
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -205,7 +294,7 @@ jobs:
           fi
           git diff --cached --check
           git commit -m 'core: harden durable invocation replay and recovery'
-          git push origin "HEAD:$BRANCH"
+          git push origin "HEAD:${PR_BRANCH}"
 
       - name: Report finalizer success
         if: success()
@@ -215,8 +304,18 @@ jobs:
         run: |
           set -euo pipefail
           NEW_HEAD=$(git rev-parse HEAD)
-          gh api "repos/${GITHUB_REPOSITORY}/issues/39/comments" \
-            -f body="PR39 RC3 finalizer passed archive integrity, targeted regressions, Core Ruff/MyPy/tests, and Android build/JVM/lint/APK; validated product commit ${NEW_HEAD} was pushed. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **validated product commit pushed**
+
+          - Triggering head: \`${GITHUB_SHA}\`
+          - Product head: \`${NEW_HEAD}\`
+          - Archive integrity: passed
+          - Targeted RC3 regressions: passed
+          - Ruff / strict MyPy / full Core: passed
+          - Android build / JVM / lint / APK: passed
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Report finalizer failure
         if: failure()
@@ -225,5 +324,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/issues/39/comments" \
-            -f body="PR39 RC3 finalizer failed closed; no validated product commit was claimed. Inspect run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **failed closed**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - No validated product commit was claimed by this run.
+          - Inspect: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
