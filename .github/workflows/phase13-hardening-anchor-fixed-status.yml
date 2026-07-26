@@ -1,0 +1,103 @@
+name: Phase 1.3 hardening anchor-fixed status
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-interface
+    paths:
+      - .github/workflows/phase13-hardening-anchor-fixed-status.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Rebuild, apply reviewed anchor correction, and run ephemerally
+        shell: bash
+        run: |
+          set +e
+          d=.simorgh-patches/phase13-hardening
+          cat \
+            "$d/p00-00.b64" "$d/p00-01.b64" "$d/p00-02.b64" "$d/p00-03.b64" \
+            "$d/part-01.b64" \
+            "$d/p02-00.b64" "$d/p02-01.b64" "$d/p02-02.b64" "$d/p02-03.b64" \
+            "$d/part-03.b64" > "$RUNNER_TEMP/script.b64"
+          rebuilt_sha=$(sha256sum "$RUNNER_TEMP/script.b64" | awk '{print $1}')
+          base64 --decode "$RUNNER_TEMP/script.b64" | gunzip > "$RUNNER_TEMP/patch.py" 2>"$RUNNER_TEMP/decode.log"
+          decode_status=$?
+          original_script_sha=$(sha256sum "$RUNNER_TEMP/patch.py" | awk '{print $1}')
+          hotfix_status=99
+          if [[ $decode_status -eq 0 ]]; then
+            python - "$RUNNER_TEMP/patch.py" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          marker = '''replace_once(
+              "services/core/src/simorgh_core/agents/specialist_execution.py",
+              \'\'\'    request_id: UUID\\n'''
+          start = text.index(marker)
+          end = text.index("\nreplace_once(", start + len(marker))
+          block = text[start:end]
+          target = "'''    request_id: UUID\\n"
+          if block.count(target) != 2:
+              raise SystemExit(f"expected two request anchors inside the selected block, found {block.count(target)}")
+          replacement = "'''    schema_version: Literal[\"1.0\"] = SPECIALIST_EXECUTION_CONTRACT_VERSION\\n    request_id: UUID\\n"
+          path.write_text(text[:start] + block.replace(target, replacement) + text[end:], encoding="utf-8")
+          PY
+            hotfix_status=$?
+          fi
+          corrected_script_sha=$(sha256sum "$RUNNER_TEMP/patch.py" | awk '{print $1}')
+          if [[ $decode_status -eq 0 && $hotfix_status -eq 0 ]]; then
+            python -m py_compile "$RUNNER_TEMP/patch.py" > "$RUNNER_TEMP/compile.log" 2>&1
+            compile_status=$?
+          else
+            compile_status=99
+          fi
+          if [[ $compile_status -eq 0 ]]; then
+            python "$RUNNER_TEMP/patch.py" > "$RUNNER_TEMP/patch.log" 2>&1
+            patch_status=$?
+          else
+            patch_status=99
+            cat "$RUNNER_TEMP/decode.log" "$RUNNER_TEMP/compile.log" > "$RUNNER_TEMP/patch.log"
+          fi
+          {
+            echo "Phase 1.3 latest hardening diagnostic — no product files persisted."
+            echo
+            echo '```text'
+            echo "head=$GITHUB_SHA"
+            echo "rebuilt_b64_sha=$rebuilt_sha"
+            echo "expected_b64_sha=f3f2faa897fc91dc53554c7e8c4e68ad9dd4aad58da5ae9af120271870d0e8e9"
+            echo "decode_status=$decode_status"
+            echo "original_script_sha=$original_script_sha"
+            echo "expected_original_script_sha=d78f40938624a8b545c46c0449f8d637be089f43225744ef70dbc053bc0adff9"
+            echo "hotfix_status=$hotfix_status"
+            echo "corrected_script_sha=$corrected_script_sha"
+            echo "compile_status=$compile_status"
+            echo "patch_status=$patch_status"
+            echo "--- patch_log_tail ---"
+            tail -c 7000 "$RUNNER_TEMP/patch.log"
+            echo
+            echo '```'
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md"
+
+      - name: Update fixed diagnostic comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/5084400739" \
+            --raw-field body="$(cat "$RUNNER_TEMP/body.md")"
