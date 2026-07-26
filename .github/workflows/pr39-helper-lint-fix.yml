@@ -1,0 +1,76 @@
+name: PR39 RC3 Helper Lint Fix
+
+on:
+  push:
+    branches:
+      - core/durable-agent-invocation-store
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr39-helper-lint-fix
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Normalize exact helper import block
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.simorgh-patches/pr39-rc3/prepare_rc3.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''import argparse
+          import ast
+          import base64
+          import hashlib
+          import os
+          from pathlib import Path, PurePosixPath
+          import shutil
+          import stat
+          import subprocess
+          import sys
+          import zipfile
+          '''.replace('          ', '')
+          new = '''import argparse
+          import ast
+          import base64
+          import hashlib
+          import shutil
+          import stat
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path, PurePosixPath
+          '''.replace('          ', '')
+          if text.count(old) != 1 or text.count(new) != 0:
+              raise SystemExit(
+                  f'helper import anchor mismatch old={text.count(old)} final={text.count(new)}'
+              )
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          python -m py_compile .simorgh-patches/pr39-rc3/prepare_rc3.py
+
+      - name: Commit helper correction and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/pr39-helper-lint-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'ci: normalize RC3 preparation helper imports'
+          git push origin HEAD:core/durable-agent-invocation-store
