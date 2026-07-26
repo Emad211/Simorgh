@@ -1,0 +1,102 @@
+name: Phase 1.4 Merge Closeout
+
+on:
+  push:
+    branches:
+      - docs/phase14-merge-closeout
+    paths:
+      - .github/workflows/phase14-closeout.yml
+
+permissions:
+  contents: write
+
+jobs:
+  closeout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact Phase 1.4 roadmap closeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('docs/IMPLEMENTATION_MASTER_PLAN.md')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str, *, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} anchor count={count}, expected=1')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'Phase 1.4 Typed Results and Artifacts    VALIDATING — PR #48\n',
+              'Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48\n',
+              label='current position',
+          )
+          replace_once(
+              '## 1.4 Typed result and artifact model — VALIDATING\n\n'
+              'Implementation is under review in PR #48 for issue #46; ADR 0017 is proposed until the exact-head merge gate closes.\n',
+              '## 1.4 Typed result and artifact model — COMPLETE\n\n'
+              'Merged through PR #48 at `98d56689df4442541e30c77451ab56550e473479`. Issue #46 completed; ADR 0017 accepted. Exact candidate `6bf234e15956203a3efb4f8c1b8fd8e7cb92cd8e` passed CI run `30216281897` with 317 Core tests and full Android build/JVM/lint/APK gates.\n',
+              label='step heading and evidence',
+          )
+          replace_once(
+              '### Implemented in PR #48\n',
+              '### Delivered in PR #48\n',
+              label='delivered heading',
+          )
+          replace_once(
+              '### Merge gate\n\n'
+              '- no live connector payload, arbitrary model text or presentation text is admitted as an authoritative result;\n'
+              '- completed replay performs no specialist/model/tool/connector call and no new usage charge;\n'
+              '- artifact bytes remain outside this metadata authority until a separate storage boundary;\n'
+              '- ADR 0017 and operational/validation documentation are synchronized;\n'
+              '- no unresolved review thread;\n'
+              '- exact PR Head has green Core Ruff, strict MyPy and full tests;\n'
+              '- exact PR Head has green Android build, JVM tests, lint and APK;\n'
+              '- PR remains limited to Phase 1.4.\n',
+              '### Merge gate satisfied\n\n'
+              '- no live connector payload, arbitrary model text or presentation text admitted;\n'
+              '- completed replay added no specialist/model/tool/connector call or new usage charge;\n'
+              '- artifact bytes remained outside this metadata authority and are tracked separately in issue #49;\n'
+              '- ADR 0017 and operational/validation documentation synchronized;\n'
+              '- zero unresolved review threads;\n'
+              '- exact candidate passed Core Ruff, strict MyPy and 317 tests;\n'
+              '- exact candidate passed Android build, JVM tests, lint and APK;\n'
+              '- merged scope remained limited to Phase 1.4.\n',
+              label='merge gate closeout',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm -f .github/workflows/phase14-closeout.yml
+          git diff --check
+
+      - name: Commit closeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'Docs: mark Phase 1.4 result authority complete'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: docs/phase14-merge-closeout
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          test "$remote_head" = "$GITHUB_SHA"
+          git push origin "HEAD:refs/heads/$BRANCH"
