@@ -44,7 +44,7 @@ Phase 0 Governance                       COMPLETE
 Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
 Phase 1.3 Specialist Execution           COMPLETE — PR #44
-Phase 1.4 Typed Results and Artifacts    QUEUED
+Phase 1.4 Typed Results and Artifacts    VALIDATING — PR #48
 Phase 1.5 Governed GitHub Read Tools     QUEUED
 Phase 1.6 Cancellation Propagation       QUEUED
 Phase 1.7 Context Compiler               QUEUED
@@ -273,27 +273,46 @@ SpecialistExecutionResult
 - output-contract failure;
 - no private context leakage to traces.
 
-## 1.4 Typed result and artifact model — QUEUED
+## 1.4 Typed result and artifact model — VALIDATING
+
+Implementation is under review in PR #48 for issue #46; ADR 0017 is proposed until the exact-head merge gate closes.
 
 ### Objective
 
 Separate durable structured results and evidence from user-facing natural-language presentation.
 
-### Deliverables
+### Implemented in PR #48
 
-- `SpecialistResult` contract;
-- artifact ID, hash, media type, size and producer identity;
-- evidence references with source, retrieval time and freshness;
-- explicit uncertainty and unresolved risks;
-- result schema/version identity;
-- bounded inline result and external artifact references;
-- Persian renderer outside authority fields;
-- immutable completed result;
-- privacy classification and retention metadata.
+- exact-version result registry for `simorgh.typed-plan.v1`, `simorgh.specialist-plan-result`, schema `1.0`;
+- immutable `AuthoritativeSpecialistResult` tied to request, invocation, producer, output contract and direct usage identity;
+- canonical result ID and SHA-256 independent of replay disposition and presentation;
+- bounded artifact metadata with hash, media type, byte size, producer, storage disposition, privacy and retention;
+- bounded evidence metadata with source/tool/connector identity, freshness, cache disposition, taint, citation and artifact linkage;
+- explicit uncertainty, unresolved risks and verification requirements;
+- conservative privacy and retention composition across linked references;
+- strict in-memory and SQLite WAL result stores with process ownership, schema/integrity checks and immutable one-result-per-invocation replay;
+- cross-authority terminalization against the completed Phase 1.3 invocation payload and committed usage;
+- deterministic Persian renderer outside authority fields;
+- privacy-safe result commit/replay/failure traces;
+- dedicated Core lifespan store path and startup unwind;
+- fake/local restart, conflict, corruption, privacy and presentation tests.
 
-### Gate
+### Merge gate
 
-No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this contract.
+- no live connector payload, arbitrary model text or presentation text is admitted as an authoritative result;
+- completed replay performs no specialist/model/tool/connector call and no new usage charge;
+- artifact bytes remain outside this metadata authority until a separate storage boundary;
+- ADR 0017 and operational/validation documentation are synchronized;
+- no unresolved review thread;
+- exact PR Head has green Core Ruff, strict MyPy and full tests;
+- exact PR Head has green Android build, JVM tests, lint and APK;
+- PR remains limited to Phase 1.4.
+
+### Explicit non-goals
+
+- no public result endpoint;
+- no production artifact-byte storage;
+- no live provider, GitHub connector, MCP, mutation executor, Voice, Notification, Memory or new Android effect.
 
 ## 1.5 Governed read-only tool execution — QUEUED
 
@@ -378,321 +397,3 @@ approved tool schemas
 remaining budget
 required output schema
 ```
-
-### Compaction invariants
-
-Never compact away:
-
-- task and invocation IDs;
-- policy and schema versions;
-- approvals and plan hashes;
-- budgets and committed usage;
-- unresolved decisions;
-- evidence identity and citations;
-- execution and verification state;
-- cancellation or uncertainty state.
-
-### Gate
-
-Compaction occurs only after durable state and candidate-memory flush.
-
-## 1.8 End-to-end trace — QUEUED
-
-### Objective
-
-Correlate task, routing, specialist, model, tools, evidence, result, delivery and replay without storing raw private content by default.
-
-### Deliverables
-
-- durable or durably referenced trace events;
-- task/invocation correlation;
-- per-step timing and cost;
-- cache and replay disposition;
-- typed failure reason;
-- query by task/invocation;
-- redaction and retention policy;
-- no prompt, raw tool arguments/results, secrets, raw email, notification, audio or Accessibility tree.
-
-## 1.9 Explicit live-provider staging test — QUEUED
-
-### Objective
-
-Verify one real AvalAI path under a hard budget without introducing live cost into ordinary CI.
-
-### Rules
-
-- manually triggered only;
-- pinned provider/model and price policy;
-- one stable invocation ID;
-- maximum cost reserved before call;
-- no automatic retry after transport uncertainty;
-- typed result stored and replayed;
-- credentials only in Core/staging secret storage;
-- report includes actual tokens, cost, latency and replay evidence;
-- staging data excludes private user content.
-
-## 1.10 Complete GitHub read workflow — QUEUED
-
-### User command
-
-```text
-وضعیت پروژه سیمرغ و PRهای اخیر را بررسی کن
-```
-
-### Required path
-
-```text
-TaskEnvelope
-→ deterministic github.read routing
-→ durable specialist invocation
-→ governed GitHub read tools
-→ repository/PR/CI structured evidence
-→ typed Persian report artifact
-→ durable result and cost
-→ exact replay with zero duplicate connector/model calls
-```
-
-### Definition of Done
-
-- current GitHub facts are fetched, not guessed from memory;
-- response cites repository artifacts/evidence;
-- result is Persian and structured;
-- task, specialist, tool and optional model identities are durable;
-- replay survives restart;
-- changed freshness requirement intentionally creates new read identities;
-- connector/model/tool counts and cost are visible;
-- cancel and failure semantics are testable;
-- fake connector CI is complete;
-- one optional live read-only validation is documented.
-
-# Phase 2 — Native Skill runtime
-
-Status: BLOCKED by Phase 1.
-
-## 2.1 AgentSkills parser
-
-Validate `SKILL.md` name, description, compatibility, metadata, advisory allowed-tools field and support-file containment.
-
-## 2.2 Skill index and progressive disclosure
-
-```text
-Level 0 — metadata index
-Level 1 — Simorgh manifest
-Level 2 — full SKILL.md
-Level 3 — on-demand references/scripts/assets
-```
-
-Each level has token/byte limits. Irrelevant Skills never enter context.
-
-## 2.3 Skill policy and scopes
-
-```text
-System
-User
-Workspace
-Node
-Temporary
-```
-
-Location never grants permission.
-
-## 2.4 Learn Routine and Skill Proposal
-
-Extract only verified procedure, prerequisites, tools, failure modes and verification from eligible experience. Create a proposal, never an active Skill.
-
-## 2.5 Lint, sandbox, approval and activation
-
-```text
-draft → proposed → linted → sandbox_tested → pending_approval
-→ active → deprecated/revoked
-```
-
-## 2.6 Targeted Skill Patch and rollback
-
-Patches bind to base version/hash, evidence tasks and regression fixtures. No blind full rewrite.
-
-# Phase 3 — Memory and session search
-
-Status: BLOCKED by Phase 1 and Skill policy foundations.
-
-## 3.1 Typed User Profile
-
-Stable, bounded, versioned, provenance-aware and user-editable.
-
-## 3.2 Environment Memory
-
-Non-secret device, runtime, path and tool facts with validity windows.
-
-## 3.3 Project and workspace memory
-
-Goals, architecture, constraints, decisions, milestones, risks and privacy policy.
-
-## 3.4 Episodic/session storage
-
-SQLite sessions, messages, invocations, artifacts, task links and FTS indexes.
-
-## 3.5 Hybrid retrieval
-
-FTS + embedding + workspace/time/privacy filters + optional reranking.
-
-## 3.6 Memory candidate review
-
-No inferred fact becomes authoritative without promotion policy and deletion path.
-
-## 3.7 Memory flush before compaction
-
-Durably save task state, decisions, artifacts, candidates and approvals before summarization.
-
-## 3.8 Edit/delete/export UI
-
-The user can inspect source, validity, authority and remove or correct memory.
-
-# Phase 4 — Personal Work Graph and scheduled missions
-
-Status: BLOCKED by durable specialist results and Memory foundations.
-
-## 4.1 Work Graph entities
-
-Goal, Project, Product, Repository, Campaign, Contact, Decision, Task, Dependency, Evidence, Artifact, Routine and Checkpoint.
-
-## 4.2 Bounded task DAG
-
-Cycle, depth, node, parallelism and budget limits.
-
-## 4.3 Event-to-task updates
-
-Only relevant structured deltas create or update tasks. Unchanged events cost zero model calls.
-
-## 4.4 ScheduledMission
-
-Pinned or policy-controlled provider/model, tools, permissions, delivery and failure behavior.
-
-## 4.5 Durable run ledger
-
-```text
-claimed → running → completed/failed/cancelled/unknown
-```
-
-## 4.6 No-agent jobs
-
-Scripts/rules for deterministic alerts, health checks and data collection.
-
-## 4.7 Daily Cockpit
-
-Calendar, Notifications, GitHub/CI, project blockers, sales follow-ups, SEO anomalies, deadlines, usage/cost and three evidence-backed priorities.
-
-# Phase 5 — Gateway and channels
-
-Status: BLOCKED by durable tasks, invocations, results and Work Graph.
-
-## 5.1 Role-based typed WebSocket
-
-Roles: operator, Android Node, worker Node, channel adapter and UI client.
-
-## 5.2 Cryptographic device identity and pairing
-
-Signed challenge, device token, capability-upgrade approval, suspension and revocation.
-
-## 5.3 Telegram first
-
-Inbound normalization, owner authentication, taint metadata, typed task event, approved delivery and receipt.
-
-## 5.4 Deterministic bindings
-
-Channel/account/peer selects workspace, mode and input policy. Specialist routing remains separate.
-
-## 5.5 Cross-channel continuation
-
-Resume by durable task/workspace identity, never by blindly merging transcripts.
-
-## 5.6 Doctor and Dashboard
-
-Health, pairing, capabilities, clocks, model/prices, connectors, Skills, queues, missions, privacy, cost, evidence and cancellation.
-
-# Phase 6 — Persian Voice
-
-Status: PARKED; PR #35 preserved.
-
-Prerequisite: Phase 1 runtime and cancellation path.
-
-1. local wake engine abstraction;
-2. VAD and bounded pre-roll;
-3. Persian ASR cascade;
-4. N-best and context vocabulary;
-5. mixed Persian/English normalization;
-6. sensitive ambiguity confirmation;
-7. barge-in and immediate cancellation;
-8. Persian TTS and pronunciation dictionary;
-9. Assistant-role and foreground fallback capabilities;
-10. physical Galaxy A53 benchmark.
-
-Voice must submit through the durable task/specialist runtime. It cannot call providers, connectors or Android executors directly.
-
-# Phase 7 — Android operator
-
-Status: BLOCKED; only the separately reviewed `open_app` boundary is active.
-
-Every new operation is a separate trust boundary and PR:
-
-1. deterministic fixture app;
-2. physical `open_app` validation;
-3. `click_node`;
-4. `set_text` with secret-field policy;
-5. `scroll_node`;
-6. Notification actions;
-7. limited global actions;
-8. screenshot/visual-grounding fallback;
-9. verified multi-step workflows;
-10. app-specific reviewed Skills.
-
-# Phase 8 — Delegation
-
-Status: BLOCKED by durable specialist execution, cancellation, budget, memory and governed tools.
-
-Initial constraints:
-
-```text
-fan-out = 2
-depth = 1
-read-only only
-fresh context
-capability subset
-pre-reserved branch budget
-typed result
-```
-
-Child agents cannot widen tools, write global memory or access sensitive executors.
-
-# Phase 9 — Self-improvement
-
-Status: BLOCKED by Skill and Memory review paths.
-
-1. post-task Learning Review;
-2. Memory candidate;
-3. Skill candidate;
-4. targeted Skill Patch;
-5. evaluation-fixture generation;
-6. approval queue;
-7. cheap/local review model;
-8. regression tests;
-9. rollback;
-10. learning quality and cost metrics.
-
-# Global release gates
-
-Every merged increment must prove:
-
-- typed contracts and strict validation;
-- deterministic cost-free path where applicable;
-- pre-call durable cost reservation for external work;
-- stable identity and idempotent replay;
-- explicit cancellation, expiry and crash semantics;
-- no permission widening from models, Skills, MCP, Channels or Nodes;
-- no raw natural language at executor boundaries;
-- authoritative result evidence for side effects;
-- no secret/private raw content in traces or failure messages;
-- honest storage-encryption and retention boundaries;
-- full Core and Android CI;
-- ordinary CI uses no live provider or connector;
-- operational documentation and ADR;
-- honest statement of what remains process-local, untested or not physically validated.
