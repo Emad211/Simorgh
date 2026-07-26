@@ -1,4 +1,4 @@
-name: PR39 RC3 Lock Adapter Diagnostic
+name: PR39 RC3 Windows Lock Typing Diagnostic
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pr39-rc3-lock-adapter-diagnostic
+  group: pr39-rc3-lock-typing-diagnostic
   cancel-in-progress: true
 
 env:
@@ -37,7 +37,7 @@ jobs:
       - name: Install Core dependencies
         run: python -m pip install --upgrade pip && pip install -e '.[dev]'
 
-      - name: Prepare exact RC3 workspace and Protocol adapter
+      - name: Prepare RC3 and annotate Windows-only stub gaps
         id: prepare
         continue-on-error: true
         shell: bash
@@ -54,47 +54,27 @@ jobs:
             text = path.read_text(encoding='utf-8')
             replacements = (
                 (
-                    'from typing import BinaryIO, Self\n',
-                    'from typing import BinaryIO, Protocol, Self, cast\n',
-                ),
-                (
-                    'class ExclusiveStoreLockError(RuntimeError):\n',
-                    'class _WindowsLockApi(Protocol):\n'
-                    '    LK_NBLCK: int\n'
-                    '    LK_UNLCK: int\n\n'
-                    '    def locking(\n'
-                    '        self,\n'
-                    '        file_descriptor: int,\n'
-                    '        mode: int,\n'
-                    '        byte_count: int,\n'
-                    '        /,\n'
-                    '    ) -> None: ...\n\n\n'
-                    'class ExclusiveStoreLockError(RuntimeError):\n',
-                ),
-                (
                     '                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)\n',
-                    '                windows_lock = cast(_WindowsLockApi, msvcrt)\n'
-                    '                windows_lock.locking(\n'
+                    '                # Linux stubs omit these Windows-only symbols.\n'
+                    '                msvcrt.locking(  # type: ignore[attr-defined]\n'
                     '                    handle.fileno(),\n'
-                    '                    windows_lock.LK_NBLCK,\n'
+                    '                    msvcrt.LK_NBLCK,\n'
                     '                    1,\n'
                     '                )\n',
                 ),
                 (
                     '                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)\n',
-                    '                windows_lock = cast(_WindowsLockApi, msvcrt)\n'
-                    '                windows_lock.locking(\n'
+                    '                # Linux stubs omit these Windows-only symbols.\n'
+                    '                msvcrt.locking(  # type: ignore[attr-defined]\n'
                     '                    handle.fileno(),\n'
-                    '                    windows_lock.LK_UNLCK,\n'
+                    '                    msvcrt.LK_UNLCK,\n'
                     '                    1,\n'
                     '                )\n',
                 ),
             )
             for old, new in replacements:
                 if text.count(old) != 1 or text.count(new) != 0:
-                    raise SystemExit(
-                        f'lock-adapter anchor mismatch old={text.count(old)} final={text.count(new)}'
-                    )
+                    raise SystemExit('Windows lock typing anchor mismatch')
                 text = text.replace(old, new, 1)
             path.write_text(text, encoding='utf-8')
             PY
@@ -138,10 +118,10 @@ jobs:
           temp = Path(os.environ['RUNNER_TEMP'])
           sections = [
               '<!-- pr39-rc3-status -->',
-              'PR39 RC3 Windows lock-adapter diagnostic:',
+              'PR39 RC3 Windows-only lock typing diagnostic:',
               '',
               f"- Head: `{os.environ['GITHUB_SHA']}`",
-              f"- RC3 prepare + adapter: **{os.environ.get('PREPARE_OUTCOME', 'not-run')}**",
+              f"- RC3 prepare + targeted annotations: **{os.environ.get('PREPARE_OUTCOME', 'not-run')}**",
               f"- Ruff: **{os.environ.get('RUFF_OUTCOME', 'not-run')}**",
               f"- Strict MyPy: **{os.environ.get('MYPY_OUTCOME', 'not-run')}**",
               f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
