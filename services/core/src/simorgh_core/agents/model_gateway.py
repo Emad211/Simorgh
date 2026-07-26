@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import Any
+from contextlib import suppress
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from simorgh_core.agents.budget import (
     BudgetAccount,
+    BudgetCancelledError,
     BudgetError,
+    BudgetReservationNotFoundError,
     ReservationKind,
 )
 from simorgh_core.agents.contracts import (
@@ -23,7 +26,10 @@ from simorgh_core.agents.contracts import (
 from simorgh_core.agents.invocations import (
     InvocationEffect,
     InvocationKind,
+    InvocationNotFoundError,
+    InvocationRecord,
     InvocationStartKind,
+    InvocationStateError,
     InvocationStore,
     InvocationStoreError,
     canonical_fingerprint,
@@ -129,7 +135,11 @@ class ModelCatalog:
 
 
 class BudgetedModelRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
     invocation_id: UUID
     request_id: UUID
@@ -159,8 +169,13 @@ class BudgetedModelRequest(BaseModel):
 
 
 class BudgetedModelResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
+    schema_version: Literal["1.0"] = "1.0"
     invocation_id: UUID
     text: str
     provider_id: str
@@ -196,19 +211,21 @@ class BudgetedModelGateway:
         request: BudgetedModelRequest,
         budget: BudgetAccount,
     ) -> BudgetedModelResult:
+        self._require_budget_identity(request=request, budget=budget)
+        request_fingerprint = canonical_fingerprint(request)
+        existing = self._load_existing_invocation(request.invocation_id)
+        if existing is not None:
+            return self._resolve_existing_invocation(
+                request=request,
+                record=existing,
+                request_fingerprint=request_fingerprint,
+            )
         spec = self._select_model(request)
         selected_output_limit = min(
             request.maximum_output_tokens,
             spec.maximum_output_tokens,
         )
-        fingerprint = canonical_fingerprint(
-            {
-                **request.model_dump(mode="json"),
-                "selected_provider": spec.provider_id,
-                "selected_model": spec.model_id,
-                "selected_output_limit": selected_output_limit,
-            }
-        )
+        fingerprint = request_fingerprint
         try:
             started = self._invocations.begin(
                 invocation_id=request.invocation_id,
@@ -298,8 +315,12 @@ class BudgetedModelGateway:
                 invocation_id=request.invocation_id,
                 usage=reserved_usage,
             )
-        except InvocationStoreError as exc:
-            budget.release(reservation.reservation_id)
+        except InvocationStoreError:
+            with suppress(
+                BudgetCancelledError,
+                BudgetReservationNotFoundError,
+            ):
+                budget.release(reservation.reservation_id)
             self._emit(
                 request=request,
                 kind=TraceEventKind.MODEL_FAILED,
@@ -309,7 +330,7 @@ class BudgetedModelGateway:
             )
             raise ModelGatewayError(
                 "model invocation could not be durably reserved"
-            ) from exc
+            ) from None
 
         self._emit(
             request=request,
@@ -336,15 +357,17 @@ class BudgetedModelGateway:
                 max_output_tokens=selected_output_limit,
             )
         except asyncio.CancelledError:
-            budget.commit_reserved(reservation.reservation_id)
-            self._mark_unknown(
-                invocation_id=request.invocation_id,
-                failure_code="provider_call_cancelled",
-                failure_detail=(
-                    "model provider coroutine was cancelled after durable reservation; "
-                    "completion is uncertain"
-                ),
-            )
+            with suppress(ModelGatewayError):
+                self._mark_unknown_and_settle(
+                    invocation_id=request.invocation_id,
+                    failure_code="provider_call_cancelled",
+                    failure_detail=(
+                        "model provider coroutine was cancelled after durable reservation; "
+                        "completion is uncertain"
+                    ),
+                    budget=budget,
+                    reservation_id=reservation.reservation_id,
+                )
             self._emit(
                 request=request,
                 kind=TraceEventKind.MODEL_FAILED,
@@ -356,23 +379,23 @@ class BudgetedModelGateway:
             )
             raise
         except Exception as exc:
-            budget.commit_reserved(reservation.reservation_id)
-            self._record_failure(
+            self._mark_unknown_and_settle(
                 invocation_id=request.invocation_id,
-                failure_code="provider_failure",
+                failure_code="provider_transport_uncertain",
                 failure_detail=exc.__class__.__name__,
-                committed_usage=reserved_usage,
+                budget=budget,
+                reservation_id=reservation.reservation_id,
             )
             self._emit(
                 request=request,
                 kind=TraceEventKind.MODEL_FAILED,
                 spec=spec,
                 usage=reserved_usage,
-                outcome="provider_failure",
-                reason=f"model provider failed closed with {exc.__class__.__name__}",
+                outcome="unknown",
+                reason=f"model transport became uncertain with {exc.__class__.__name__}",
                 output_limit=selected_output_limit,
             )
-            raise ModelGatewayError("model provider invocation failed") from exc
+            raise ModelGatewayError("model provider invocation failed") from None
 
         actual_input_tokens = usage_value(
             output,
@@ -466,7 +489,26 @@ class BudgetedModelGateway:
                 result_payload=result.model_dump(mode="json"),
                 committed_usage=actual_usage,
             )
-        except InvocationStoreError as exc:
+        except InvocationStateError:
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="result_contract_invalid",
+                failure_detail="typed_model_result_rejected",
+                committed_usage=actual_usage,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.MODEL_FAILED,
+                spec=spec,
+                usage=actual_usage,
+                outcome="result_contract_invalid",
+                reason="model result failed the durable typed result contract",
+                output_limit=selected_output_limit,
+            )
+            raise ModelOutputContractError(
+                "model result failed durable contract validation"
+            ) from None
+        except InvocationStoreError:
             self._emit(
                 request=request,
                 kind=TraceEventKind.MODEL_FAILED,
@@ -478,7 +520,7 @@ class BudgetedModelGateway:
             )
             raise ModelGatewayError(
                 "model result could not be durably committed"
-            ) from exc
+            ) from None
         self._emit(
             request=request,
             kind=TraceEventKind.MODEL_COMPLETED,
@@ -489,6 +531,159 @@ class BudgetedModelGateway:
             output_limit=selected_output_limit,
         )
         return result
+
+    def _require_budget_identity(
+        self,
+        *,
+        request: BudgetedModelRequest,
+        budget: BudgetAccount,
+    ) -> None:
+        if budget.request_id == request.request_id:
+            return
+        self._emit(
+            request=request,
+            kind=TraceEventKind.MODEL_FAILED,
+            outcome="budget_identity_mismatch",
+            reason="model request and request budget identities do not match",
+        )
+        raise ModelGatewayError(
+            "model request budget identity does not match request"
+        )
+
+    def _load_existing_invocation(
+        self,
+        invocation_id: UUID,
+    ) -> InvocationRecord | None:
+        try:
+            return self._invocations.get(invocation_id)
+        except InvocationNotFoundError:
+            return None
+        except InvocationStoreError:
+            raise ModelGatewayError(
+                "durable model invocation could not be read"
+            ) from None
+
+    def _resolve_existing_invocation(
+        self,
+        *,
+        request: BudgetedModelRequest,
+        record: InvocationRecord,
+        request_fingerprint: str,
+    ) -> BudgetedModelResult:
+        if (
+            record.kind != InvocationKind.MODEL
+            or record.effect != InvocationEffect.READ_ONLY
+            or record.provider_id != self._provider_id
+            or record.model_id is None
+        ):
+            raise ModelGatewayError(
+                "durable model invocation target does not match this gateway"
+            )
+        try:
+            started = self._invocations.begin(
+                invocation_id=request.invocation_id,
+                request_id=request.request_id,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                operation=request.operation,
+                input_fingerprint=request_fingerprint,
+                kind=InvocationKind.MODEL,
+                effect=InvocationEffect.READ_ONLY,
+                provider_id=record.provider_id,
+                model_id=record.model_id,
+            )
+        except InvocationStoreError:
+            raise ModelGatewayError(
+                "durable model invocation identity could not be validated"
+            ) from None
+        if started.kind == InvocationStartKind.REPLAY:
+            return self._replay_stored_result(request=request, record=started.record)
+        if started.kind == InvocationStartKind.IN_PROGRESS:
+            raise ModelInvocationInProgressError(
+                f"model invocation {request.invocation_id} is already in progress"
+            )
+        raise ModelInvocationTerminalError(
+            started.record.failure_detail
+            or f"model invocation ended in {started.record.state.value}"
+        )
+
+    def _replay_stored_result(
+        self,
+        *,
+        request: BudgetedModelRequest,
+        record: InvocationRecord,
+    ) -> BudgetedModelResult:
+        if record.result_payload is None:
+            raise ModelOutputContractError(
+                "completed model invocation has no result payload"
+            )
+        try:
+            replayed = BudgetedModelResult.model_validate(record.result_payload)
+        except ValueError:
+            raise ModelOutputContractError(
+                "durable model replay payload failed typed validation"
+            ) from None
+        expected_usage = UsageVector(
+            model_calls=1,
+            input_tokens=replayed.input_tokens,
+            output_tokens=replayed.output_tokens,
+            estimated_cost_microusd=replayed.cost_microusd,
+        )
+        if (
+            replayed.invocation_id != request.invocation_id
+            or replayed.provider_id != record.provider_id
+            or replayed.model_id != record.model_id
+            or record.committed_usage != expected_usage
+        ):
+            raise ModelOutputContractError(
+                "durable model replay identity or usage is inconsistent"
+            )
+        self._emit(
+            request=request,
+            kind=TraceEventKind.INVOCATION_REPLAYED,
+            cache=CacheDisposition.HIT,
+            outcome="completed",
+            reason="exact completed model invocation was replayed from durable state",
+            provider_id_override=record.provider_id,
+            model_id_override=record.model_id,
+        )
+        return replayed.model_copy(update={"replayed": True})
+
+    def _mark_unknown_and_settle(
+        self,
+        *,
+        invocation_id: UUID,
+        failure_code: str,
+        failure_detail: str,
+        budget: BudgetAccount,
+        reservation_id: UUID,
+    ) -> None:
+        store_failed = False
+        try:
+            self._invocations.mark_unknown(
+                invocation_id=invocation_id,
+                failure_code=failure_code,
+                failure_detail=failure_detail,
+            )
+        except InvocationStoreError:
+            store_failed = True
+
+        # Always attempt request-budget settlement even when durable persistence
+        # failed. Cancellation can clear the process-local reservation; in that
+        # case the durable invocation remains detailed cost authority and startup
+        # reconciliation raises the retained parent aggregate.
+        try:
+            budget.commit_reserved(reservation_id)
+        except (BudgetCancelledError, BudgetReservationNotFoundError):
+            pass
+        except BudgetError:
+            # BudgetAccount records truthful over-limit usage before raising.
+            pass
+
+        if store_failed:
+            raise ModelGatewayError(
+                "model invocation uncertainty could not be durably recorded"
+            ) from None
 
     def _select_model(self, request: BudgetedModelRequest) -> ModelSpec:
         try:
@@ -600,6 +795,8 @@ class BudgetedModelGateway:
         outcome: str | None = None,
         reason: str | None = None,
         output_limit: int | None = None,
+        provider_id_override: str | None = None,
+        model_id_override: str | None = None,
     ) -> None:
         metadata: dict[str, str | int | bool | None] = {
             "operation": request.operation,
@@ -615,8 +812,16 @@ class BudgetedModelGateway:
                 kind=kind,
                 agent_id=request.agent_id,
                 agent_version=request.agent_version,
-                provider_id=spec.provider_id if spec is not None else self._provider_id,
-                model_id=spec.model_id if spec is not None else None,
+                provider_id=(
+                    provider_id_override
+                    if provider_id_override is not None
+                    else spec.provider_id if spec is not None else self._provider_id
+                ),
+                model_id=(
+                    model_id_override
+                    if model_id_override is not None
+                    else spec.model_id if spec is not None else None
+                ),
                 cache=cache,
                 usage=usage,
                 outcome=outcome,

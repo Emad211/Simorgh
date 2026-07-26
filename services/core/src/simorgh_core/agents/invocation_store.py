@@ -27,17 +27,25 @@ from simorgh_core.agents.invocations import (
     InvocationStoreClosedError,
     InvocationStoreCorruptionError,
     InvocationStoreError,
+    InvocationStoreInUseError,
     InvocationStoreSchemaError,
     InvocationStoreUnhealthyError,
     canonical_fingerprint,
     canonical_json,
+    require_external_completion_reservation,
+    require_reservation_for_nonzero_terminal_usage,
     require_same_invocation_identity,
     start_kind_for_record,
     unknown_record,
     validated_record_copy,
 )
+from simorgh_core.agents.store_lock import (
+    ExclusiveStoreLock,
+    ExclusiveStoreLockError,
+    ExclusiveStoreLockInUseError,
+)
 
-INVOCATION_STORE_SCHEMA_VERSION: Literal[1] = 1
+INVOCATION_STORE_SCHEMA_VERSION: Literal[2] = 2
 _ZERO_USAGE = UsageVector()
 
 _ALLOWED_TRANSITIONS: dict[InvocationPhase, frozenset[InvocationPhase]] = {
@@ -95,12 +103,24 @@ class SQLiteInvocationStore:
         self._lock = threading.RLock()
         self._closed = False
         self._failure: InvocationStoreError | None = None
+        self._path_lock: ExclusiveStoreLock | None = None
 
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
 
         connection: sqlite3.Connection | None = None
         try:
+            if self._path != ":memory:":
+                try:
+                    self._path_lock = ExclusiveStoreLock(self._path)
+                except ExclusiveStoreLockInUseError:
+                    raise InvocationStoreInUseError(
+                        "another Simorgh Core process owns the invocation store"
+                    ) from None
+                except ExclusiveStoreLockError:
+                    raise InvocationStoreUnhealthyError(
+                        "invocation store process lock is unavailable"
+                    ) from None
             connection = sqlite3.connect(
                 self._path,
                 isolation_level=None,
@@ -120,13 +140,19 @@ class SQLiteInvocationStore:
         except InvocationStoreError:
             if connection is not None:
                 connection.close()
+            if self._path_lock is not None:
+                self._path_lock.close()
+                self._path_lock = None
             raise
-        except sqlite3.DatabaseError as exc:
+        except sqlite3.DatabaseError:
             if connection is not None:
                 connection.close()
+            if self._path_lock is not None:
+                self._path_lock.close()
+                self._path_lock = None
             raise InvocationStoreCorruptionError(
-                f"could not initialize invocation store at {self._path}"
-            ) from exc
+                "could not initialize invocation store"
+            ) from None
 
     @property
     def path(self) -> str:
@@ -150,6 +176,10 @@ class SQLiteInvocationStore:
         parent_invocation_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
+        if parent_invocation_id is not None or attempt != 1:
+            raise InvocationStateError(
+                "retry invocation chains are not enabled"
+            )
         with self._lock:
             self._require_healthy_locked()
             existing = self._get_optional_locked(invocation_id)
@@ -234,7 +264,12 @@ class SQLiteInvocationStore:
         result_payload: dict[str, Any],
         committed_usage: UsageVector = _ZERO_USAGE,
     ) -> InvocationRecord:
-        result_hash = canonical_fingerprint(result_payload)
+        try:
+            result_hash = canonical_fingerprint(result_payload)
+        except ValueError:
+            raise InvocationStateError(
+                "invocation result is not strict canonical JSON"
+            ) from None
         with self._lock:
             existing = self._require_record_locked(invocation_id)
             if existing.state == InvocationPhase.COMPLETED:
@@ -253,6 +288,7 @@ class SQLiteInvocationStore:
                 raise InvocationStateError(
                     f"cannot complete invocation in state {existing.state.value}"
                 )
+            require_external_completion_reservation(existing)
             candidate = validated_record_copy(
                 existing,
                 state=InvocationPhase.COMPLETED,
@@ -278,7 +314,7 @@ class SQLiteInvocationStore:
         normalized_code = failure_code.strip()[:128]
         if not normalized_code:
             raise ValueError("failure_code cannot be empty")
-        normalized_detail = failure_detail.strip()[:2_000]
+        normalized_detail = failure_detail.strip()[:2_000] or None
         with self._lock:
             existing = self._require_record_locked(invocation_id)
             usage = _terminal_usage(existing, committed_usage)
@@ -299,13 +335,14 @@ class SQLiteInvocationStore:
                 raise InvocationStateError(
                     f"cannot fail invocation in state {existing.state.value}"
                 )
+            require_reservation_for_nonzero_terminal_usage(existing, usage)
             candidate = validated_record_copy(
                 existing,
                 state=InvocationPhase.FAILED,
                 reserved_usage=_ZERO_USAGE,
                 committed_usage=usage,
                 failure_code=normalized_code,
-                failure_detail=normalized_detail or None,
+                failure_detail=normalized_detail,
                 updated_at_ms=self._next_time(existing.updated_at_ms),
             )
             self._update_locked(existing, candidate)
@@ -344,7 +381,7 @@ class SQLiteInvocationStore:
     def cancel(self, invocation_id: UUID) -> InvocationRecord:
         with self._lock:
             existing = self._require_record_locked(invocation_id)
-            if existing.state == InvocationPhase.CANCELLED:
+            if existing.terminal:
                 return existing
             if existing.state == InvocationPhase.PENDING:
                 candidate = validated_record_copy(
@@ -374,7 +411,7 @@ class SQLiteInvocationStore:
     def expire(self, invocation_id: UUID) -> InvocationRecord:
         with self._lock:
             existing = self._require_record_locked(invocation_id)
-            if existing.state == InvocationPhase.EXPIRED:
+            if existing.terminal:
                 return existing
             if existing.state == InvocationPhase.PENDING:
                 candidate = validated_record_copy(
@@ -435,7 +472,12 @@ class SQLiteInvocationStore:
             if self._closed:
                 return
             self._closed = True
-            self._connection.close()
+            try:
+                self._connection.close()
+            finally:
+                if self._path_lock is not None:
+                    self._path_lock.close()
+                    self._path_lock = None
 
     def _recover_interrupted_locked(self) -> None:
         try:
@@ -595,7 +637,7 @@ class SQLiteInvocationStore:
                     )
                 current = self._decode_row(current_row)
                 if current != existing:
-                    raise InvocationConflictError(
+                    self._latch_corruption_locked(
                         "durable invocation changed concurrently"
                     )
                 self._update_row_locked(candidate)
@@ -766,9 +808,8 @@ class SQLiteInvocationStore:
         failure = InvocationStoreCorruptionError(message)
         if self._failure is None:
             self._failure = failure
-        if exc is None:
-            raise failure
-        raise failure from exc
+        del exc
+        raise failure from None
 
     def _next_time(self, previous_updated_at_ms: int) -> int:
         return max(previous_updated_at_ms, self._now_ms())

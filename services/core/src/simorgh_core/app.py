@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -29,6 +30,38 @@ from simorgh_core.devices.observation_refresh_api import (
 )
 
 
+def _require_distinct_store_paths(settings: Settings) -> None:
+    configured = {
+        "action_journal": settings.simorgh_action_journal_path,
+        "agent_tasks": settings.simorgh_agent_task_store_path,
+        "invocations": settings.simorgh_invocation_store_path,
+    }
+    normalized: dict[str, Path] = {}
+    for name, raw_path in configured.items():
+        if raw_path == ":memory:":
+            continue
+        normalized[name] = Path(raw_path).expanduser().resolve()
+
+    items = list(normalized.items())
+    for index, (left_name, left_path) in enumerate(items):
+        for right_name, right_path in items[index + 1 :]:
+            try:
+                same_authority = left_path == right_path or (
+                    left_path.exists()
+                    and right_path.exists()
+                    and left_path.samefile(right_path)
+                )
+            except OSError:
+                raise RuntimeError(
+                    "Core durable store path identity could not be verified"
+                ) from None
+            if same_authority:
+                raise RuntimeError(
+                    "Core durable task, invocation, and Android action store paths "
+                    f"must be distinct ({left_name}, {right_name})"
+                )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -39,6 +72,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     task_store_configured = False
     invocation_store_configured = False
     try:
+        _require_distinct_store_paths(settings)
+        # The invocation store owns the process-level lock, so acquire it before
+        # opening or recovering any other durable authority.
+        invocation_store = SQLiteInvocationStore(
+            settings.simorgh_invocation_store_path,
+        )
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
             max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
@@ -48,9 +87,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             max_terminal_records=(
                 settings.simorgh_agent_task_store_max_terminal_records
             ),
-        )
-        invocation_store = SQLiteInvocationStore(
-            settings.simorgh_invocation_store_path,
         )
         reconcile_task_store_invocation_usage(
             task_store=task_store,

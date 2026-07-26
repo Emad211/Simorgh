@@ -62,6 +62,12 @@ def reconcile_task_store_invocation_usage(
             ),
             monotonic_millis=monotonic_millis,
         ).snapshot()
+        if record.budget.exhausted_dimension is not None:
+            restored_budget = restored_budget.model_copy(
+                update={
+                    "exhausted_dimension": record.budget.exhausted_dimension,
+                }
+            )
         candidate = AgentTaskRecord(
             request_id=record.request_id,
             phase=record.phase,

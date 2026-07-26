@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from simorgh_core.agents.budget import BudgetAccount, BudgetError, ReservationKind
+from simorgh_core.agents.budget import (
+    BudgetAccount,
+    BudgetCancelledError,
+    BudgetError,
+    BudgetReservationNotFoundError,
+    ReservationKind,
+)
 from simorgh_core.agents.contracts import SideEffectPolicy, UsageVector
 from simorgh_core.agents.invocations import (
     InvocationEffect,
     InvocationKind,
     InvocationStartKind,
+    InvocationStateError,
     InvocationStore,
     InvocationStoreError,
     canonical_fingerprint,
+    canonical_json,
 )
 from simorgh_core.agents.registry import (
     SpecialistPolicyError,
@@ -62,7 +71,11 @@ class ToolInvoker(Protocol):
 
 
 class ToolCallRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
     invocation_id: UUID
     request_id: UUID
@@ -82,15 +95,42 @@ class ToolCallRequest(BaseModel):
                 raise ValueError("data-source identifiers must be in 1..128 characters")
         return value
 
+    @field_validator("arguments")
+    @classmethod
+    def validate_arguments(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            encoded = canonical_json(value).encode("utf-8")
+        except ValueError:
+            raise ValueError("tool arguments must be strict JSON data") from None
+        if len(encoded) > 256_000:
+            raise ValueError("tool arguments exceed the 256000-byte limit")
+        return value
+
 
 class ToolCallResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
+    schema_version: Literal["1.0"] = "1.0"
     invocation_id: UUID
     tool_id: str
     connector_id: str
     payload: dict[str, Any]
     replayed: bool = False
+
+    @field_validator("payload")
+    @classmethod
+    def validate_json_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            canonical_json(value)
+        except ValueError:
+            raise ValueError(
+                "tool result payload must be strict JSON data"
+            ) from None
+        return value
 
 
 class BudgetedToolGateway:
@@ -115,6 +155,7 @@ class BudgetedToolGateway:
         request: ToolCallRequest,
         budget: BudgetAccount,
     ) -> ToolCallResult:
+        self._require_budget_identity(request=request, budget=budget)
         self._require_policy(request)
         request_payload = request.model_dump(mode="json")
         request_payload["allowed_data_sources"] = sorted(request.allowed_data_sources)
@@ -179,8 +220,12 @@ class BudgetedToolGateway:
                 invocation_id=request.invocation_id,
                 usage=reserved_usage,
             )
-        except InvocationStoreError as exc:
-            budget.release(reservation.reservation_id)
+        except InvocationStoreError:
+            with suppress(
+                BudgetCancelledError,
+                BudgetReservationNotFoundError,
+            ):
+                budget.release(reservation.reservation_id)
             self._emit(
                 request=request,
                 kind=TraceEventKind.TOOL_FAILED,
@@ -189,7 +234,7 @@ class BudgetedToolGateway:
             )
             raise ToolGatewayError(
                 "tool invocation could not be durably reserved"
-            ) from exc
+            ) from None
 
         self._emit(
             request=request,
@@ -211,15 +256,17 @@ class BudgetedToolGateway:
                 arguments=request.arguments,
             )
         except asyncio.CancelledError:
-            budget.commit_reserved(reservation.reservation_id)
-            self._mark_unknown(
-                invocation_id=request.invocation_id,
-                failure_code="tool_call_cancelled",
-                failure_detail=(
-                    "tool coroutine was cancelled after durable reservation; "
-                    "completion is uncertain"
-                ),
-            )
+            with suppress(ToolGatewayError):
+                self._mark_unknown_and_settle(
+                    invocation_id=request.invocation_id,
+                    failure_code="tool_call_cancelled",
+                    failure_detail=(
+                        "tool coroutine was cancelled after durable reservation; "
+                        "completion is uncertain"
+                    ),
+                    budget=budget,
+                    reservation_id=reservation.reservation_id,
+                )
             self._emit(
                 request=request,
                 kind=TraceEventKind.TOOL_FAILED,
@@ -229,21 +276,21 @@ class BudgetedToolGateway:
             )
             raise
         except Exception as exc:
-            budget.commit_reserved(reservation.reservation_id)
-            self._record_failure(
+            self._mark_unknown_and_settle(
                 invocation_id=request.invocation_id,
-                failure_code="tool_failure",
+                failure_code="tool_transport_uncertain",
                 failure_detail=exc.__class__.__name__,
-                committed_usage=reserved_usage,
+                budget=budget,
+                reservation_id=reservation.reservation_id,
             )
             self._emit(
                 request=request,
                 kind=TraceEventKind.TOOL_FAILED,
                 usage=reserved_usage,
-                outcome="tool_failure",
-                reason=f"structured tool failed closed with {exc.__class__.__name__}",
+                outcome="unknown",
+                reason=f"structured tool transport became uncertain with {exc.__class__.__name__}",
             )
-            raise ToolGatewayError("structured tool invocation failed") from exc
+            raise ToolGatewayError("structured tool invocation failed") from None
 
         actual_usage = UsageVector(tool_calls=1)
         try:
@@ -274,19 +321,54 @@ class BudgetedToolGateway:
             outcome="reconciled",
             reason="structured tool usage was reconciled",
         )
-        result = ToolCallResult(
-            invocation_id=request.invocation_id,
-            tool_id=request.tool_id,
-            connector_id=request.connector_id,
-            payload=payload,
-        )
+        try:
+            result = ToolCallResult(
+                invocation_id=request.invocation_id,
+                tool_id=request.tool_id,
+                connector_id=request.connector_id,
+                payload=payload,
+            )
+        except ValueError:
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="result_contract_invalid",
+                failure_detail="typed_tool_result_rejected",
+                committed_usage=actual_usage,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=actual_usage,
+                outcome="result_contract_invalid",
+                reason="tool result failed the typed JSON result contract",
+            )
+            raise ToolGatewayError(
+                "structured tool result failed durable contract validation"
+            ) from None
         try:
             self._invocations.complete(
                 invocation_id=request.invocation_id,
                 result_payload=result.model_dump(mode="json"),
                 committed_usage=actual_usage,
             )
-        except InvocationStoreError as exc:
+        except InvocationStateError:
+            self._record_failure(
+                invocation_id=request.invocation_id,
+                failure_code="result_contract_invalid",
+                failure_detail="typed_tool_result_rejected",
+                committed_usage=actual_usage,
+            )
+            self._emit(
+                request=request,
+                kind=TraceEventKind.TOOL_FAILED,
+                usage=actual_usage,
+                outcome="result_contract_invalid",
+                reason="tool result failed the durable typed result contract",
+            )
+            raise ToolGatewayError(
+                "structured tool result failed durable contract validation"
+            ) from None
+        except InvocationStoreError:
             self._emit(
                 request=request,
                 kind=TraceEventKind.TOOL_FAILED,
@@ -296,7 +378,7 @@ class BudgetedToolGateway:
             )
             raise ToolGatewayError(
                 "tool result could not be durably committed"
-            ) from exc
+            ) from None
         self._emit(
             request=request,
             kind=TraceEventKind.TOOL_COMPLETED,
@@ -305,6 +387,24 @@ class BudgetedToolGateway:
             reason="structured tool result passed policy, budget, and durable validation",
         )
         return result
+
+    def _require_budget_identity(
+        self,
+        *,
+        request: ToolCallRequest,
+        budget: BudgetAccount,
+    ) -> None:
+        if budget.request_id == request.request_id:
+            return
+        self._emit(
+            request=request,
+            kind=TraceEventKind.TOOL_FAILED,
+            outcome="budget_identity_mismatch",
+            reason="tool request and request budget identities do not match",
+        )
+        raise ToolGatewayError(
+            "tool request budget identity does not match request"
+        )
 
     def _require_policy(self, request: ToolCallRequest) -> None:
         try:
@@ -378,6 +478,37 @@ class BudgetedToolGateway:
             reason="exact completed tool invocation was replayed from durable state",
         )
         return replayed.model_copy(update={"replayed": True})
+
+    def _mark_unknown_and_settle(
+        self,
+        *,
+        invocation_id: UUID,
+        failure_code: str,
+        failure_detail: str,
+        budget: BudgetAccount,
+        reservation_id: UUID,
+    ) -> None:
+        store_failed = False
+        try:
+            self._invocations.mark_unknown(
+                invocation_id=invocation_id,
+                failure_code=failure_code,
+                failure_detail=failure_detail,
+            )
+        except InvocationStoreError:
+            store_failed = True
+
+        try:
+            budget.commit_reserved(reservation_id)
+        except (BudgetCancelledError, BudgetReservationNotFoundError):
+            pass
+        except BudgetError:
+            pass
+
+        if store_failed:
+            raise ToolGatewayError(
+                "tool invocation uncertainty could not be durably recorded"
+            ) from None
 
     def _record_failure(
         self,

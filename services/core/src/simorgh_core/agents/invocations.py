@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable
 from enum import StrEnum
@@ -10,6 +11,7 @@ from typing import Any, Literal, Protocol, Self, TypeAlias
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticSerializationError
 
 from simorgh_core.agents.contracts import InvocationState, UsageVector
 
@@ -33,6 +35,10 @@ class InvocationStateError(InvocationStoreError):
     pass
 
 
+class InvocationPayloadError(ValueError):
+    pass
+
+
 class InvocationStoreClosedError(InvocationStoreError):
     pass
 
@@ -49,6 +55,10 @@ class InvocationStoreUnhealthyError(InvocationStoreError):
     pass
 
 
+class InvocationStoreInUseError(InvocationStoreError):
+    pass
+
+
 class InvocationStartKind(StrEnum):
     NEW = "new"
     REPLAY = "replay"
@@ -56,7 +66,7 @@ class InvocationStartKind(StrEnum):
     TERMINAL = "terminal"
 
 
-InvocationPhase: TypeAlias = InvocationState
+InvocationPhase: TypeAlias = InvocationState  # noqa: UP040
 
 
 class InvocationKind(StrEnum):
@@ -86,8 +96,13 @@ _TERMINAL_PHASES = frozenset(
 class InvocationRecord(BaseModel):
     """One immutable invocation identity with versionable operational state."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
+    schema_version: Literal[2] = 2
     invocation_id: UUID
     request_id: UUID
     agent_id: str = Field(min_length=1, max_length=128)
@@ -100,10 +115,10 @@ class InvocationRecord(BaseModel):
     )
     kind: InvocationKind = InvocationKind.SPECIALIST
     effect: InvocationEffect = InvocationEffect.READ_ONLY
-    provider_id: str | None = Field(default=None, max_length=128)
-    model_id: str | None = Field(default=None, max_length=256)
-    tool_id: str | None = Field(default=None, max_length=128)
-    connector_id: str | None = Field(default=None, max_length=128)
+    provider_id: str | None = Field(default=None, min_length=1, max_length=128)
+    model_id: str | None = Field(default=None, min_length=1, max_length=256)
+    tool_id: str | None = Field(default=None, min_length=1, max_length=128)
+    connector_id: str | None = Field(default=None, min_length=1, max_length=128)
     parent_invocation_id: UUID | None = None
     state: InvocationPhase
     attempt: int = Field(default=1, ge=1, le=1_000)
@@ -131,12 +146,18 @@ class InvocationRecord(BaseModel):
             raise ValueError("updated_at_ms cannot precede created_at_ms")
         if self.parent_invocation_id == self.invocation_id:
             raise ValueError("invocation cannot be its own retry parent")
+        if self.parent_invocation_id is None and self.attempt != 1:
+            raise ValueError("first invocation attempt must equal one")
+        if self.parent_invocation_id is not None and self.attempt == 1:
+            raise ValueError("retry invocation requires attempt greater than one")
         self._validate_target_identity()
         self._validate_state_shape()
         return self
 
     def _validate_target_identity(self) -> None:
         if self.kind == InvocationKind.MODEL:
+            if self.effect == InvocationEffect.MUTATION:
+                raise ValueError("model invocation cannot be a mutation effect")
             if self.provider_id is None or self.model_id is None:
                 raise ValueError("model invocation requires provider_id and model_id")
             if self.tool_id is not None or self.connector_id is not None:
@@ -166,10 +187,18 @@ class InvocationRecord(BaseModel):
                 raise ValueError("reserved invocation requires non-zero reserved usage")
             if self.committed_usage != _ZERO_USAGE:
                 raise ValueError("reserved invocation cannot contain committed usage")
+            self._validate_usage_shape(
+                self.reserved_usage,
+                require_external_call=True,
+            )
             self._require_no_result_or_failure()
             return
         if self.reserved_usage != _ZERO_USAGE:
             raise ValueError("terminal invocation cannot retain reserved usage")
+        self._validate_usage_shape(
+            self.committed_usage,
+            require_external_call=self.state == InvocationPhase.COMPLETED,
+        )
         if self.state == InvocationPhase.COMPLETED:
             if self.result_payload is None or self.result_payload_sha256 is None:
                 raise ValueError("completed invocation requires result payload and hash")
@@ -195,6 +224,29 @@ class InvocationRecord(BaseModel):
         ):
             raise ValueError("uncertain mutation must use unknown_side_effect")
 
+    def _validate_usage_shape(
+        self,
+        usage: UsageVector,
+        *,
+        require_external_call: bool,
+    ) -> None:
+        if self.kind == InvocationKind.MODEL:
+            if usage.tool_calls != 0:
+                raise ValueError("model invocation usage cannot contain tool calls")
+            if usage.model_calls > 1:
+                raise ValueError("one model invocation cannot contain multiple model calls")
+            if require_external_call and usage.model_calls != 1:
+                raise ValueError("completed/reserved model invocation requires one model call")
+        elif self.kind == InvocationKind.TOOL:
+            if usage.model_calls != 0:
+                raise ValueError("tool invocation usage cannot contain model calls")
+            if usage.input_tokens != 0 or usage.output_tokens != 0:
+                raise ValueError("tool invocation usage cannot contain model token usage")
+            if usage.tool_calls > 1:
+                raise ValueError("one tool invocation cannot contain multiple tool calls")
+            if require_external_call and usage.tool_calls != 1:
+                raise ValueError("completed/reserved tool invocation requires one tool call")
+
     def _require_no_usage_or_terminal_payload(self) -> None:
         if self.reserved_usage != _ZERO_USAGE or self.committed_usage != _ZERO_USAGE:
             raise ValueError("pending invocation cannot contain usage")
@@ -208,7 +260,11 @@ class InvocationRecord(BaseModel):
 
 
 class InvocationStart(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
 
     kind: InvocationStartKind
     record: InvocationRecord
@@ -312,6 +368,10 @@ class InMemoryInvocationStore:
         parent_invocation_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
+        if parent_invocation_id is not None or attempt != 1:
+            raise InvocationStateError(
+                "retry invocation chains are not enabled"
+            )
         with self._lock:
             self._require_open_locked()
             existing = self._records.get(invocation_id)
@@ -396,7 +456,12 @@ class InMemoryInvocationStore:
         result_payload: dict[str, Any],
         committed_usage: UsageVector = _ZERO_USAGE,
     ) -> InvocationRecord:
-        result_hash = canonical_fingerprint(result_payload)
+        try:
+            result_hash = canonical_fingerprint(result_payload)
+        except InvocationPayloadError:
+            raise InvocationStateError(
+                "invocation result is not strict canonical JSON"
+            ) from None
         with self._lock:
             existing = self._require_record_locked(invocation_id)
             if existing.state == InvocationPhase.COMPLETED:
@@ -415,6 +480,7 @@ class InMemoryInvocationStore:
                 raise InvocationStateError(
                     f"cannot complete invocation in state {existing.state.value}"
                 )
+            require_external_completion_reservation(existing)
             candidate = validated_record_copy(
                 existing,
                 state=InvocationPhase.COMPLETED,
@@ -440,7 +506,7 @@ class InMemoryInvocationStore:
         normalized_code = failure_code.strip()[:128]
         if not normalized_code:
             raise ValueError("failure_code cannot be empty")
-        normalized_detail = failure_detail.strip()[:2_000]
+        normalized_detail = failure_detail.strip()[:2_000] or None
         with self._lock:
             existing = self._require_record_locked(invocation_id)
             usage = _terminal_usage(existing, committed_usage)
@@ -461,13 +527,14 @@ class InMemoryInvocationStore:
                 raise InvocationStateError(
                     f"cannot fail invocation in state {existing.state.value}"
                 )
+            require_reservation_for_nonzero_terminal_usage(existing, usage)
             candidate = validated_record_copy(
                 existing,
                 state=InvocationPhase.FAILED,
                 reserved_usage=_ZERO_USAGE,
                 committed_usage=usage,
                 failure_code=normalized_code,
-                failure_detail=normalized_detail or None,
+                failure_detail=normalized_detail,
                 updated_at_ms=self._next_time(existing.updated_at_ms),
             )
             self._records[invocation_id] = candidate
@@ -506,7 +573,7 @@ class InMemoryInvocationStore:
     def cancel(self, invocation_id: UUID) -> InvocationRecord:
         with self._lock:
             existing = self._require_record_locked(invocation_id)
-            if existing.state == InvocationPhase.CANCELLED:
+            if existing.terminal:
                 return existing
             if existing.state == InvocationPhase.PENDING:
                 candidate = validated_record_copy(
@@ -536,7 +603,7 @@ class InMemoryInvocationStore:
     def expire(self, invocation_id: UUID) -> InvocationRecord:
         with self._lock:
             existing = self._require_record_locked(invocation_id)
-            if existing.state == InvocationPhase.EXPIRED:
+            if existing.terminal:
                 return existing
             if existing.state == InvocationPhase.PENDING:
                 candidate = validated_record_copy(
@@ -663,6 +730,30 @@ def start_kind_for_record(record: InvocationRecord) -> InvocationStartKind:
     return InvocationStartKind.TERMINAL
 
 
+def require_external_completion_reservation(record: InvocationRecord) -> None:
+    if (
+        record.kind in {InvocationKind.MODEL, InvocationKind.TOOL}
+        and record.state != InvocationPhase.RESERVED
+    ):
+        raise InvocationStateError(
+            "model/tool completion requires a durable pre-call reservation"
+        )
+
+
+def require_reservation_for_nonzero_terminal_usage(
+    record: InvocationRecord,
+    usage: UsageVector,
+) -> None:
+    if (
+        record.kind in {InvocationKind.MODEL, InvocationKind.TOOL}
+        and usage != _ZERO_USAGE
+        and record.state != InvocationPhase.RESERVED
+    ):
+        raise InvocationStateError(
+            "non-zero model/tool terminal usage requires a durable reservation"
+        )
+
+
 def unknown_record(
     record: InvocationRecord,
     *,
@@ -693,10 +784,10 @@ def validated_record_copy(
     candidate = record.model_copy(update=updates)
     try:
         return InvocationRecord.model_validate(candidate.model_dump(mode="json"))
-    except ValueError as exc:
+    except (InvocationPayloadError, ValueError):
         raise InvocationStateError(
             "invocation state update failed typed validation"
-        ) from exc
+        ) from None
 
 
 def _terminal_usage(
@@ -723,19 +814,70 @@ def stable_invocation_id(
     )
 
 
+def _validate_unicode_scalar_text(value: str) -> None:
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise ValueError("canonical JSON text contains an unpaired surrogate")
+
+
+def _validate_strict_json_value(value: Any, *, depth: int = 0) -> None:
+    if depth > 100:
+        raise ValueError("canonical JSON nesting is too deep")
+    if value is None or isinstance(value, (bool, int)):
+        return
+    if isinstance(value, str):
+        _validate_unicode_scalar_text(value)
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("canonical JSON numbers must be finite")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_strict_json_value(item, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("canonical JSON object keys must be strings")
+            _validate_unicode_scalar_text(key)
+            _validate_strict_json_value(item, depth=depth + 1)
+        return
+    raise TypeError("value is not strict JSON data")
+
+
 def canonical_json(value: BaseModel | dict[str, Any]) -> str:
-    payload: Any = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
-    return json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    try:
+        payload: Any = (
+            value.model_dump(mode="json")
+            if isinstance(value, BaseModel)
+            else value
+        )
+        if not isinstance(payload, dict):
+            raise TypeError("top-level payload must be an object")
+        _validate_strict_json_value(payload)
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        encoded.encode("utf-8")
+        return encoded
+    except (
+        TypeError,
+        ValueError,
+        PydanticSerializationError,
+        RecursionError,
+    ):
+        raise InvocationPayloadError(
+            "invocation payload is not valid canonical JSON"
+        ) from None
 
 
 def canonical_size_bytes(value: BaseModel | dict[str, Any]) -> int:
-    return len(canonical_json(value).encode())
+    return len(canonical_json(value).encode("utf-8"))
 
 
 def canonical_fingerprint(value: BaseModel | dict[str, Any]) -> str:
-    return hashlib.sha256(canonical_json(value).encode()).hexdigest()
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
