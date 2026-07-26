@@ -1,0 +1,138 @@
+name: Phase 1.3 Merge Closeout
+
+on:
+  push:
+    branches:
+      - docs/phase13-merge-closeout
+    paths:
+      - .github/workflows/phase13-merge-closeout.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase13-merge-closeout
+  cancel-in-progress: true
+
+jobs:
+  closeout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact post-merge documentation transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'{path}: expected one anchor, found {count}: {old[:120]!r}'
+                  )
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              'Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #44\n',
+              'Phase 1.3 Specialist Execution           COMPLETE — PR #44\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              '## 1.3 Specialist execution interface — VALIDATING\n',
+              '## 1.3 Specialist execution interface — COMPLETE\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              'Issue #40; Draft PR #44. ADR 0016 accepted.\n',
+              'Merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`. Issue #40 completed; ADR 0016 accepted.\n',
+          )
+          replace_once(
+              'docs/IMPLEMENTATION_MASTER_PLAN.md',
+              'Implemented in the open PR:\n',
+              'Delivered in PR #44:\n',
+          )
+
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'a zero-external native specialist execution runtime is validating in PR #44.',
+              'the zero-external native specialist execution runtime merged in PR #44.',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'PR #44 adds an internal control-plane method for one zero-external specialist;',
+              'PR #44 merged an internal control-plane method for one zero-external specialist;',
+          )
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              '- #40 / PR #44 validate the native specialist execution interface;\n',
+              '- #40 / PR #44 native specialist execution interface, complete;\n',
+          )
+
+          replace_once(
+              'docs/README.md',
+              'PR #44 validates an internal zero-external specialist execution runtime.',
+              'PR #44 merged the internal zero-external specialist execution runtime.',
+          )
+          replace_once(
+              'docs/README.md',
+              '- issue #40 / PR #44 — native typed specialist execution, validating;\n',
+              '- issue #40 / PR #44 — native typed specialist execution, complete;\n',
+          )
+
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              'Status: Phase 1 Step 1.3 is validating in issue #40 and Draft PR #44; ADR 0016 is accepted.\n',
+              'Status: Phase 1 Step 1.3 merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`; issue #40 is complete and ADR 0016 is accepted.\n',
+          )
+
+          replace_once(
+              'docs/validation/phase-1-3-specialist-execution.md',
+              'Status: Accepted under ADR 0016; merge remains gated on exact-head CI.\n',
+              'Status: Complete — merged through PR #44 under ADR 0016.\n',
+          )
+          replace_once(
+              'docs/validation/phase-1-3-specialist-execution.md',
+              '- PR #44 had no unresolved review threads at the candidate head.\n\n'
+              'Final evidence rule: the commit containing this record must itself have successful `core-quality` and `android-quality` jobs. Its run ID is intentionally not embedded here, because recording that ID would create a new commit and invalidate the exact-head claim.\n',
+              '- PR #44 had no unresolved review threads at the candidate head;\n'
+              '- final PR head: `da49707799e6799e200c579d652b3c29f3762f77`;\n'
+              '- final exact-head CI run `30213532154`: `core-quality` and `android-quality` passed;\n'
+              '- merge commit: `2bc113a29960a1935db3f91c27cb6863f0ac35b5`;\n'
+              '- issue #40 closed as completed.\n',
+          )
+          PY
+          rm -f .github/workflows/phase13-merge-closeout.yml
+          git diff --check
+
+      - name: Validate complete closeout state
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'Phase 1.3 Specialist Execution           COMPLETE — PR #44' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F '## 1.3 Specialist execution interface — COMPLETE' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F 'runtime merged in PR #44' docs/AGENT_RUNTIME.md
+          grep -F 'native typed specialist execution, complete;' docs/README.md
+          grep -F 'merged through PR #44' docs/SPECIALIST_EXECUTION.md
+          grep -F 'Status: Complete — merged through PR #44 under ADR 0016.' docs/validation/phase-1-3-specialist-execution.md
+          grep -F 'final exact-head CI run `30213532154`' docs/validation/phase-1-3-specialist-execution.md
+
+      - name: Commit Phase 1.3 closeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: mark Phase 1.3 complete after PR 44'
+          git push origin HEAD:docs/phase13-merge-closeout
