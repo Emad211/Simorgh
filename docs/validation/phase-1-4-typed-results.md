@@ -1,12 +1,14 @@
 # Phase 1.4 typed specialist results — validation record
 
-- Status: Validation in progress
+- Status: Accepted implementation candidate
 - Governing issue: #46
 - Pull request: #48
 - Branch: `core/typed-specialist-results`
+- Validated implementation commit: `6af7f8d8ccb5e22c57dd8b0c50cfe6aa4e2a3e89`
+- GitHub Actions run: `30216134239`
 - Authority boundary: typed specialist result, evidence and artifact metadata persistence
 
-## Scope under validation
+## Validated scope
 
 This increment validates the transition from the completed Phase 1.3 specialist invocation into one immutable Phase 1.4 result authority.
 
@@ -35,52 +37,67 @@ Excluded:
 - production artifact-byte storage;
 - MCP, Voice, Notification, Memory and new Android behavior.
 
-## Required automated evidence
+## Automated evidence
 
-### Core contract and persistence tests
+### Core contract and persistence coverage
 
-- raw text and arbitrary dictionary payloads rejected;
-- duplicate/unknown schema registrations rejected;
-- stable canonical result hash;
-- renderer cannot mutate the authority;
+The exact validated implementation passed 317 Core tests. The result-specific slice proves:
+
+- raw text and arbitrary dictionary payloads are rejected;
+- duplicate/unknown schema registrations are rejected;
+- canonical result hashing is stable;
+- rendering cannot mutate authority identity;
 - artifact size/hash/media/storage rules fail closed;
-- evidence taint, freshness and artifact linkage validated;
-- strictest privacy and retention propagated;
+- evidence taint, freshness and artifact linkage survive persistence;
+- strictest privacy and retention are propagated;
 - in-memory replay returns one immutable result;
 - SQLite restart replay returns identical result ID/hash;
+- end-to-end Phase 1.3 → 1.4 replay does not re-enter the executor or add usage;
 - changed payload or changed reference metadata conflicts;
 - durable invocation mismatch prevents result creation;
 - corrupt payload hash and unsupported schema fail closed;
 - process ownership lock prevents concurrent SQLite authority;
-- private payload markers absent from failures and traces;
+- oversized/private payload markers remain absent from validation failures and traces;
 - application startup loads the result store and shutdown resets it;
-- result store path cannot alias task, invocation or Android action stores.
+- result store path cannot alias task, invocation or Android action stores;
+- extra/unregistered artifact shapes are rejected.
 
 ### Repository gates
 
+Executed on GitHub Actions run `30216134239` for exact implementation commit `6af7f8d8ccb5e22c57dd8b0c50cfe6aa4e2a3e89`:
+
 ```text
-ruff check .
-mypy services/core/src
-pytest --junitxml=artifacts/junit.xml
-gradle :apps:android:assembleDebug \
-       :apps:android:testDebugUnitTest \
-       :apps:android:lintDebug
+ruff check .                                      PASS
+mypy services/core/src                            PASS
+pytest --junitxml=artifacts/junit.xml              PASS — 317 tests, 2 warnings
+gradle :apps:android:assembleDebug                 PASS
+gradle :apps:android:testDebugUnitTest             PASS
+gradle :apps:android:lintDebug                     PASS
+debug APK upload                                  PASS
 ```
 
-## Exact-head record
+The two warnings are upstream Starlette/FastAPI deprecations and did not alter test conclusions.
 
-The final commit SHA, CI run IDs, test count and conclusions are recorded only after all exact-head jobs complete. This document must not claim acceptance while any gate is queued, skipped, action-required or failed.
+## Review and scope audit
+
+- no unresolved inline review thread;
+- no pending review submission;
+- no temporary publisher workflow remains in the PR;
+- all changed files belong to Phase 1.4 code, tests or documentation;
+- ordinary CI used fake/local evidence and artifact data and made no live provider, connector or MCP call.
 
 ## Acceptance checklist
 
-- [ ] Ruff passed on exact PR Head
-- [ ] strict MyPy passed on exact PR Head
-- [ ] full Core pytest passed on exact PR Head
-- [ ] Android build passed on exact PR Head
-- [ ] Android JVM tests passed on exact PR Head
-- [ ] Android lint passed on exact PR Head
-- [ ] debug APK artifact produced
-- [ ] no unresolved review thread
-- [ ] ADR 0017 accepted
-- [ ] master plan and documentation synchronized
-- [ ] PR remains limited to Phase 1.4
+- [x] Ruff passed on exact implementation Head
+- [x] strict MyPy passed on exact implementation Head
+- [x] full Core pytest passed — 317 tests
+- [x] Android build passed
+- [x] Android JVM tests passed
+- [x] Android lint passed
+- [x] debug APK artifact produced
+- [x] no unresolved review thread
+- [x] ADR 0017 accepted
+- [x] master plan and documentation synchronized
+- [x] PR remains limited to Phase 1.4
+
+Documentation-only successor commits remain subject to the same repository CI before merge. The PR body records the final merge-candidate Head and its exact final run after those commits complete.
