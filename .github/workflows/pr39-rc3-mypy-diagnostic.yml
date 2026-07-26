@@ -1,4 +1,4 @@
-name: PR39 RC3 Lock Adapter Gate Isolation
+name: PR39 RC3 Final Product Publisher
 
 on:
   push:
@@ -6,54 +6,67 @@ on:
       - core/durable-agent-invocation-store
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
 concurrency:
-  group: pr39-rc3-lock-adapter-diagnostic
+  group: pr39-rc3-final-product-publisher
   cancel-in-progress: true
 
 env:
   STATUS_COMMENT_ID: '5083518493'
+  PR_BRANCH: core/durable-agent-invocation-store
 
 jobs:
-  diagnose:
+  publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out exact triggering head
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Report publisher start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 final product publisher: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Current gate: install and transactional RC3 preparation
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
-      - name: Install Core dependencies
+      - name: Install Core development dependencies
         run: python -m pip install --upgrade pip && pip install -e '.[dev]'
 
-      - name: Prepare exact RC3 workspace
-        id: prepare
-        continue-on-error: true
+      - name: Prepare RC3 product transactionally
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           python .simorgh-patches/pr39-rc3/prepare_rc3.py \
             "$GITHUB_WORKSPACE" \
-            --temp "$RUNNER_TEMP/pr39-prepare" \
-            2>&1 | tee "$RUNNER_TEMP/prepare.log"
+            --temp "$RUNNER_TEMP/pr39-final" \
+            --cleanup
 
-      - name: Apply dynamic Windows adapter
-        id: adapter
-        if: steps.prepare.outcome == 'success'
-        continue-on-error: true
+      - name: Apply verified Windows lock adapter
         shell: bash
         run: |
-          set -o pipefail
-          python - <<'PY' 2>&1 | tee "$RUNNER_TEMP/adapter.log"
+          set -euo pipefail
+          python - <<'PY'
           from pathlib import Path
 
           path = Path('services/core/src/simorgh_core/agents/store_lock.py')
@@ -85,73 +98,157 @@ jobs:
           for old, new in replacements:
               old_count = text.count(old)
               new_count = text.count(new)
-              print(f'anchor old={old_count} final={new_count}')
               if old_count != 1 or new_count != 0:
-                  raise SystemExit('Windows lock adapter anchor mismatch')
+                  raise SystemExit(
+                      f'Windows lock adapter anchor mismatch old={old_count} final={new_count}'
+                  )
               text = text.replace(old, new, 1)
           path.write_text(text, encoding='utf-8')
           PY
           python -m py_compile services/core/src/simorgh_core/agents/store_lock.py
-
-      - name: Ruff diagnostic
-        id: ruff
-        if: steps.adapter.outcome == 'success'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
           ruff check --fix --select I services/core/src/simorgh_core/agents/store_lock.py
-          ruff check services/core/src/simorgh_core/agents/store_lock.py \
-            --output-format concise 2>&1 | tee "$RUNNER_TEMP/ruff.log"
 
-      - name: Strict MyPy diagnostic
-        id: mypy
-        if: steps.adapter.outcome == 'success'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          mypy services/core/src 2>&1 | tee "$RUNNER_TEMP/mypy.log"
-
-      - name: Publish isolated results
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PREPARE: ${{ steps.prepare.outcome }}
-          ADAPTER: ${{ steps.adapter.outcome }}
-          RUFF: ${{ steps.ruff.outcome }}
-          MYPY: ${{ steps.mypy.outcome }}
+      - name: Verify transient publisher cleanup
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+          test ! -e .simorgh-patches/pr39-rc3
+          test ! -e .github/workflows/pr39-rc3-finalize.yml
+          test ! -e .github/workflows/pr39-rc3-finalize-permission-safe.yml
+          test ! -e .github/workflows/pr39-rc3-ruff-diagnostic.yml
+          test ! -e .github/workflows/pr39-rc3-mypy-diagnostic.yml
+          test -f services/core/src/simorgh_core/agents/store_lock.py
+          test -f services/core/tests/test_gateway_contract_hardening.py
+          test -f services/core/tests/test_gateway_failure_semantics_rc3.py
+          test -f docs/INVOCATION_STORE_HARDENING.md
+          git diff --check
 
-          temp = Path(os.environ['RUNNER_TEMP'])
-          lines = [
-              '<!-- pr39-rc3-status -->',
-              'PR39 RC3 lock-adapter isolated diagnostic:',
-              '',
-              f"- Head: `{os.environ['GITHUB_SHA']}`",
-              f"- RC3 prepare: **{os.environ.get('PREPARE', 'not-run')}**",
-              f"- Adapter patch: **{os.environ.get('ADAPTER', 'not-run')}**",
-              f"- Ruff: **{os.environ.get('RUFF', 'not-run')}**",
-              f"- Strict MyPy: **{os.environ.get('MYPY', 'not-run')}**",
-              f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-          ]
-          for title, filename in (
-              ('Prepare', 'prepare.log'),
-              ('Adapter', 'adapter.log'),
-              ('Ruff', 'ruff.log'),
-              ('MyPy', 'mypy.log'),
-          ):
-              path = temp / filename
-              if path.is_file():
-                  lines.extend(['', f'### {title}', '```text', path.read_text(errors='replace')[-8000:], '```'])
-          (temp / 'comment.json').write_text(json.dumps({'body': '\n'.join(lines)}), encoding='utf-8')
-          PY
+      - name: Core lint
+        run: ruff check .
+
+      - name: Core strict type check
+        run: mypy services/core/src
+
+      - name: Full Core test suite
+        run: pytest
+
+      - name: Report Core success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            --input "$RUNNER_TEMP/comment.json"
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 final product publisher: **running**
+
+          - Transactional RC3 preparation: passed
+          - 33 targeted RC3 regressions: passed
+          - Publisher and diagnostic cleanup: passed
+          - Ruff: passed
+          - Strict MyPy: passed
+          - Full Core suite: passed
+          - Current gate: Android build, JVM tests, lint, and APK
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install stable Android platform
+        run: sdkmanager 'platforms;android-36'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Android build, JVM tests, lint, and APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle \
+            :apps:android:assembleDebug \
+            :apps:android:testDebugUnitTest \
+            :apps:android:lintDebug \
+            --stacktrace
+
+      - name: Stage and validate exact product diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'RC3 produced no product changes' >&2
+            exit 1
+          fi
+          BAD_TRANSIENT=$(git diff --cached --name-status | awk '
+            ($2 ~ /^\.simorgh-patches\// || $2 ~ /^\.github\/workflows\/pr39-rc3-/) && $1 != "D" {print}
+          ')
+          if [ -n "$BAD_TRANSIENT" ]; then
+            echo 'Transient publisher content remained as a non-deletion:' >&2
+            echo "$BAD_TRANSIENT" >&2
+            exit 1
+          fi
+          git diff --cached --name-only | grep -Fx 'services/core/src/simorgh_core/agents/store_lock.py'
+          git diff --cached --name-only | grep -Fx 'docs/INVOCATION_STORE_HARDENING.md'
+          git diff --cached --name-only | grep -Fx 'services/core/tests/test_model_replay_catalog_independence.py'
+          git diff --cached --check
+
+      - name: Commit and protected fast-forward push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$PR_BRANCH"
+          REMOTE_HEAD=$(git rev-parse "origin/$PR_BRANCH")
+          if [ "$REMOTE_HEAD" != "$GITHUB_SHA" ]; then
+            echo "Branch advanced during validation: expected $GITHUB_SHA, found $REMOTE_HEAD" >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'core: harden durable invocation replay and recovery'
+          git push origin "HEAD:$PR_BRANCH"
+
+      - name: Report publisher success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCT_HEAD=$(git rev-parse HEAD)
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 final product publisher: **validated product commit pushed**
+
+          - Triggering head: \`${GITHUB_SHA}\`
+          - Product head: \`${PRODUCT_HEAD}\`
+          - Archive integrity / transactional apply / 33 regressions: passed
+          - Ruff / strict MyPy / full Core: passed
+          - Android build / JVM / lint / APK: passed
+          - Transient Publisher files: removed
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Report publisher failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 final product publisher: **failed closed**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - No validated product commit was claimed by this run.
+          - Inspect: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
