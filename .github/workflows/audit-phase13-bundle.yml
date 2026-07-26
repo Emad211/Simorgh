@@ -1,9 +1,10 @@
 name: Audit concurrent Phase 1.3 bundle
 
 on:
-  push:
+  pull_request:
     branches:
-      - audit/phase13-concurrent-bundle
+      - core/specialist-execution-interface
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
       - name: Reconstruct and verify archive
