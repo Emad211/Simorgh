@@ -1,1 +1,0 @@
-This temporary sentinel intentionally moved the branch head after an unexpected concurrent Phase 1.3 implementation appeared. It blocks the in-flight publisher's protected fast-forward push until both implementations are audited and reconciled.
