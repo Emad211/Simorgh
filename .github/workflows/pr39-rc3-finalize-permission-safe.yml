@@ -1,0 +1,278 @@
+name: PR39 RC3 Permission-Safe Finalize
+
+on:
+  push:
+    branches:
+      - core/durable-agent-invocation-store
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr39-rc3-permission-safe-finalize
+  cancel-in-progress: true
+
+env:
+  STATUS_COMMENT_ID: '5083518493'
+  PR_BRANCH: core/durable-agent-invocation-store
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact triggering head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Report start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 permission-safe finalizer: **running**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - Current gate: reconstruct and verify archive
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Reconstruct, verify, and extract RC3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import hashlib
+          import os
+          from pathlib import Path, PurePosixPath
+          import stat
+          import zipfile
+
+          root = Path('.simorgh-patches/pr39-rc3')
+          names = [f'part-{index:02d}.b64' for index in range(9)]
+          expected_lengths = [8000] * 8 + [7748]
+          actual_names = sorted(path.name for path in root.glob('part-*.b64'))
+          if actual_names != names:
+              raise SystemExit(f'unexpected RC3 chunk set: {actual_names!r}')
+
+          pieces: list[str] = []
+          for name, expected_length in zip(names, expected_lengths, strict=True):
+              raw = (root / name).read_bytes()
+              if len(raw) != expected_length:
+                  raise SystemExit(
+                      f'{name}: expected {expected_length} bytes, found {len(raw)}'
+                  )
+              pieces.append(raw.decode('ascii'))
+
+          encoded = ''.join(pieces)
+          if len(encoded) != 71748:
+              raise SystemExit(f'expected 71748 Base64 characters, found {len(encoded)}')
+          archive = base64.b64decode(encoded, validate=True)
+          expected_hash = 'dde9c1eed40d319b1fde9e913b3510aa0fd4fa0e36b31436d58c8d231fa2f2a4'
+          actual_hash = hashlib.sha256(archive).hexdigest()
+          if len(archive) != 53811 or actual_hash != expected_hash:
+              raise SystemExit('RC3 archive identity mismatch')
+
+          bundle_root = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle'
+          archive_path = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle.zip'
+          archive_path.write_bytes(archive)
+          bundle_root.mkdir(parents=True, exist_ok=False)
+          with zipfile.ZipFile(archive_path) as bundle:
+              bad = bundle.testzip()
+              if bad is not None:
+                  raise SystemExit(f'corrupt ZIP member: {bad}')
+              for info in bundle.infolist():
+                  path = PurePosixPath(info.filename)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise SystemExit(f'unsafe ZIP path: {info.filename}')
+                  if stat.S_ISLNK(info.external_attr >> 16):
+                      raise SystemExit(f'ZIP symlink is not allowed: {info.filename}')
+              bundle.extractall(bundle_root)
+
+          version = (bundle_root / 'VERSION').read_text(encoding='utf-8').strip()
+          if version != '2026.07.26-pr39-step1.2-hardening-rc3':
+              raise SystemExit(f'RC3 VERSION mismatch: {version!r}')
+          print(f'archive_sha256={actual_hash}')
+          PY
+          BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
+          chmod 0755 \
+            "$BUNDLE/apply_pr39_complete_hardening.sh" \
+            "$BUNDLE/scripts/apply_pr39_complete_hardening.sh"
+          test -x "$BUNDLE/apply_pr39_complete_hardening.sh"
+          test -x "$BUNDLE/scripts/apply_pr39_complete_hardening.sh"
+
+      - name: Install Core development dependencies
+        run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+
+      - name: Self-test and exact-head dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
+          python "$BUNDLE/scripts/selftest_pr39_hardening_bundle.py"
+          bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
+            --dry-run \
+            --backup-dir "$RUNNER_TEMP/pr39-backups"
+
+      - name: Report preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 permission-safe finalizer: **running**
+
+          - Archive integrity: passed
+          - Publisher permissions: passed
+          - Bundle self-test: passed
+          - Exact-head dry-run: passed
+          - Current gate: transactional apply and targeted regressions
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Apply transactionally with targeted regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
+          bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
+            --backup-dir "$RUNNER_TEMP/pr39-backups" \
+            --run-targeted-tests
+
+      - name: Remove transient publisher inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .simorgh-patches/pr39-rc3
+          rmdir .simorgh-patches 2>/dev/null || true
+          rm -f \
+            .github/workflows/pr39-rc3-finalize.yml \
+            .github/workflows/pr39-rc3-finalize-permission-safe.yml
+          git diff --check
+
+      - name: Core lint
+        run: ruff check .
+
+      - name: Core strict type check
+        run: mypy services/core/src
+
+      - name: Full Core test suite
+        run: pytest
+
+      - name: Report Core gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 permission-safe finalizer: **running**
+
+          - Transactional apply and targeted regressions: passed
+          - Ruff: passed
+          - Strict MyPy: passed
+          - Full Core suite: passed
+          - Current gate: Android build, JVM tests, lint, and APK
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install stable Android platform
+        run: sdkmanager 'platforms;android-36'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Android build, JVM tests, lint, and APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle \
+            :apps:android:assembleDebug \
+            :apps:android:testDebugUnitTest \
+            :apps:android:lintDebug \
+            --stacktrace
+
+      - name: Commit and push validated product changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'RC3 produced no product changes' >&2
+            exit 1
+          fi
+          BAD_TRANSIENT=$(git diff --cached --name-status | awk '
+            ($2 ~ /^\.simorgh-patches\// || $2 ~ /^\.github\/workflows\/pr39-rc3-finalize/) && $1 != "D" {print}
+          ')
+          if [ -n "$BAD_TRANSIENT" ]; then
+            echo 'transient publisher input was not staged only as deletion:' >&2
+            echo "$BAD_TRANSIENT" >&2
+            exit 1
+          fi
+          git diff --cached --check
+          git commit -m 'core: harden durable invocation replay and recovery'
+          git push origin "HEAD:${PR_BRANCH}"
+
+      - name: Report success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          NEW_HEAD=$(git rev-parse HEAD)
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 finalizer: **validated product commit pushed**
+
+          - Triggering head: \`${GITHUB_SHA}\`
+          - Product head: \`${NEW_HEAD}\`
+          - Archive / publisher / targeted regressions: passed
+          - Ruff / strict MyPy / full Core: passed
+          - Android build / JVM / lint / APK: passed
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          PR39 RC3 permission-safe finalizer: **failed closed**
+
+          - Exact triggering head: \`${GITHUB_SHA}\`
+          - No validated product commit was claimed by this run.
+          - Inspect: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
