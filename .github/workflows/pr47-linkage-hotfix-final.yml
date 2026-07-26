@@ -1,4 +1,4 @@
-name: PR47 Linkage Hotfix Finalizer v2
+name: PR47 Linkage Hotfix Finalizer v3
 
 on:
   push:
@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: pr47-linkage-hotfix-finalizer
@@ -23,6 +25,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Report exact-head start
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/47/comments" \
+            -f body="PR #47 invocation-linkage finalizer started on exact head \`${GITHUB_SHA}\`. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. No product commit is claimed until all Core gates and the protected push pass."
 
       - name: Execute audited reconciliation with exact terminalizer anchor
         shell: bash
@@ -109,3 +119,13 @@ jobs:
             exit 1
           fi
           git push origin "HEAD:refs/heads/$BRANCH"
+
+      - name: Report finalizer outcome
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          status='${{ job.status }}'
+          gh api "repos/${GITHUB_REPOSITORY}/issues/47/comments" \
+            -f body="PR #47 invocation-linkage finalizer finished with status **${status}** for trigger head \`${GITHUB_SHA}\`. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. A product commit exists only if the protected push step succeeded."
