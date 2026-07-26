@@ -1,0 +1,105 @@
+name: PR47 Result Store Diagnostic
+
+on:
+  push:
+    branches:
+      - core/typed-results-artifacts
+    paths:
+      - .github/workflows/pr47-store-diagnostic.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr47-result-store-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Apply formatting patch ephemerally
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY' > "$RUNNER_TEMP/patch.log" 2>&1
+          from pathlib import Path
+
+          path = Path('services/core/src/simorgh_core/agents/result_store.py')
+          text = path.read_text(encoding='utf-8')
+          old = (
+              '        self._connection.execute(\n'
+              '            "CREATE TABLE IF NOT EXISTS result_store_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"\n'
+              '        )\n'
+          )
+          new = (
+              '        self._connection.execute(\n'
+              '            "CREATE TABLE IF NOT EXISTS result_store_meta("\n'
+              '            "key TEXT PRIMARY KEY, value TEXT NOT NULL)"\n'
+              '        )\n'
+          )
+          print(f'format_anchor_count={text.count(old)}')
+          if text.count(old) != 1:
+              raise SystemExit('format anchor is not unique')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          echo "patch_status=$?" > "$RUNNER_TEMP/status.txt"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run separated quality diagnostics
+        shell: bash
+        run: |
+          set +e
+          python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
+          pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
+          install_status=$?
+          ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
+          ruff_status=$?
+          mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
+          mypy_status=$?
+          pytest > "$RUNNER_TEMP/pytest.log" 2>&1
+          pytest_status=$?
+          {
+            cat "$RUNNER_TEMP/status.txt"
+            echo "install_status=$install_status"
+            echo "ruff_status=$ruff_status"
+            echo "mypy_status=$mypy_status"
+            echo "pytest_status=$pytest_status"
+            echo "--- patch_tail ---"
+            tail -c 2000 "$RUNNER_TEMP/patch.log"
+            echo "--- ruff_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/ruff.log"
+            echo "--- mypy_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/mypy.log"
+            echo "--- pytest_tail ---"
+            tail -c 9000 "$RUNNER_TEMP/pytest.log"
+          } > "$RUNNER_TEMP/report.txt"
+          cat "$RUNNER_TEMP/report.txt"
+          exit 0
+
+      - name: Report exact diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          body=$(python - <<'PY'
+          from pathlib import Path
+          text = Path('${{ runner.temp }}/report.txt').read_text(
+              encoding='utf-8', errors='replace'
+          )
+          print('PR #47 store diagnostic — no product files persisted.\n\n```text\n' + text + '\n```')
+          PY
+          )
+          gh api "repos/${GITHUB_REPOSITORY}/issues/47/comments" -f body="$body"
