@@ -1,10 +1,10 @@
 # Simorgh specialist-agent runtime
 
-Status: first typed control-plane increment implemented in PR #30; provider-backed classification and specialist execution are not enabled by the default API yet.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable model/tool invocation authority implemented in PR #39. Specialist execution is not enabled by the default API yet.
 
 ## Purpose
 
-The specialist runtime selects one primary owner for a typed task while enforcing predictable cost, privacy, tool access and execution boundaries.
+The specialist runtime selects one primary owner for a typed task while enforcing predictable cost, privacy, tool access, crash recovery and execution boundaries.
 
 It is not an unrestricted autonomous loop and it is not a replacement for Android action contracts.
 
@@ -13,19 +13,38 @@ It is not an unrestricted autonomous loop and it is not a replacement for Androi
 ```text
 TaskEnvelope
     ↓
-Task identity / replay / deadline
+durable task identity / replay / deadline
     ↓
 SpecialistRouter
     ├── explicit task kind
     ├── deterministic Persian/English rules
     └── optional one-call classifier
-    ↓
+           ↓
+       durable model invocation
+           ↓
 RoutingDecision
     ↓
 future specialist invocation / proposal / typed executor
 ```
 
-The current `POST /v1/agent-tasks` endpoint performs routing only. It does not invoke the selected specialist, model, connector or Android action.
+The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action.
+
+## Native durable authorities
+
+Three independent operational stores exist:
+
+```text
+AgentTaskStore
+  task identity, routing state, task budget, cancellation and expiry
+
+InvocationStore
+  model/tool/future-specialist call identity, reservation, result and uncertainty
+
+AndroidActionJournal
+  device command delivery, ACK, result and Android side-effect uncertainty
+```
+
+They are intentionally separate because their identities, state transitions, recovery rules and evidence differ.
 
 ## Authentication
 
@@ -37,7 +56,9 @@ Authorization: Bearer <SIMORGH_OPERATOR_TOKEN>
 
 The Android device token is not accepted. Model-provider credentials are not accepted from clients and remain on Core.
 
-## API
+The legacy direct model endpoint is also operator-bound but returns HTTP 410 because it does not define a task budget, model catalog or invocation policy.
+
+## Agent-task API
 
 ### Submit or replay a task
 
@@ -77,7 +98,7 @@ Example:
 }
 ```
 
-An exact retry with the same `request_id` and identical canonical content returns the existing record and routing decision. It does not route again.
+An exact retry with the same `request_id` and identical canonical content returns the retained durable record and routing decision. It does not route again.
 
 Reusing a request ID with different content returns HTTP 409.
 
@@ -98,9 +119,9 @@ Content-Type: application/json
 {"reason":"کاربر از طریق Voice گفت لغو"}
 ```
 
-Cancellation is idempotent. It marks the task budget cancelled so future model/tool/specialist work cannot reserve new usage.
+Cancellation is idempotent and survives restart. It marks the task budget cancelled so later work cannot reserve new usage.
 
-The first increment has no long-running specialist executor; cancellation establishes the contract used by later Voice, Notification, MCP and Work Graph runtimes.
+The current runtime has no long-running specialist executor. Complete task-to-child-invocation cancellation enumeration is Phase 1 Step 1.6.
 
 ## Task phases
 
@@ -114,13 +135,18 @@ policy_blocked
 contract_invalid
 cancelled
 expired
+unknown
 ```
 
 `routed` means a specialist was selected. It does not mean the requested work or external side effect completed.
 
+A `routing` record found after Core restart becomes `unknown`; it is not automatically routed again.
+
 ## Task identity and deadlines
 
 A task fingerprint is calculated from canonical typed content, including sorted data-source identities.
+
+A durable `routing` claim is written before the Router is called. If that write fails, no Router, classifier, model or tool path is entered.
 
 Absolute task deadlines are checked before routing. The request budget's monotonic elapsed limit is reduced to the stricter of:
 
@@ -146,7 +172,7 @@ Rules match normalized phrase boundaries rather than arbitrary substrings. A phr
 
 Routing priority resolves an otherwise equal deterministic score when one specialist has a uniquely stronger compiled priority.
 
-Examples currently routed without a model:
+Examples routed without a model:
 
 ```text
 ریپازیتوری GitHub و pull request ها را بررسی کن
@@ -167,13 +193,15 @@ Examples currently routed without a model:
 When deterministic routing does not produce one unique owner:
 
 - without a classifier, the result is `needs_clarification` with zero model calls;
-- with a classifier, at most one stable classifier invocation is permitted;
+- with a configured classifier, at most one stable invocation is permitted;
 - low confidence returns `needs_clarification`;
 - invalid classifier JSON returns `contract_invalid`;
 - provider failure returns `needs_escalation`;
 - budget failure returns `budget_exhausted`.
 
-`model_calls` reports actual committed classifier calls, not merely an attempted classifier code path. A budget rejection before provider invocation therefore reports zero model calls.
+`model_calls` reports committed calls, not merely an attempted code path. A budget rejection before provider invocation therefore reports zero model calls.
+
+If a classifier invocation is interrupted after durable reservation, its invocation becomes `unknown`, its conservative usage survives, and its parent routing task becomes or remains `unknown`.
 
 ## Specialist policy
 
@@ -210,21 +238,71 @@ general.planner
 
 Current policies are intentionally narrow. Read specialists use read-only connectors. Planning specialists emit proposals and cannot execute mutations.
 
+## Durable invocation contract
+
+Invocation kinds:
+
+```text
+model
+tool
+specialist
+```
+
+Effect classes:
+
+```text
+read_only
+proposal
+mutation
+```
+
+States:
+
+```text
+pending
+reserved
+completed
+failed
+cancelled
+expired
+unknown
+unknown_side_effect
+```
+
+Identity binds the parent task, agent/version, operation, canonical input fingerprint, kind/effect and provider/model or tool/connector target.
+
+Completed results are immutable, typed, hashed and limited to one million canonical JSON bytes.
+
+At restart:
+
+```text
+pending → unknown
+reserved read/proposal → unknown + conservative committed usage
+reserved mutation → unknown_side_effect + conservative committed usage
+```
+
+No automatic retry is enabled.
+
 ## Model gateway
 
 The governed model gateway:
 
 1. selects the cheapest enabled model in the lowest allowed sufficient tier;
-2. creates or checks stable invocation identity;
-3. reserves conservative input/output/cost usage;
-4. calls the provider once;
-5. reconciles provider-reported or conservative usage;
-6. validates provider and model identity;
-7. validates selected output-token limit;
-8. stores one typed completed or terminal invocation state;
-9. replays exact completed results without another provider call.
+2. durably claims invocation identity;
+3. reserves worst-case request budget;
+4. persists the same worst-case invocation usage;
+5. calls the provider once;
+6. reconciles provider-reported or conservative usage;
+7. validates provider and model identity;
+8. validates selected output-token limit;
+9. persists one typed completed or terminal invocation;
+10. replays exact completed results after restart without another provider call or budget reservation.
 
-A transport exception commits conservative reserved usage because the provider may already have accepted the request.
+A transport exception after reservation commits conservative usage because the provider may already have accepted the request.
+
+Provider exception messages are not persisted. Only bounded failure metadata and the exception class are retained. Prompt and instructions are absent from invocation records and traces.
+
+A cancelled provider coroutine marks the invocation unknown and re-raises `CancelledError`.
 
 The default agent-task API does not instantiate a live model classifier. Enabling one requires an explicit catalog, pricing, policy hash, provider configuration and budget.
 
@@ -234,6 +312,7 @@ The governed tool gateway checks:
 
 ```text
 active specialist/version
+task allowed_data_sources
 specialist tool allowlist
 specialist connector allowlist
 side-effect policy
@@ -241,9 +320,43 @@ stable invocation identity
 remaining tool budget
 ```
 
-The first increment executes read-only structured tools only. Mutation calls are blocked even when a future executor specialist exists; each mutation domain must receive its own reviewed typed boundary.
+It claims and reserves durable invocation state before calling the structured tool.
 
-Exact read-only retries may replay the completed typed result. Tool arguments and result payloads are not copied to traces.
+The current gateway executes read-only structured tools only. Mutation calls are blocked before invocation claim even if a future executor specialist exists; each mutation domain requires a separately reviewed typed executor.
+
+Exact completed read-tool calls replay after restart without invoking the connector or consuming a new budget.
+
+Tool arguments and raw connector responses are not copied to traces. Provider/tool exception messages are not persisted.
+
+## Task and invocation cost reconciliation
+
+The invocation store is detailed per-call cost authority. The task store is the parent aggregate.
+
+At startup:
+
+```text
+sum committed invocation usage by request_id
+    ↓
+raise retained parent task usage component-wise
+    ↓
+never decrease existing task usage
+    ↓
+do not double-count already-accounted calls
+    ↓
+mark over-limit recovered budgets exhausted
+```
+
+If a parent task payload has already been pruned, the invocation record remains authoritative but the deleted task is not recreated automatically.
+
+## Direct model endpoint
+
+`POST /v1/model/text` is disabled with HTTP 410:
+
+```text
+ungoverned_model_endpoint_disabled
+```
+
+A generic direct provider call has no task budget, pricing policy or stable invocation authority. It will not be re-enabled as a bypass.
 
 ## Trace model
 
@@ -262,7 +375,7 @@ bounded metadata such as connector/effect/tier
 
 Trace metadata rejects keys associated with secrets or raw private content, including token, password, authorization, API key, raw input, email body, document content and Accessibility tree.
 
-Current in-memory traces are bounded and process-local. They are diagnostic evidence, not durable task storage.
+Current traces are bounded and process-local. They are diagnostic evidence, not durable task or invocation authority.
 
 ## Cost behavior
 
@@ -274,9 +387,24 @@ tool calls = 0
 estimated model cost = 0
 ```
 
-A selected specialist is not automatically invoked. Future orchestration must create a separate invocation budget and stable invocation identity.
+Completed invocation replay:
+
+```text
+new model calls = 0
+new tool calls = 0
+new tokens = 0
+new cost = 0
+```
+
+An interrupted reserved invocation conservatively retains worst-case usage. Startup reconciliation prevents that usage from remaining invisible in a retained parent task.
 
 CI uses fake providers and fake tools only. It must not contact AvalAI, MCP servers, Gmail, GitHub or another paid/external service.
+
+## Retry policy
+
+Retry execution is not enabled.
+
+The invocation schema includes parent identity and attempt metadata for future explicit retry chains, but PR #39 does not create retries. A future retry must use a new invocation ID and new retry/call budget, and cannot proceed while mutation outcome is uncertain.
 
 ## Adding a specialist safely
 
@@ -289,23 +417,29 @@ CI uses fake providers and fake tools only. It must not contact AvalAI, MCP serv
 7. Set per-agent model/tool/token/cost/time ceilings.
 8. Add deterministic Persian and English routing rules.
 9. Add negative routing tests to prevent overlap and substring accidents.
-10. Add provider/tool fake tests proving no CI spending.
-11. Add trace tests proving private content is absent.
+10. Add fake provider/tool restart-replay tests proving no CI spending.
+11. Add trace and durable-error tests proving private content is absent.
 12. Do not add mutation authority in the same change as a planning specialist.
 
 ## Current limitations
 
-- task, invocation and trace stores are process-local;
 - the API routes but does not execute specialists;
 - no live semantic classifier is configured by default;
+- no explicit retry API exists;
+- complete task-to-invocation cancellation propagation is deferred to Step 1.6;
 - no MCP server is connected;
 - no Voice/Wake-word or Notification event reaches this API yet;
 - no proactive task graph or persistent personal memory exists yet;
 - no mutation specialist is enabled;
+- invocation result payloads are not application-level encrypted;
+- the invocation store has no terminal retention policy yet;
+- task and invocation stores each support one active Core process per path;
+- traces remain process-local;
 - Android supports only the separately reviewed `open_app` side effect.
 
 Follow-up issues:
 
+- #36 complete the native runtime and GitHub workflow;
 - #31 Persian Voice/Wake word;
 - #32 Notification intelligence;
 - #33 governed MCP registry;

@@ -41,6 +41,11 @@ class Settings(BaseSettings):
         ge=1,
         le=1_000_000,
     )
+    simorgh_invocation_store_path: str = Field(
+        default=".simorgh/invocations.sqlite3",
+        min_length=1,
+        max_length=4_096,
+    )
 
     avalai_api_key: SecretStr | None = None
     avalai_base_url: str = "https://api.avalai.ir/v1"
