@@ -1,4 +1,4 @@
-name: PR39 RC3 Corrected-Head Finalize
+name: PR39 RC3 Corrected-Head Diagnostic
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - core/durable-agent-invocation-store
 
 permissions:
-  contents: write
+  contents: read
   issues: write
   pull-requests: write
 
@@ -16,252 +16,102 @@ concurrency:
 
 env:
   STATUS_COMMENT_ID: '5083518493'
-  PR_BRANCH: core/durable-agent-invocation-store
 
 jobs:
-  finalize:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
-      - name: Check out exact triggering head
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Report start
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 corrected-head finalizer: **running**
-
-          - Exact triggering head: \`${GITHUB_SHA}\`
-          - Current gate: archive integrity and exact-head preflight
-          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
-      - name: Reconstruct and verify exact RC3 bundle
+      - name: Reconstruct verified RC3 archive
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          from __future__ import annotations
-          import base64
-          import hashlib
-          import os
+          import base64, hashlib, os, stat, zipfile
           from pathlib import Path, PurePosixPath
-          import stat
-          import zipfile
 
           root = Path('.simorgh-patches/pr39-rc3')
-          names = [f'part-{index:02d}.b64' for index in range(9)]
+          names = [f'part-{i:02d}.b64' for i in range(9)]
           lengths = [8000] * 8 + [7748]
-          if sorted(path.name for path in root.glob('part-*.b64')) != names:
-              raise SystemExit('unexpected RC3 chunk set')
-          encoded_parts: list[str] = []
-          for name, expected_length in zip(names, lengths, strict=True):
-              raw = (root / name).read_bytes()
-              if len(raw) != expected_length:
-                  raise SystemExit(f'{name}: invalid length')
-              encoded_parts.append(raw.decode('ascii'))
-          encoded = ''.join(encoded_parts)
-          if len(encoded) != 71748:
-              raise SystemExit('unexpected RC3 Base64 length')
+          if sorted(p.name for p in root.glob('part-*.b64')) != names:
+              raise SystemExit('unexpected chunk set')
+          encoded = ''.join((root / n).read_text(encoding='ascii') for n in names)
+          if [len((root / n).read_bytes()) for n in names] != lengths:
+              raise SystemExit('unexpected chunk length')
           archive = base64.b64decode(encoded, validate=True)
-          expected_hash = 'dde9c1eed40d319b1fde9e913b3510aa0fd4fa0e36b31436d58c8d231fa2f2a4'
-          if len(archive) != 53811 or hashlib.sha256(archive).hexdigest() != expected_hash:
-              raise SystemExit('RC3 archive identity mismatch')
-          bundle_root = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle'
-          archive_path = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle.zip'
+          if len(archive) != 53811 or hashlib.sha256(archive).hexdigest() != 'dde9c1eed40d319b1fde9e913b3510aa0fd4fa0e36b31436d58c8d231fa2f2a4':
+              raise SystemExit('archive identity mismatch')
+          target = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle'
+          target.mkdir(parents=True, exist_ok=False)
+          archive_path = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3.zip'
           archive_path.write_bytes(archive)
-          bundle_root.mkdir(parents=True, exist_ok=False)
-          with zipfile.ZipFile(archive_path) as bundle:
-              if bundle.testzip() is not None:
-                  raise SystemExit('corrupt RC3 archive member')
-              for info in bundle.infolist():
+          with zipfile.ZipFile(archive_path) as zf:
+              if zf.testzip() is not None:
+                  raise SystemExit('corrupt archive')
+              for info in zf.infolist():
                   path = PurePosixPath(info.filename)
-                  if path.is_absolute() or '..' in path.parts:
-                      raise SystemExit('unsafe RC3 archive path')
-                  if stat.S_ISLNK(info.external_attr >> 16):
-                      raise SystemExit('RC3 archive symlink is forbidden')
-              bundle.extractall(bundle_root)
-          version = (bundle_root / 'VERSION').read_text(encoding='utf-8').strip()
-          if version != '2026.07.26-pr39-step1.2-hardening-rc3':
-              raise SystemExit('RC3 VERSION mismatch')
+                  if path.is_absolute() or '..' in path.parts or stat.S_ISLNK(info.external_attr >> 16):
+                      raise SystemExit('unsafe archive member')
+              zf.extractall(target)
           PY
           BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
-          chmod 0755 \
-            "$BUNDLE/apply_pr39_complete_hardening.sh" \
-            "$BUNDLE/scripts/apply_pr39_complete_hardening.sh"
+          chmod 0755 "$BUNDLE/apply_pr39_complete_hardening.sh" "$BUNDLE/scripts/apply_pr39_complete_hardening.sh"
 
-      - name: Install Core development dependencies
+      - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -e '.[dev]'
 
-      - name: Bundle self-test and exact-head dry-run
+      - name: Self-test
+        id: selftest
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
-          python "$BUNDLE/scripts/selftest_pr39_hardening_bundle.py"
-          bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
-            --dry-run \
-            --backup-dir "$RUNNER_TEMP/pr39-backups"
+          set -o pipefail
+          python "$RUNNER_TEMP/pr39-rc3-bundle/scripts/selftest_pr39_hardening_bundle.py" 2>&1 | tee "$RUNNER_TEMP/selftest.log"
 
-      - name: Apply transactionally with targeted regressions
+      - name: Exact-head dry-run
+        id: dryrun
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
           BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
-          bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
-            --backup-dir "$RUNNER_TEMP/pr39-backups" \
-            --run-targeted-tests
+          bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" --dry-run --backup-dir "$RUNNER_TEMP/pr39-backups" 2>&1 | tee "$RUNNER_TEMP/dryrun.log"
 
-      - name: Normalize canonical alias to modern Python syntax
+      - name: Publish diagnostic
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELFTEST: ${{ steps.selftest.outcome }}
+          DRYRUN: ${{ steps.dryrun.outcome }}
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          import json, os
           from pathlib import Path
-
-          path = Path('services/core/src/simorgh_core/agents/invocations.py')
-          text = path.read_text(encoding='utf-8')
-          old_import = 'from typing import Any, Literal, Protocol, Self, TypeAlias\n'
-          new_import = 'from typing import Any, Literal, Protocol, Self\n'
-          old_alias = 'InvocationPhase: TypeAlias = InvocationState\n'
-          new_alias = 'type InvocationPhase = InvocationState\n'
-          if text.count(old_import) != 1 or text.count(new_import) != 0:
-              raise SystemExit('unexpected post-RC3 typing import state')
-          if text.count(old_alias) != 1 or text.count(new_alias) != 0:
-              raise SystemExit('unexpected post-RC3 invocation alias state')
-          text = text.replace(old_import, new_import, 1).replace(old_alias, new_alias, 1)
-          path.write_text(text, encoding='utf-8')
+          temp = Path(os.environ['RUNNER_TEMP'])
+          parts = [
+              '<!-- pr39-rc3-status -->',
+              'PR39 corrected-head RC3 diagnostic:', '',
+              f"- Head: `{os.environ['GITHUB_SHA']}`",
+              f"- Self-test: **{os.environ.get('SELFTEST', 'not-run')}**",
+              f"- Dry-run: **{os.environ.get('DRYRUN', 'not-run')}**",
+              f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          ]
+          for title, filename in [('Self-test tail','selftest.log'),('Dry-run tail','dryrun.log')]:
+              path = temp / filename
+              if path.exists():
+                  parts += ['', f'### {title}', '```text', path.read_text(errors='replace')[-7000:], '```']
+          (temp/'comment.json').write_text(json.dumps({'body':'\n'.join(parts)}), encoding='utf-8')
           PY
-          python -m py_compile services/core/src/simorgh_core/agents/invocations.py
-
-      - name: Remove all transient publisher inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf .simorgh-patches/pr39-rc3
-          rmdir .simorgh-patches 2>/dev/null || true
-          rm -f \
-            .github/workflows/pr39-rc3-finalize.yml \
-            .github/workflows/pr39-rc3-finalize-permission-safe.yml
-          git diff --check
-
-      - name: Core Ruff
-        run: ruff check .
-
-      - name: Core strict MyPy
-        run: mypy services/core/src
-
-      - name: Full Core tests
-        run: pytest
-
-      - name: Report Core gates
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 corrected-head finalizer: **running**
-
-          - Archive / preflight / transactional apply: passed
-          - Targeted RC3 regressions: passed
-          - Ruff / strict MyPy / full Core: passed
-          - Current gate: Android build, JVM tests, lint, and APK
-          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install stable Android platform
-        run: sdkmanager 'platforms;android-36'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.5.0'
-
-      - name: Android build, JVM tests, lint, and APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          gradle \
-            :apps:android:assembleDebug \
-            :apps:android:testDebugUnitTest \
-            :apps:android:lintDebug \
-            --stacktrace
-
-      - name: Commit and push validated product changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          if git diff --cached --quiet; then
-            echo 'RC3 produced no product changes' >&2
-            exit 1
-          fi
-          BAD_TRANSIENT=$(git diff --cached --name-status | awk '
-            ($2 ~ /^\.simorgh-patches\// || $2 ~ /^\.github\/workflows\/pr39-rc3-finalize/) && $1 != "D" {print}
-          ')
-          if [ -n "$BAD_TRANSIENT" ]; then
-            echo 'transient publisher input was not staged only as deletion:' >&2
-            echo "$BAD_TRANSIENT" >&2
-            exit 1
-          fi
-          git diff --cached --check
-          git commit -m 'core: harden durable invocation replay and recovery'
-          git push origin "HEAD:${PR_BRANCH}"
-
-      - name: Report success
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          NEW_HEAD=$(git rev-parse HEAD)
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 finalizer: **validated product commit pushed**
-
-          - Triggering head: \`${GITHUB_SHA}\`
-          - Product head: \`${NEW_HEAD}\`
-          - Archive / targeted regressions / Core gates: passed
-          - Android build / JVM / lint / APK: passed
-          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-      - name: Report failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          gh api --method PATCH \
-            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
-            -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 corrected-head finalizer: **failed closed**
-
-          - Exact triggering head: \`${GITHUB_SHA}\`
-          - No validated product commit was claimed.
-          - Inspect: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" --input "$RUNNER_TEMP/comment.json"
