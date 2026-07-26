@@ -1,4 +1,4 @@
-name: Phase 1.5 GitHub Read Foundation Finalizer
+name: Phase 1.5 GitHub Read Foundation Finalizer v2
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Apply exact policy and type hardening
+      - name: Apply exact policy type and lint hardening
         shell: bash
         run: |
           set -euo pipefail
@@ -53,6 +53,26 @@ jobs:
               '            ),\n'
               '            connector_allowlist=frozenset({"github"}),\n',
               label='github read tool allowlist',
+          )
+
+          contracts = 'services/core/src/simorgh_core/agents/github_read_contracts.py'
+          replace_once(
+              contracts,
+              'from typing import Annotated, Literal, Self, TypeAlias\n',
+              'from typing import Annotated, Literal, Self\n',
+              label='remove legacy TypeAlias import',
+          )
+          replace_once(
+              contracts,
+              'GitHubReadArguments: TypeAlias = Annotated[\n',
+              'type GitHubReadArguments = Annotated[\n',
+              label='GitHub argument alias',
+          )
+          replace_once(
+              contracts,
+              'GitHubReadProjection: TypeAlias = Annotated[\n',
+              'type GitHubReadProjection = Annotated[\n',
+              label='GitHub projection alias',
           )
 
           service = 'services/core/src/simorgh_core/agents/github_read_service.py'
@@ -164,6 +184,7 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
+          ruff check --fix services/core/src/simorgh_core/agents/github_read_service.py
           ruff check .
           mypy services/core/src
           pytest
