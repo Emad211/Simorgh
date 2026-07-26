@@ -1,0 +1,60 @@
+name: PR48 schema version fix
+
+on:
+  push:
+    branches:
+      - core/typed-specialist-results
+    paths:
+      - .github/workflows/pr48-schema-version-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: core/typed-specialist-results
+          fetch-depth: 1
+      - name: Patch exact schema-version validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("services/core/src/simorgh_core/agents/result_authority.py")
+          content = path.read_text(encoding="utf-8")
+          version_anchor = '_POLICY_VERSION_PATTERN = r"^[0-9]+\\.[0-9]+\\.[0-9]+$"\n'
+          registry_anchor = (
+              'if re.fullmatch(_POLICY_VERSION_PATTERN, handler.schema_version) is None:'
+          )
+          if content.count(version_anchor) != 1:
+              raise SystemExit("policy version anchor mismatch")
+          if content.count(registry_anchor) != 1:
+              raise SystemExit("registry version anchor mismatch")
+          content = content.replace(
+              version_anchor,
+              version_anchor + '_SCHEMA_VERSION_PATTERN = r"^[0-9]+\\.[0-9]+$"\n',
+          )
+          content = content.replace(
+              registry_anchor,
+              'if re.fullmatch(_SCHEMA_VERSION_PATTERN, handler.schema_version) is None:',
+          )
+          path.write_text(content, encoding="utf-8")
+          PY
+          rm .github/workflows/pr48-schema-version-fix.yml
+          python -m py_compile services/core/src/simorgh_core/agents/result_authority.py
+      - name: Commit exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add services/core/src/simorgh_core/agents/result_authority.py \
+            .github/workflows/pr48-schema-version-fix.yml
+          git commit -m "Core: validate two-part result schema versions"
+          git push origin HEAD:core/typed-specialist-results
