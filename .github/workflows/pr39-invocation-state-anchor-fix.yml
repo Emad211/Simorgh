@@ -7,10 +7,15 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: pr39-invocation-state-anchor-fix
   cancel-in-progress: true
+
+env:
+  STATUS_COMMENT_ID: '5083518493'
 
 jobs:
   patch:
@@ -38,21 +43,20 @@ jobs:
 
           path = Path('services/core/src/simorgh_core/agents/invocations.py')
           text = path.read_text(encoding='utf-8')
-          old_imports = '''from typing import Any, Protocol, Self
-          from uuid import NAMESPACE_URL, UUID, uuid5
-
-          from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-          from simorgh_core.agents.contracts import UsageVector
-          '''.replace('          ', '')
-          new_imports = '''from typing import Any, Literal, Protocol, Self, TypeAlias
-          from uuid import NAMESPACE_URL, UUID, uuid5
-
-          from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-          from simorgh_core.agents.contracts import InvocationState, UsageVector
-          '''.replace('          ', '')
-          old_phase = '''class InvocationPhase(StrEnum):
+          replacements = [
+              (
+                  'typing import',
+                  'from typing import Any, Protocol, Self\n',
+                  'from typing import Any, Literal, Protocol, Self, TypeAlias\n',
+              ),
+              (
+                  'canonical state import',
+                  'from simorgh_core.agents.contracts import UsageVector\n',
+                  'from simorgh_core.agents.contracts import InvocationState, UsageVector\n',
+              ),
+              (
+                  'duplicate phase enum',
+                  '''class InvocationPhase(StrEnum):
               PENDING = "pending"
               RESERVED = "reserved"
               COMPLETED = "completed"
@@ -64,31 +68,41 @@ jobs:
 
 
           class InvocationKind(StrEnum):
-          '''.replace('          ', '').replace('    ', '    ')
-          new_phase = '''InvocationPhase: TypeAlias = InvocationState
+          '''.replace('          ', ''),
+                  '''InvocationPhase: TypeAlias = InvocationState
 
 
           class InvocationKind(StrEnum):
-          '''.replace('          ', '')
-
-          if text.count(old_imports) != 1:
-              raise SystemExit(f'import anchor count was {text.count(old_imports)}, expected 1')
-          if text.count(old_phase) != 1:
-              raise SystemExit(f'phase anchor count was {text.count(old_phase)}, expected 1')
-          updated = text.replace(old_imports, new_imports, 1).replace(old_phase, new_phase, 1)
-          if updated == text:
-              raise SystemExit('canonical invocation-state correction produced no change')
-          path.write_text(updated, encoding='utf-8')
+          '''.replace('          ', ''),
+              ),
+          ]
+          current = text
+          for label, old, new in replacements:
+              old_count = current.count(old)
+              final_count = current.count(new)
+              if old_count == 1 and final_count == 0:
+                  current = current.replace(old, new, 1)
+              elif old_count == 0 and final_count == 1:
+                  pass
+              else:
+                  raise SystemExit(
+                      f'{label}: invalid anchor state old={old_count}, final={final_count}'
+                  )
+          if current == text:
+              raise SystemExit('canonical state correction was already fully applied')
+          path.write_text(current, encoding='utf-8')
           PY
           python -m py_compile services/core/src/simorgh_core/agents/invocations.py
 
-      - name: Install and validate focused Core contracts
+      - name: Install and validate focused contracts
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
           ruff check services/core/src/simorgh_core/agents/invocations.py
           mypy services/core/src/simorgh_core/agents/invocations.py
-          pytest -q services/core/tests/test_agent_invocations.py services/core/tests/test_durable_invocation_store.py
+          pytest -q \
+            services/core/tests/test_agent_invocations.py \
+            services/core/tests/test_durable_invocation_store.py
 
       - name: Commit correction and remove one-shot workflow
         shell: bash
@@ -101,3 +115,35 @@ jobs:
           git diff --cached --check
           git commit -m 'core: use canonical invocation state contract'
           git push origin HEAD:core/durable-agent-invocation-store
+
+      - name: Report success
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          NEW_HEAD=$(git rev-parse HEAD)
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          Canonical InvocationState correction: **passed and pushed**
+
+          - Triggering head: \`${GITHUB_SHA}\`
+          - Corrected head: \`${NEW_HEAD}\`
+          - Focused Ruff / MyPy / tests: passed
+          - Next: rerun RC3 exact-head preflight"
+
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            -f body="<!-- pr39-rc3-status -->
+          Canonical InvocationState correction: **failed closed**
+
+          - Triggering head: \`${GITHUB_SHA}\`
+          - No product correction was claimed.
+          - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
