@@ -1,0 +1,241 @@
+name: PR48 documentation sync
+
+on:
+  push:
+    branches:
+      - core/typed-specialist-results
+    paths:
+      - .github/workflows/pr48-docs-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: core/typed-specialist-results
+          fetch-depth: 1
+      - name: Synchronize Phase 1.4 documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              content = target.read_text(encoding="utf-8")
+              if content.count(old) != 1:
+                  raise SystemExit(f"{path}: anchor count for {old[:60]!r} was {content.count(old)}")
+              target.write_text(content.replace(old, new), encoding="utf-8")
+
+          replace_once(
+              "docs/IMPLEMENTATION_MASTER_PLAN.md",
+              "Phase 1.4 Typed Results and Artifacts    QUEUED",
+              "Phase 1.4 Typed Results and Artifacts    VALIDATING — PR #48",
+          )
+          replace_once(
+              "docs/IMPLEMENTATION_MASTER_PLAN.md",
+              """## 1.4 Typed result and artifact model — QUEUED
+
+### Objective
+
+Separate durable structured results and evidence from user-facing natural-language presentation.
+
+### Deliverables
+
+- `SpecialistResult` contract;
+- artifact ID, hash, media type, size and producer identity;
+- evidence references with source, retrieval time and freshness;
+- explicit uncertainty and unresolved risks;
+- result schema/version identity;
+- bounded inline result and external artifact references;
+- Persian renderer outside authority fields;
+- immutable completed result;
+- privacy classification and retention metadata.
+
+### Gate
+
+No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this contract.
+""",
+              """## 1.4 Typed result and artifact model — VALIDATING
+
+Implementation is under review in PR #48 for issue #46; ADR 0017 is proposed until the exact-head merge gate closes.
+
+### Objective
+
+Separate durable structured results and evidence from user-facing natural-language presentation.
+
+### Implemented in PR #48
+
+- exact-version result registry for `simorgh.typed-plan.v1`, `simorgh.specialist-plan-result`, schema `1.0`;
+- immutable `AuthoritativeSpecialistResult` tied to request, invocation, producer, output contract and direct usage identity;
+- canonical result ID and SHA-256 independent of replay disposition and presentation;
+- bounded `ArtifactReference` metadata with hash, media type, byte size, producer, storage disposition, privacy and retention;
+- bounded `EvidenceReference` metadata with source/tool/connector identity, freshness, cache disposition, taint, citation and artifact linkage;
+- explicit uncertainty, unresolved risks and verification requirements;
+- conservative privacy and retention composition across linked references;
+- strict in-memory and SQLite WAL result stores with process ownership, schema/integrity checks and immutable one-result-per-invocation replay;
+- cross-authority terminalization against the completed Phase 1.3 invocation payload and committed usage;
+- deterministic Persian renderer outside authority fields;
+- privacy-safe result commit/replay/failure traces;
+- dedicated Core lifespan store path and startup unwind;
+- fake/local restart, conflict, corruption, privacy and presentation tests.
+
+### Merge gate
+
+- no live connector payload, arbitrary model text or presentation text is admitted as an authoritative result;
+- completed replay performs no specialist/model/tool/connector call and no new usage charge;
+- artifact bytes remain outside this metadata authority until a separate storage boundary;
+- ADR 0017 and operational/validation documentation are synchronized;
+- no unresolved review thread;
+- exact PR Head has green Core Ruff, strict MyPy and full tests;
+- exact PR Head has green Android build, JVM tests, lint and APK;
+- PR remains limited to Phase 1.4.
+
+### Explicit non-goals
+
+- no public result endpoint;
+- no production artifact-byte storage;
+- no live provider, GitHub connector, MCP, mutation executor, Voice, Notification, Memory or new Android effect.
+""",
+          )
+
+          replace_once(
+              "docs/AGENT_RUNTIME.md",
+              "Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44. The default API remains routing-only.",
+              "Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence persistence is validating in PR #48. The default API remains routing-only.",
+          )
+          replace_once(
+              "docs/AGENT_RUNTIME.md",
+              """internal typed specialist execution
+    ↓
+durable specialist invocation result or honest terminal uncertainty
+""",
+              """internal typed specialist execution
+    ↓
+durable specialist invocation result or honest terminal uncertainty
+    ↓
+immutable typed result / artifact / evidence metadata authority
+""",
+          )
+          replace_once(
+              "docs/AGENT_RUNTIME.md",
+              "Three independent operational stores exist:",
+              "Four independent operational stores exist:",
+          )
+          replace_once(
+              "docs/AGENT_RUNTIME.md",
+              """InvocationStore
+  model/tool/future-specialist call identity, reservation, result and uncertainty
+
+AndroidActionJournal
+""",
+              """InvocationStore
+  model/tool/specialist call identity, reservation, execution payload and uncertainty
+
+ResultStore
+  immutable final typed result, artifact/evidence metadata, privacy, retention and replay
+
+AndroidActionJournal
+""",
+          )
+          replace_once(
+              "docs/AGENT_RUNTIME.md",
+              """Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.
+
+## Task and invocation cost reconciliation
+""",
+              """Cancellation before durable completion becomes a durable cancelled/unknown state as appropriate. Absolute and monotonic deadlines are checked before and after executor entry. Specialist start, completion, failure and replay traces contain bounded authority metadata only and remain process-local. Typed mutation policies remain disabled and require a separate reviewed executor boundary. See [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) and ADR 0016.
+
+## Typed result and artifact authority
+
+Phase 1.4 terminalization loads the completed specialist invocation, verifies its exact typed payload and committed usage, resolves an exact result-schema version, and claims one immutable `AuthoritativeSpecialistResult` in a separate `ResultStore` before reporting result-authority success.
+
+The initial family is `simorgh.typed-plan.v1` → `simorgh.specialist-plan-result` schema `1.0`. Artifact bytes and raw connector bodies remain outside the authority; only bounded hash-addressed artifact metadata and tainted evidence projections are admitted. Effective result privacy and retention cannot be weaker than linked references.
+
+SQLite restart replay returns the identical result ID and canonical hash without re-entering the specialist or charging new usage. Persian presentation is rendered deterministically outside authority fields and cannot alter the result hash. See [`TYPED_RESULTS.md`](TYPED_RESULTS.md) and ADR 0017.
+
+## Task and invocation cost reconciliation
+""",
+          )
+
+          replace_once(
+              "docs/SPECIALIST_EXECUTION.md",
+              "Status: Phase 1 Step 1.3 merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`; issue #40 is complete and ADR 0016 is accepted.",
+              "Status: Phase 1 Step 1.3 merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`; issue #40 is complete and ADR 0016 is accepted. Its separate typed result authority is validating in Phase 1.4 PR #48 under issue #46 and ADR 0017.",
+          )
+          replace_once(
+              "docs/SPECIALIST_EXECUTION.md",
+              """typed SpecialistExecutionResult
+    ↓
+durable InvocationStore(kind=specialist)
+""",
+              """typed SpecialistExecutionResult
+    ↓
+durable InvocationStore(kind=specialist)
+    ↓ Phase 1.4 exact cross-authority terminalization
+immutable ResultStore authority
+""",
+          )
+          replace_once(
+              "docs/SPECIALIST_EXECUTION.md",
+              "Artifact and evidence references are placeholders only. Their durable storage and provenance contract are Phase 1 Step 1.4.",
+              "Phase 1.4 PR #48 replaces the placeholder boundary with durable artifact/evidence metadata references and one immutable typed result authority. Artifact bytes and raw source bodies remain outside that authority. See [`TYPED_RESULTS.md`](TYPED_RESULTS.md).",
+          )
+          replace_once(
+              "docs/SPECIALIST_EXECUTION.md",
+              "- artifact/evidence persistence is not implemented;",
+              "- typed artifact/evidence metadata persistence is implemented in Phase 1.4 PR #48, but production artifact-byte storage is not;",
+          )
+
+          replace_once(
+              "docs/README.md",
+              "- [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.",
+              "- [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.\n- [`TYPED_RESULTS.md`](TYPED_RESULTS.md) — immutable typed result, artifact/evidence metadata, privacy, retention, canonical replay and Persian rendering authority.",
+          )
+          replace_once(
+              "docs/README.md",
+              "The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime. The public API remains routing-only and typed artifact persistence remains Step 1.4.",
+              "The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 is validating the separate typed result, artifact and evidence metadata authority. The public API remains routing-only.",
+          )
+          replace_once(
+              "docs/README.md",
+              "- issue #40 / PR #44 — native typed specialist execution, complete;",
+              "- issue #40 / PR #44 — native typed specialist execution, complete;\n- issue #46 / PR #48 — typed result, artifact and evidence authority, validating;",
+          )
+          replace_once(
+              "docs/README.md",
+              "- ADR 0016 — native specialist execution authority and zero-external initial boundary.",
+              "- ADR 0016 — native specialist execution authority and zero-external initial boundary;\n- ADR 0017 — typed specialist result, artifact and evidence metadata authority.",
+          )
+          replace_once(
+              "docs/README.md",
+              "- Android action, task and invocation stores contain operational state but never provider keys or device/operator bearer tokens.",
+              "- Android action, task, invocation and result stores contain operational state but never provider keys or device/operator bearer tokens.",
+          )
+          replace_once(
+              "docs/README.md",
+              "- Core persists model/tool/future-specialist invocation identity, pre-call usage reservation, terminal state and typed result in a separate SQLite invocation store.",
+              "- Core persists model/tool/specialist invocation identity, pre-call usage reservation, terminal state and typed execution payload in a separate SQLite invocation store.\n- Core persists immutable final typed results plus bounded artifact/evidence metadata, privacy and retention in a separate SQLite result store.",
+          )
+          PY
+          rm .github/workflows/pr48-docs-sync.yml
+          git diff --check
+      - name: Commit synchronized documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/IMPLEMENTATION_MASTER_PLAN.md \
+            docs/AGENT_RUNTIME.md \
+            docs/SPECIALIST_EXECUTION.md \
+            docs/README.md \
+            .github/workflows/pr48-docs-sync.yml
+          git commit -m "Docs: synchronize Phase 1.4 result authority"
+          git push origin HEAD:core/typed-specialist-results
