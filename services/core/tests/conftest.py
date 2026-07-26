@@ -32,6 +32,10 @@ def isolated_core_stores(
         "SIMORGH_INVOCATION_STORE_PATH",
         str(tmp_path / "simorgh-invocations.sqlite3"),
     )
+    monkeypatch.setenv(
+        "SIMORGH_RESULT_STORE_PATH",
+        str(tmp_path / "simorgh-results.sqlite3"),
+    )
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
