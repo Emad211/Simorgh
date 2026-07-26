@@ -5,7 +5,7 @@ from uuid import UUID
 
 from simorgh_core.agents.budget import BudgetAccount
 from simorgh_core.agents.contracts import RoutingState
-from simorgh_core.agents.registry import SpecialistRegistry
+from simorgh_core.agents.registry import SpecialistRegistry, intersect_budgets
 from simorgh_core.agents.specialist_execution import (
     SpecialistCancellation,
     SpecialistCapabilitySet,
@@ -70,6 +70,17 @@ class SpecialistTaskExecutionAdapter:
         if record.budget.cancelled:
             raise SpecialistTaskNotExecutableError(
                 "cancelled task budget cannot enter specialist execution"
+            )
+        if record.budget.exhausted_dimension is not None:
+            raise SpecialistExecutionPolicyError(
+                "exhausted durable task budget cannot enter specialist execution"
+            )
+        if (
+            intersect_budgets(record.budget.limits, record.task.budget)
+            != record.budget.limits
+        ):
+            raise SpecialistExecutionPolicyError(
+                "durable task budget exceeds the original task budget"
             )
 
         budget = BudgetAccount.restore(
