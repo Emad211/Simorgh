@@ -11,7 +11,6 @@ from simorgh_core.agents.defaults import default_specialist_registry
 from simorgh_core.agents.github_read_adapter import (
     FakeGitHubReadAdapter,
     GitHubReadAdapter,
-    GitHubReadToolInvoker,
     default_github_read_manifest,
     github_fixture_key,
 )
@@ -26,6 +25,7 @@ from simorgh_core.agents.github_read_contracts import (
 )
 from simorgh_core.agents.github_read_service import (
     GitHubReadPolicyError,
+    GitHubReadToolInvoker,
     GovernedGitHubReadService,
 )
 from simorgh_core.agents.invocation_store import SQLiteInvocationStore

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
@@ -139,14 +139,16 @@ class GitHubPullRequestArguments(BaseModel):
     pull_request_number: int = Field(ge=1, le=2_147_483_647)
 
 
-GitHubReadArguments: TypeAlias = Annotated[
+type GitHubReadArguments = Annotated[
     GitHubSearchArguments
     | GitHubFileArguments
     | GitHubIssueArguments
     | GitHubPullRequestArguments,
     Field(discriminator="operation"),
 ]
-_ARGUMENT_ADAPTER = TypeAdapter(GitHubReadArguments)
+_ARGUMENT_ADAPTER: TypeAdapter[GitHubReadArguments] = TypeAdapter(
+    GitHubReadArguments
+)
 
 
 class GovernedGitHubReadRequest(BaseModel):
@@ -259,14 +261,16 @@ class GitHubPullRequestProjection(BaseModel):
     truncated: bool
 
 
-GitHubReadProjection: TypeAlias = Annotated[
+type GitHubReadProjection = Annotated[
     GitHubSearchProjection
     | GitHubFileProjection
     | GitHubIssueProjection
     | GitHubPullRequestProjection,
     Field(discriminator="kind"),
 ]
-_PROJECTION_ADAPTER = TypeAdapter(GitHubReadProjection)
+_PROJECTION_ADAPTER: TypeAdapter[GitHubReadProjection] = TypeAdapter(
+    GitHubReadProjection
+)
 
 
 class GitHubReadProjectionEnvelope(BaseModel):

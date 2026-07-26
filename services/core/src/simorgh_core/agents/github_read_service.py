@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict
 
@@ -15,8 +16,8 @@ from simorgh_core.agents.github_read_adapter import (
 )
 from simorgh_core.agents.github_read_contracts import (
     GITHUB_CONNECTOR_ID,
-    GitHubReadProjectionEnvelope,
     GitHubReadPolicyError,
+    GitHubReadProjectionEnvelope,
     GovernedGitHubReadRequest,
 )
 from simorgh_core.agents.registry import SpecialistRegistry
@@ -88,6 +89,9 @@ class GitHubReadToolInvoker(ToolInvoker):
             raise GitHubReadAdapterError("GitHub operation does not match reviewed manifest")
         _require_manifest_limits(request=request, manifest=self._manifest)
         envelope = await self._adapter.invoke(request)
+        _require_projection_policy(
+            request=request, envelope=envelope, manifest=self._manifest
+        )
         return envelope.model_dump(mode="json")
 
 
@@ -165,8 +169,20 @@ class GovernedGitHubReadService:
             raise GitHubReadPolicyError("GitHub tool is outside specialist policy")
         self._manifest.require_tool(request.tool_id)
         _require_manifest_limits(request=request, manifest=self._manifest)
+        if (
+            task.deadline_at_ms is not None
+            and (
+                request.deadline_at_ms is None
+                or request.deadline_at_ms > task.deadline_at_ms
+            )
+        ):
+            raise GitHubReadPolicyError("GitHub read deadline exceeds task authority")
         if request.deadline_at_ms is not None and self._now_ms() >= request.deadline_at_ms:
             raise GitHubReadPolicyError("GitHub read deadline has expired")
+        if request.monotonic_timeout_ms > budget.limits.max_elapsed_ms:
+            raise GitHubReadPolicyError(
+                "GitHub read monotonic timeout exceeds task budget"
+            )
         snapshot = budget.snapshot()
         if snapshot.cancelled:
             raise GitHubReadPolicyError("cancelled task cannot execute GitHub read")
@@ -201,17 +217,9 @@ class GovernedGitHubReadService:
             ) from None
         if envelope.tool_id != request.tool_id:
             raise GitHubReadServiceError("GitHub projection tool identity is inconsistent")
-        if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:
-            raise GitHubReadServiceError(
-                "GitHub projection exceeds approved privacy ceiling"
-            )
-        if (
-            envelope.privacy != PrivacyClassification.PUBLIC
-            and not self._manifest.private_repositories_allowed
-        ):
-            raise GitHubReadServiceError(
-                "reviewed GitHub manifest does not allow private projections"
-            )
+        _require_projection_policy(
+            request=request, envelope=envelope, manifest=self._manifest
+        )
         return envelope
 
     def _now_ms(self) -> int:
@@ -237,15 +245,33 @@ def github_projection_to_evidence(
     )
 
 
-def _evidence_id(envelope: GitHubReadProjectionEnvelope):
-    from uuid import NAMESPACE_URL, uuid5
-
+def _evidence_id(envelope: GitHubReadProjectionEnvelope) -> UUID:
     return uuid5(
         NAMESPACE_URL,
         "simorgh-github-evidence:"
         f"{envelope.tool_id}:{envelope.projection_sha256}:"
         f"{envelope.observed_at_ms}:{envelope.citation_reference}",
     )
+
+
+def _require_projection_policy(
+    *,
+    request: GovernedGitHubReadRequest,
+    envelope: GitHubReadProjectionEnvelope,
+    manifest: GitHubReadConnectorManifest,
+) -> None:
+    if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:
+        raise GitHubReadPolicyError(
+            "GitHub projection exceeds approved privacy ceiling"
+        )
+    if (
+        _PRIVACY_RANK[envelope.privacy]
+        > _PRIVACY_RANK[PrivacyClassification.INTERNAL]
+        and not manifest.private_repositories_allowed
+    ):
+        raise GitHubReadPolicyError(
+            "reviewed GitHub manifest does not allow private projections"
+        )
 
 
 def _require_manifest_limits(
