@@ -47,6 +47,31 @@ jobs:
             python .simorgh-patches/pr39-rc3/prepare_rc3.py \
               "$GITHUB_WORKSPACE" \
               --temp "$RUNNER_TEMP/pr39-prepare"
+            python - <<'PY'
+            from pathlib import Path
+
+            path = Path('services/core/src/simorgh_core/agents/store_lock.py')
+            text = path.read_text(encoding='utf-8')
+            replacements = (
+                (
+                    '                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)\n',
+                    '                locking = getattr(msvcrt, "locking")\n'
+                    '                mode = getattr(msvcrt, "LK_NBLCK")\n'
+                    '                locking(handle.fileno(), mode, 1)\n',
+                ),
+                (
+                    '                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)\n',
+                    '                locking = getattr(msvcrt, "locking")\n'
+                    '                mode = getattr(msvcrt, "LK_UNLCK")\n'
+                    '                locking(handle.fileno(), mode, 1)\n',
+                ),
+            )
+            for old, new in replacements:
+                if text.count(old) != 1 or text.count(new) != 0:
+                    raise SystemExit('Windows lock-adapter anchor mismatch')
+                text = text.replace(old, new, 1)
+            path.write_text(text, encoding='utf-8')
+            PY
             ruff check .
           } 2>&1 | tee "$RUNNER_TEMP/prepare.log"
 
@@ -76,10 +101,10 @@ jobs:
           temp = Path(os.environ['RUNNER_TEMP'])
           sections = [
               '<!-- pr39-rc3-status -->',
-              'PR39 RC3 exact-head type diagnostic:',
+              'PR39 RC3 platform-typed lock diagnostic:',
               '',
               f"- Head: `{os.environ['GITHUB_SHA']}`",
-              f"- Single-path RC3 prepare + Ruff: **{os.environ.get('PREPARE_OUTCOME', 'not-run')}**",
+              f"- Single-path RC3 prepare + lock adapter + Ruff: **{os.environ.get('PREPARE_OUTCOME', 'not-run')}**",
               f"- Strict MyPy: **{os.environ.get('MYPY_OUTCOME', 'not-run')}**",
               f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
           ]
