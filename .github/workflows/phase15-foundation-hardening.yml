@@ -1,4 +1,4 @@
-name: Phase 1.5 GitHub Read Foundation Hardening
+name: Phase 1.5 GitHub Read Foundation Finalizer
 
 on:
   push:
@@ -10,10 +10,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: phase15-github-read-foundation-finalizer
+  cancel-in-progress: false
+
 jobs:
-  harden:
+  finalize:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,18 +158,36 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Validate foundation types and lint
+      - name: Run complete Core foundation gates
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
           ruff check .
           mypy services/core/src
+          pytest
 
-      - name: Commit hardened foundation
+      - name: Commit validated foundation
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
           git commit -m 'core: harden governed GitHub read policy foundation'
-          git push origin HEAD:core/governed-github-read-tools
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/governed-github-read-tools
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
