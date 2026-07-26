@@ -1,4 +1,4 @@
-name: PR39 RC3 MyPy Diagnostic
+name: PR39 RC3 Lock Adapter Diagnostic
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pr39-rc3-mypy-diagnostic
+  group: pr39-rc3-lock-adapter-diagnostic
   cancel-in-progress: true
 
 env:
@@ -37,7 +37,7 @@ jobs:
       - name: Install Core dependencies
         run: python -m pip install --upgrade pip && pip install -e '.[dev]'
 
-      - name: Prepare exact RC3 product workspace
+      - name: Prepare exact RC3 workspace and Protocol adapter
         id: prepare
         continue-on-error: true
         shell: bash
@@ -52,22 +52,25 @@ jobs:
 
             path = Path('services/core/src/simorgh_core/agents/store_lock.py')
             text = path.read_text(encoding='utf-8')
-            old_import = 'from typing import BinaryIO, Self\n'
-            new_import = 'from typing import BinaryIO, Protocol, Self, cast\n'
-            protocol_anchor = '''class ExclusiveStoreLockError(RuntimeError):
-            '''.replace('            ', '')
-            protocol_block = '''class _WindowsLockApi(Protocol):
-                LK_NBLCK: int
-                LK_UNLCK: int
-
-                def locking(self, file_descriptor: int, mode: int, byte_count: int, /) -> None: ...
-
-
-            class ExclusiveStoreLockError(RuntimeError):
-            '''.replace('            ', '')
             replacements = (
-                (old_import, new_import),
-                (protocol_anchor, protocol_block),
+                (
+                    'from typing import BinaryIO, Self\n',
+                    'from typing import BinaryIO, Protocol, Self, cast\n',
+                ),
+                (
+                    'class ExclusiveStoreLockError(RuntimeError):\n',
+                    'class _WindowsLockApi(Protocol):\n'
+                    '    LK_NBLCK: int\n'
+                    '    LK_UNLCK: int\n\n'
+                    '    def locking(\n'
+                    '        self,\n'
+                    '        file_descriptor: int,\n'
+                    '        mode: int,\n'
+                    '        byte_count: int,\n'
+                    '        /,\n'
+                    '    ) -> None: ...\n\n\n'
+                    'class ExclusiveStoreLockError(RuntimeError):\n',
+                ),
                 (
                     '                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)\n',
                     '                windows_lock = cast(_WindowsLockApi, msvcrt)\n'
@@ -90,13 +93,23 @@ jobs:
             for old, new in replacements:
                 if text.count(old) != 1 or text.count(new) != 0:
                     raise SystemExit(
-                        f'Windows lock-adapter anchor mismatch old={text.count(old)} final={text.count(new)}'
+                        f'lock-adapter anchor mismatch old={text.count(old)} final={text.count(new)}'
                     )
                 text = text.replace(old, new, 1)
             path.write_text(text, encoding='utf-8')
             PY
-            ruff check .
+            ruff check --fix --select I services/core/src/simorgh_core/agents/store_lock.py
           } 2>&1 | tee "$RUNNER_TEMP/prepare.log"
+
+      - name: Run Ruff diagnostic
+        id: ruff
+        if: steps.prepare.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          ruff check services/core/src/simorgh_core/agents/store_lock.py \
+            --output-format concise 2>&1 | tee "$RUNNER_TEMP/ruff.log"
 
       - name: Run strict MyPy diagnostic
         id: mypy
@@ -112,6 +125,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          RUFF_OUTCOME: ${{ steps.ruff.outcome }}
           MYPY_OUTCOME: ${{ steps.mypy.outcome }}
         shell: bash
         run: |
@@ -124,15 +138,17 @@ jobs:
           temp = Path(os.environ['RUNNER_TEMP'])
           sections = [
               '<!-- pr39-rc3-status -->',
-              'PR39 RC3 protocol-typed lock diagnostic:',
+              'PR39 RC3 Windows lock-adapter diagnostic:',
               '',
               f"- Head: `{os.environ['GITHUB_SHA']}`",
-              f"- Single-path RC3 prepare + lock protocol + Ruff: **{os.environ.get('PREPARE_OUTCOME', 'not-run')}**",
+              f"- RC3 prepare + adapter: **{os.environ.get('PREPARE_OUTCOME', 'not-run')}**",
+              f"- Ruff: **{os.environ.get('RUFF_OUTCOME', 'not-run')}**",
               f"- Strict MyPy: **{os.environ.get('MYPY_OUTCOME', 'not-run')}**",
               f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
           ]
           for title, filename in (
-              ('Prepare/Ruff tail', 'prepare.log'),
+              ('Prepare tail', 'prepare.log'),
+              ('Ruff tail', 'ruff.log'),
               ('MyPy tail', 'mypy.log'),
           ):
               path = temp / filename
@@ -142,7 +158,7 @@ jobs:
                   '',
                   f'### {title}',
                   '```text',
-                  path.read_text(encoding='utf-8', errors='replace')[-14000:],
+                  path.read_text(encoding='utf-8', errors='replace')[-12000:],
                   '```',
               ])
           (temp / 'comment.json').write_text(
@@ -154,7 +170,7 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             --input "$RUNNER_TEMP/comment.json"
 
-      - name: Enforce diagnostic preparation
+      - name: Enforce preparation only
         if: always()
         env:
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
