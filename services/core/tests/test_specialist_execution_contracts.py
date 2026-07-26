@@ -23,6 +23,7 @@ from simorgh_core.agents.specialist_execution import (
     SpecialistExecutionCancelledError,
     SpecialistExecutionOutcome,
     SpecialistExecutionPolicyError,
+    SpecialistExecutionRequest,
     SpecialistExecutionResult,
     SpecialistExecutorRegistry,
     StaticProposalSpecialistExecutor,
@@ -67,7 +68,7 @@ def _capabilities() -> SpecialistCapabilitySet:
     )
 
 
-def _request() -> tuple[TaskEnvelope, object]:
+def _request() -> tuple[TaskEnvelope, SpecialistExecutionRequest]:
     task = _task()
     definition = default_specialist_registry().get("development.planner")
     request = build_specialist_execution_request(
