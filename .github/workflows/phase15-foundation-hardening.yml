@@ -1,0 +1,171 @@
+name: Phase 1.5 GitHub Read Foundation Hardening
+
+on:
+  push:
+    branches:
+      - core/governed-github-read-tools
+    paths:
+      - .github/workflows/phase15-foundation-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact policy and type hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, *, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} anchor count={count}, expected=1')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'services/core/src/simorgh_core/agents/defaults.py',
+              '            tool_allowlist=frozenset(),\n'
+              '            connector_allowlist=frozenset({"github"}),\n',
+              '            tool_allowlist=frozenset(\n'
+              '                {\n'
+              '                    "github.search",\n'
+              '                    "github.fetch-file",\n'
+              '                    "github.fetch-issue",\n'
+              '                    "github.fetch-pr",\n'
+              '                }\n'
+              '            ),\n'
+              '            connector_allowlist=frozenset({"github"}),\n',
+              label='github read tool allowlist',
+          )
+
+          service = 'services/core/src/simorgh_core/agents/github_read_service.py'
+          replace_once(
+              service,
+              'from typing import Any\n\n',
+              'from typing import Any\n'
+              'from uuid import NAMESPACE_URL, UUID, uuid5\n\n',
+              label='service UUID imports',
+          )
+          replace_once(
+              service,
+              '        envelope = await self._adapter.invoke(request)\n'
+              '        return envelope.model_dump(mode="json")\n',
+              '        envelope = await self._adapter.invoke(request)\n'
+              '        _require_projection_policy(\n'
+              '            request=request, envelope=envelope, manifest=self._manifest\n'
+              '        )\n'
+              '        return envelope.model_dump(mode="json")\n',
+              label='adapter projection policy',
+          )
+          replace_once(
+              service,
+              '        if request.deadline_at_ms is not None and self._now_ms() >= request.deadline_at_ms:\n'
+              '            raise GitHubReadPolicyError("GitHub read deadline has expired")\n'
+              '        snapshot = budget.snapshot()\n',
+              '        if (\n'
+              '            task.deadline_at_ms is not None\n'
+              '            and (\n'
+              '                request.deadline_at_ms is None\n'
+              '                or request.deadline_at_ms > task.deadline_at_ms\n'
+              '            )\n'
+              '        ):\n'
+              '            raise GitHubReadPolicyError("GitHub read deadline exceeds task authority")\n'
+              '        if request.deadline_at_ms is not None and self._now_ms() >= request.deadline_at_ms:\n'
+              '            raise GitHubReadPolicyError("GitHub read deadline has expired")\n'
+              '        if request.monotonic_timeout_ms > budget.limits.max_elapsed_ms:\n'
+              '            raise GitHubReadPolicyError(\n'
+              '                "GitHub read monotonic timeout exceeds task budget"\n'
+              '            )\n'
+              '        snapshot = budget.snapshot()\n',
+              label='deadline and monotonic authority',
+          )
+          replace_once(
+              service,
+              '        if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:\n'
+              '            raise GitHubReadServiceError(\n'
+              '                "GitHub projection exceeds approved privacy ceiling"\n'
+              '            )\n'
+              '        if (\n'
+              '            envelope.privacy != PrivacyClassification.PUBLIC\n'
+              '            and not self._manifest.private_repositories_allowed\n'
+              '        ):\n'
+              '            raise GitHubReadServiceError(\n'
+              '                "reviewed GitHub manifest does not allow private projections"\n'
+              '            )\n'
+              '        return envelope\n',
+              '        _require_projection_policy(\n'
+              '            request=request, envelope=envelope, manifest=self._manifest\n'
+              '        )\n'
+              '        return envelope\n',
+              label='shared projection policy',
+          )
+          replace_once(
+              service,
+              'def _evidence_id(envelope: GitHubReadProjectionEnvelope):\n'
+              '    from uuid import NAMESPACE_URL, uuid5\n\n'
+              '    return uuid5(\n',
+              'def _evidence_id(envelope: GitHubReadProjectionEnvelope) -> UUID:\n'
+              '    return uuid5(\n',
+              label='evidence ID typing',
+          )
+          replace_once(
+              service,
+              'def _require_manifest_limits(\n',
+              'def _require_projection_policy(\n'
+              '    *,\n'
+              '    request: GovernedGitHubReadRequest,\n'
+              '    envelope: GitHubReadProjectionEnvelope,\n'
+              '    manifest: GitHubReadConnectorManifest,\n'
+              ') -> None:\n'
+              '    if _PRIVACY_RANK[envelope.privacy] > _PRIVACY_RANK[request.privacy_ceiling]:\n'
+              '        raise GitHubReadPolicyError(\n'
+              '            "GitHub projection exceeds approved privacy ceiling"\n'
+              '        )\n'
+              '    if (\n'
+              '        _PRIVACY_RANK[envelope.privacy]\n'
+              '        > _PRIVACY_RANK[PrivacyClassification.INTERNAL]\n'
+              '        and not manifest.private_repositories_allowed\n'
+              '    ):\n'
+              '        raise GitHubReadPolicyError(\n'
+              '            "reviewed GitHub manifest does not allow private projections"\n'
+              '        )\n\n\n'
+              'def _require_manifest_limits(\n',
+              label='projection policy helper',
+          )
+          PY
+          rm -f .github/workflows/phase15-foundation-hardening.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Validate foundation types and lint
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+
+      - name: Commit hardened foundation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: harden governed GitHub read policy foundation'
+          git push origin HEAD:core/governed-github-read-tools
