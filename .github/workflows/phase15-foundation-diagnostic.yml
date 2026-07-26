@@ -1,0 +1,112 @@
+name: Phase 1.5 Foundation Diagnostic
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase15-foundation-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply foundation patch ephemerally
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY' > "$RUNNER_TEMP/patch.log" 2>&1
+          from pathlib import Path
+          from textwrap import dedent
+
+          source = Path(
+              '.github/workflows/phase15-foundation-hardening.yml'
+          ).read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          print(f'start_count={source.count(start_marker)}')
+          if source.count(start_marker) != 1:
+              raise SystemExit('foundation Python start marker is not unique')
+          remainder = source.split(start_marker, 1)[1]
+          print(f'end_count={remainder.count(end_marker)}')
+          if remainder.count(end_marker) != 1:
+              raise SystemExit('foundation Python end marker is not unique')
+          embedded = dedent(remainder.split(end_marker, 1)[0])
+          print(f'embedded_bytes={len(embedded.encode("utf-8"))}')
+          exec(
+              compile(embedded, 'phase15-foundation-embedded.py', 'exec'),
+              {'__name__': '__main__'},
+          )
+          print('patch_complete=true')
+          PY
+          echo "$?" > "$RUNNER_TEMP/patch.status"
+          exit 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run separated diagnostics
+        shell: bash
+        run: |
+          set +e
+          patch_status=$(cat "$RUNNER_TEMP/patch.status")
+          if [[ "$patch_status" == "0" ]]; then
+            python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
+            pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
+            install_status=$?
+            ruff check --fix services/core/src/simorgh_core/agents/github_read_service.py > "$RUNNER_TEMP/ruff-fix.log" 2>&1
+            ruff_fix_status=$?
+            ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
+            ruff_status=$?
+            mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
+            mypy_status=$?
+            pytest -q > "$RUNNER_TEMP/pytest.log" 2>&1
+            pytest_status=$?
+          else
+            install_status=99
+            ruff_fix_status=99
+            ruff_status=99
+            mypy_status=99
+            pytest_status=99
+            : > "$RUNNER_TEMP/install.log"
+            : > "$RUNNER_TEMP/ruff-fix.log"
+            : > "$RUNNER_TEMP/ruff.log"
+            : > "$RUNNER_TEMP/mypy.log"
+            : > "$RUNNER_TEMP/pytest.log"
+          fi
+          {
+            echo "patch_status=$patch_status"
+            echo "install_status=$install_status"
+            echo "ruff_fix_status=$ruff_fix_status"
+            echo "ruff_status=$ruff_status"
+            echo "mypy_status=$mypy_status"
+            echo "pytest_status=$pytest_status"
+            echo "--- patch_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/patch.log"
+            echo "--- ruff_fix_tail ---"
+            tail -c 3000 "$RUNNER_TEMP/ruff-fix.log"
+            echo "--- ruff_tail ---"
+            tail -c 6000 "$RUNNER_TEMP/ruff.log"
+            echo "--- mypy_tail ---"
+            tail -c 8000 "$RUNNER_TEMP/mypy.log"
+            echo "--- pytest_tail ---"
+            tail -c 12000 "$RUNNER_TEMP/pytest.log"
+          } > "$RUNNER_TEMP/report.txt"
+          cat "$RUNNER_TEMP/report.txt"
+          exit 0
+
+      - name: Upload diagnostic report
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase15-foundation-diagnostic
+          path: ${{ runner.temp }}/report.txt
+          retention-days: 2
+          if-no-files-found: error
