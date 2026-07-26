@@ -1,0 +1,96 @@
+name: Phase 1.4 Review Documentation Fix
+
+on:
+  push:
+    branches:
+      - docs/phase14-merge-closeout
+    paths:
+      - .github/workflows/phase14-review-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase14-review-documentation-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Synchronize all Phase 1.4 status surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, *, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} anchor count={count}, expected=1')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'docs/AGENT_RUNTIME.md',
+              'Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence persistence is validating in PR #48. The default API remains routing-only.\n',
+              'Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44; typed result, artifact and evidence metadata authority merged in PR #48. Phase 1.5 governed GitHub read tools are the next active boundary. The default API remains routing-only.\n',
+              label='agent runtime status',
+          )
+          replace_once(
+              'docs/SPECIALIST_EXECUTION.md',
+              'Status: Phase 1 Step 1.3 merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`; issue #40 is complete and ADR 0016 is accepted. Its separate typed result authority is validating in Phase 1.4 PR #48 under issue #46 and ADR 0017.\n',
+              'Status: Phase 1 Step 1.3 merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`; issue #40 is complete and ADR 0016 is accepted. Its separate typed result authority merged through Phase 1.4 PR #48 at `98d56689df4442541e30c77451ab56550e473479`; issue #46 is complete and ADR 0017 is accepted.\n',
+              label='specialist execution status',
+          )
+          replace_once(
+              'docs/README.md',
+              'The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 is validating the separate typed result, artifact and evidence metadata authority. The public API remains routing-only.\n',
+              'The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies the durable invocation authority; PR #44 merged the internal zero-external specialist execution runtime; PR #48 merged the separate typed result, artifact and evidence metadata authority. Phase 1.5 governed GitHub read tools are next. The public API remains routing-only.\n',
+              label='documentation current status',
+          )
+          replace_once(
+              'docs/README.md',
+              '- issue #46 / PR #48 — typed result, artifact and evidence authority, validating;\n',
+              '- issue #46 / PR #48 — typed result, artifact and evidence authority, complete;\n'
+              '- issue #51 — governed read-only GitHub tools and typed evidence, next;\n',
+              label='documentation dependency list',
+          )
+          replace_once(
+              'docs/TYPED_RESULTS.md',
+              'Status: Phase 1 Step 1.4 is accepted in PR #48 under issue #46. ADR 0017 is accepted; merge remains conditioned on exact-head CI.\n',
+              'Status: Phase 1 Step 1.4 merged through PR #48 at `98d56689df4442541e30c77451ab56550e473479`. Issue #46 is complete, ADR 0017 is accepted, and exact-head Core/Android CI passed. Production artifact-byte storage remains separate issue #49; Phase 1.5 is issue #51.\n',
+              label='typed results status',
+          )
+          PY
+          rm -f .github/workflows/phase14-review-fix.yml
+          git diff --check
+
+      - name: Commit review fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'Docs: synchronize all Phase 1.4 completion status surfaces'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: docs/phase14-merge-closeout
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          test "$remote_head" = "$GITHUB_SHA"
+          git push origin "HEAD:refs/heads/$BRANCH"
