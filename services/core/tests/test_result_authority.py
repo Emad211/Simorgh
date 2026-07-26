@@ -141,7 +141,7 @@ def test_artifact_bytes_media_type_and_public_storage_are_fail_closed() -> None:
     )
 
     validate_artifact_bytes(artifact, content)
-    with pytest.raises(ResultContractError, match="declared size|declared hash"):
+    with pytest.raises(ResultContractError, match=r"declared size|declared hash"):
         validate_artifact_bytes(artifact, content + b"changed")
 
     public_candidate = artifact.model_copy(
