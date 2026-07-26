@@ -1,0 +1,134 @@
+name: PR41 Specialist Runtime Hardening
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-interface
+    paths:
+      - services/core/tests/test_specialist_registry_hardening.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr41-specialist-runtime-hardening
+  cancel-in-progress: true
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact registry and cancellation hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('services/core/src/simorgh_core/agents/specialist_execution.py')
+          text = path.read_text(encoding='utf-8')
+          transitions = (
+              (
+                  'import time\n',
+                  'import re\nimport time\n',
+              ),
+              (
+                  '_RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"\n',
+                  '_AGENT_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"\n'
+                  '_POLICY_VERSION_PATTERN = r"^[0-9]+\\.[0-9]+\\.[0-9]+$"\n'
+                  '_RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"\n',
+              ),
+              (
+                  '    agent_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=r"^[0-9]+\\.[0-9]+\\.[0-9]+$", max_length=32)\n',
+                  '    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)\n',
+              ),
+              (
+                  '    agent_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=r"^[0-9]+\\.[0-9]+\\.[0-9]+$", max_length=32)\n',
+                  '    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)\n',
+              ),
+              (
+                  '    def cancel(self, reason: str = "specialist execution cancelled") -> None:\n'
+                  '        normalized = reason.strip()[:1_000]\n'
+                  '        if not normalized:\n'
+                  '            raise ValueError("cancellation reason cannot be empty")\n'
+                  '        with self._lock:\n'
+                  '            self._cancelled = True\n'
+                  '            self._reason = normalized\n',
+                  '    def cancel(self, reason: str = "specialist execution cancelled") -> None:\n'
+                  '        with self._lock:\n'
+                  '            if self._cancelled:\n'
+                  '                return\n'
+                  '            normalized = reason.strip()[:1_000]\n'
+                  '            if not normalized:\n'
+                  '                raise ValueError("cancellation reason cannot be empty")\n'
+                  '            self._cancelled = True\n'
+                  '            self._reason = normalized\n',
+              ),
+              (
+                  '        for executor in executors:\n'
+                  '            identity = (executor.agent_id, executor.agent_version)\n',
+                  '        for executor in executors:\n'
+                  '            if re.fullmatch(_AGENT_ID_PATTERN, executor.agent_id) is None:\n'
+                  '                raise SpecialistExecutionPolicyError(\n'
+                  '                    "specialist executor agent_id is invalid"\n'
+                  '                )\n'
+                  '            if re.fullmatch(_POLICY_VERSION_PATTERN, executor.agent_version) is None:\n'
+                  '                raise SpecialistExecutionPolicyError(\n'
+                  '                    "specialist executor version is invalid"\n'
+                  '                )\n'
+                  '            if re.fullmatch(_RESOURCE_ID_PATTERN, executor.output_contract) is None:\n'
+                  '                raise SpecialistExecutionPolicyError(\n'
+                  '                    "specialist executor output contract is invalid"\n'
+                  '                )\n'
+                  '            identity = (executor.agent_id, executor.agent_version)\n',
+              ),
+          )
+          current = text
+          for old, new in transitions:
+              if current.count(old) != 1:
+                  raise SystemExit(f'hardening anchor count={current.count(old)} for {old[:70]!r}')
+              current = current.replace(old, new, 1)
+          path.write_text(current, encoding='utf-8')
+          PY
+          rm -f .github/workflows/pr41-runtime-hardening.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Validate hardening
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check \
+            services/core/src/simorgh_core/agents/specialist_execution.py \
+            services/core/tests/test_specialist_registry_hardening.py
+          mypy services/core/src/simorgh_core/agents/specialist_execution.py
+          pytest -q \
+            services/core/tests/test_specialist_execution_contracts.py \
+            services/core/tests/test_specialist_registry_hardening.py \
+            services/core/tests/test_specialist_runtime.py \
+            services/core/tests/test_specialist_service.py
+
+      - name: Commit validated hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: harden specialist registry and cancellation semantics'
+          git push origin HEAD:core/specialist-execution-interface
