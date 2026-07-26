@@ -1,6 +1,6 @@
 # Simorgh typed specialist result authority
 
-Status: Phase 1 Step 1.4 is validating in PR #48 under issue #46. ADR 0017 is proposed until exact-head CI and review gates close.
+Status: Phase 1 Step 1.4 is accepted in PR #48 under issue #46. ADR 0017 is accepted; merge remains conditioned on exact-head CI.
 
 ## Purpose
 
@@ -188,7 +188,7 @@ The result carries explicit uncertainty independent of presentation:
 
 ```text
 none
- declared
+declared
 unverified
 ```
 
@@ -313,4 +313,4 @@ Do not edit result rows manually. On corruption or schema mismatch, preserve the
 
 ## Validation
 
-Ordinary CI is fake/local and zero-cost. Required exact-head gates are documented in [`validation/phase-1-4-typed-results.md`](validation/phase-1-4-typed-results.md). Architecture rationale is recorded in [`adr/0017-typed-specialist-result-authority.md`](adr/0017-typed-specialist-result-authority.md).
+Ordinary CI is fake/local and zero-cost. Required exact-head gates and accepted evidence are documented in [`validation/phase-1-4-typed-results.md`](validation/phase-1-4-typed-results.md). Architecture rationale is recorded in accepted [`adr/0017-typed-specialist-result-authority.md`](adr/0017-typed-specialist-result-authority.md).
