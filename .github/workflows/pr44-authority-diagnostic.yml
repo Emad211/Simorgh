@@ -19,7 +19,7 @@ concurrency:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python - <<'PY' > "$RUNNER_TEMP/diagnostic.log" 2>&1
+          python - <<'PY' > "$RUNNER_TEMP/patch.log" 2>&1
           from pathlib import Path
           from textwrap import dedent
 
@@ -105,14 +105,42 @@ jobs:
           )
           print('patch_status=0')
           PY
-          status=$?
-          {
-            echo "head=$GITHUB_SHA"
-            echo "patch_status=$status"
-            echo "--- diagnostic_tail ---"
-            tail -c 16000 "$RUNNER_TEMP/diagnostic.log"
-          } > "$RUNNER_TEMP/report.txt"
-          cat "$RUNNER_TEMP/report.txt"
+          echo "$?" > "$RUNNER_TEMP/patch.status"
+          cat "$RUNNER_TEMP/patch.log"
+          exit 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run post-patch quality gates diagnostically
+        shell: bash
+        run: |
+          set +e
+          patch_status=$(cat "$RUNNER_TEMP/patch.status")
+          if [[ "$patch_status" != "0" ]]; then
+            echo 99 > "$RUNNER_TEMP/install.status"
+            echo 99 > "$RUNNER_TEMP/ruff.status"
+            echo 99 > "$RUNNER_TEMP/mypy.status"
+            echo 99 > "$RUNNER_TEMP/pytest.status"
+            exit 0
+          fi
+          python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
+          pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
+          echo "$?" > "$RUNNER_TEMP/install.status"
+          if [[ "$(cat "$RUNNER_TEMP/install.status")" != "0" ]]; then
+            echo 99 > "$RUNNER_TEMP/ruff.status"
+            echo 99 > "$RUNNER_TEMP/mypy.status"
+            echo 99 > "$RUNNER_TEMP/pytest.status"
+            exit 0
+          fi
+          ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
+          echo "$?" > "$RUNNER_TEMP/ruff.status"
+          mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
+          echo "$?" > "$RUNNER_TEMP/mypy.status"
+          pytest -q > "$RUNNER_TEMP/pytest.log" 2>&1
+          echo "$?" > "$RUNNER_TEMP/pytest.status"
           exit 0
 
       - name: Report exact diagnostic
@@ -120,12 +148,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          {
+            echo "head=$GITHUB_SHA"
+            echo "patch_status=$(cat "$RUNNER_TEMP/patch.status")"
+            echo "install_status=$(cat "$RUNNER_TEMP/install.status" 2>/dev/null || echo missing)"
+            echo "ruff_status=$(cat "$RUNNER_TEMP/ruff.status" 2>/dev/null || echo missing)"
+            echo "mypy_status=$(cat "$RUNNER_TEMP/mypy.status" 2>/dev/null || echo missing)"
+            echo "pytest_status=$(cat "$RUNNER_TEMP/pytest.status" 2>/dev/null || echo missing)"
+            echo "--- patch_tail ---"
+            tail -c 5000 "$RUNNER_TEMP/patch.log" 2>/dev/null
+            echo "--- install_tail ---"
+            tail -c 3000 "$RUNNER_TEMP/install.log" 2>/dev/null
+            echo "--- ruff_tail ---"
+            tail -c 5000 "$RUNNER_TEMP/ruff.log" 2>/dev/null
+            echo "--- mypy_tail ---"
+            tail -c 5000 "$RUNNER_TEMP/mypy.log" 2>/dev/null
+            echo "--- pytest_tail ---"
+            tail -c 14000 "$RUNNER_TEMP/pytest.log" 2>/dev/null
+          } > "$RUNNER_TEMP/report.txt"
           body=$(python - <<'PY'
           from pathlib import Path
           text = Path('${{ runner.temp }}/report.txt').read_text(
               encoding='utf-8', errors='replace'
           )
-          print('PR #44 authority diagnostic — no product files persisted.\n\n```text\n' + text + '\n```')
+          print('PR #44 post-patch authority diagnostic — no product files persisted.\n\n```text\n' + text + '\n```')
           PY
           )
           gh api "repos/${GITHUB_REPOSITORY}/issues/44/comments" -f body="$body"
