@@ -1,4 +1,4 @@
-name: PR44 Phase 1.3 Documentation Diagnostic
+name: PR44 Phase 1.3 Documentation Diagnostic v2
 
 on:
   push:
@@ -64,7 +64,7 @@ jobs:
           cat "$RUNNER_TEMP/report.txt"
           exit 0
 
-      - name: Report documentation diagnostic
+      - name: Publish stable documentation diagnostic
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -77,4 +77,6 @@ jobs:
           print('PR #44 documentation diagnostic — no product or documentation files persisted.\n\n```text\n' + text + '\n```')
           PY
           )
-          gh api "repos/${GITHUB_REPOSITORY}/issues/44/comments" -f body="$body"
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/5084611664" \
+            --raw-field body="$body"
