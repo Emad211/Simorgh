@@ -12,6 +12,7 @@ from simorgh_core.agents.invocations import (
     InMemoryInvocationStore,
     InvocationEffect,
     InvocationKind,
+    canonical_fingerprint,
 )
 from simorgh_core.agents.result_authority import (
     ArtifactReference,
@@ -107,7 +108,7 @@ def _record_with_artifact() -> tuple[object, ArtifactReference, bytes]:
         evidence=(evidence,),
         privacy=PrivacyClassification.PRIVATE,
         retention=RetentionClass.PROJECT,
-        committed_usage=UsageVector(),
+        invocation_usage_sha256="d" * 64,
         invocation_result_sha256="c" * 64,
         created_at_ms=1_000,
         completed_at_ms=2_000,
@@ -222,7 +223,7 @@ def test_sqlite_result_identity_is_immutable(tmp_path: Path) -> None:
         },
         privacy=record.privacy,
         retention=record.retention,
-        committed_usage=record.committed_usage,
+        invocation_usage_sha256=record.invocation_usage_sha256,
         invocation_result_sha256=record.invocation_result_sha256,
         created_at_ms=record.created_at_ms,
         completed_at_ms=record.completed_at_ms,
@@ -288,8 +289,12 @@ def test_terminalizer_binds_result_to_durable_invocation() -> None:
 
     assert created.disposition == ResultReplayDisposition.CREATED
     assert replayed.disposition == ResultReplayDisposition.REPLAYED
-    assert created.record.committed_usage == invocation.committed_usage
-    assert created.record.invocation_result_sha256 != "0" * 64
+    assert created.record.invocation_usage_sha256 == canonical_fingerprint(
+        invocation.committed_usage
+    )
+    assert created.record.invocation_result_sha256 == canonical_fingerprint(
+        invocation.result_payload
+    )
     assert authority.get_for_invocation(invocation.invocation_id) == created.record
 
 

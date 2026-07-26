@@ -41,7 +41,15 @@ class ResultStatus(BaseModel):
     producer_agent_version: str = Field(min_length=1, max_length=32)
     output_contract: str = Field(min_length=1, max_length=128)
     result_schema_version: str = Field(min_length=1, max_length=16)
-    payload_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    invocation_usage_sha256: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    invocation_result_sha256: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    payload_sha256: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     result_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     privacy: PrivacyClassification
     retention: RetentionClass
@@ -148,12 +156,13 @@ class ResultAuthorityControlPlane:
                 kind=kind,
                 agent_id=record.producer.agent_id,
                 agent_version=record.producer.agent_version,
-                usage=record.committed_usage,
                 outcome=f"result_{disposition.value}",
                 metadata={
                     "result_id": str(record.result_id),
                     "result_sha256": record.result_sha256,
                     "payload_sha256": record.payload_sha256,
+                    "invocation_usage_sha256": record.invocation_usage_sha256,
+                    "invocation_result_sha256": record.invocation_result_sha256,
                     "output_contract": record.output_contract,
                     "schema_version": record.result_schema_version,
                     "privacy": record.privacy.value,
@@ -175,6 +184,8 @@ def _result_status(record: SpecialistResultRecord) -> ResultStatus:
         producer_agent_version=record.producer.agent_version,
         output_contract=record.output_contract,
         result_schema_version=record.result_schema_version,
+        invocation_usage_sha256=record.invocation_usage_sha256,
+        invocation_result_sha256=record.invocation_result_sha256,
         payload_sha256=record.payload_sha256,
         result_sha256=record.result_sha256,
         privacy=record.privacy,

@@ -98,8 +98,12 @@ class SpecialistResultAuthorityService:
             evidence=evidence,
             privacy=privacy,
             retention=retention,
-            committed_usage=invocation.committed_usage,
-            invocation_result_sha256=canonical_fingerprint(durable_result_payload),
+            invocation_usage_sha256=canonical_fingerprint(
+                invocation.committed_usage
+            ),
+            invocation_result_sha256=canonical_fingerprint(
+                durable_result_payload
+            ),
             created_at_ms=invocation.created_at_ms,
             completed_at_ms=invocation.updated_at_ms,
             registry=self._schemas,

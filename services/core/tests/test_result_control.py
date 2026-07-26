@@ -7,6 +7,7 @@ from simorgh_core.agents.invocations import (
     InMemoryInvocationStore,
     InvocationEffect,
     InvocationKind,
+    canonical_fingerprint,
 )
 from simorgh_core.agents.result_authority import (
     InMemoryResultStore,
@@ -97,6 +98,12 @@ def test_control_plane_terminalizes_reads_renders_and_replays_without_content_tr
     status_by_invocation = control.get_status_for_invocation(invocation.invocation_id)
     assert status == status_by_invocation
     assert status.result_sha256 == created.record.result_sha256
+    assert status.invocation_usage_sha256 == canonical_fingerprint(
+        invocation.committed_usage
+    )
+    assert status.invocation_result_sha256 == canonical_fingerprint(
+        invocation.result_payload
+    )
     assert status.privacy == PrivacyClassification.PRIVATE
     assert status.unresolved_risk_count == 1
     assert status.verification_requirement_count == 1
@@ -119,6 +126,8 @@ def test_control_plane_terminalizes_reads_renders_and_replays_without_content_tr
     assert str(created.record.result_id) in encoded
     assert created.record.result_sha256 in encoded
     assert created.record.payload_sha256 in encoded
+    assert created.record.invocation_usage_sha256 in encoded
+    assert created.record.invocation_result_sha256 in encoded
     assert "result_created" in encoded
     assert "result_replayed" in encoded
     assert "result_presentation_rendered" in encoded

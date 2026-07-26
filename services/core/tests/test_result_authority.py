@@ -107,6 +107,8 @@ def _record(
         evidence=evidence,
         privacy=privacy,
         retention=RetentionClass.PROJECT,
+        invocation_usage_sha256="c" * 64,
+        invocation_result_sha256="d" * 64,
         created_at_ms=1_000,
         completed_at_ms=3_000,
     )
@@ -171,6 +173,8 @@ def test_arbitrary_or_extra_final_payload_is_rejected_without_private_echo() -> 
             },
             privacy=PrivacyClassification.PRIVATE,
             retention=RetentionClass.PROJECT,
+            invocation_usage_sha256="c" * 64,
+            invocation_result_sha256="d" * 64,
             created_at_ms=1_000,
             completed_at_ms=2_000,
         )
