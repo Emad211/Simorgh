@@ -1,4 +1,4 @@
-name: PR47 Linkage Hotfix Finalizer
+name: PR47 Linkage Hotfix Finalizer v2
 
 on:
   push:
