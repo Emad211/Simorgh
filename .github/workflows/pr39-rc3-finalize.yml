@@ -1,4 +1,4 @@
-name: PR39 RC3 Compatible Finalize
+name: PR39 RC3 Verified-Compatible Finalize
 
 on:
   push:
@@ -37,7 +37,7 @@ jobs:
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 compatible finalizer: **running**
+          PR39 RC3 verified-compatible finalizer: **running**
 
           - Exact triggering head: \`${GITHUB_SHA}\`
           - Current gate: verified archive and original self-test
@@ -95,47 +95,56 @@ jobs:
       - name: Run original bundle self-test
         run: python "$RUNNER_TEMP/pr39-rc3-bundle/scripts/selftest_pr39_hardening_bundle.py"
 
-      - name: Apply exact publisher compatibility patch
+      - name: Apply verified publisher compatibility patch
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          import os
           from pathlib import Path
 
-          path = Path(__import__('os').environ['RUNNER_TEMP']) / 'pr39-rc3-bundle/scripts/apply_pr39_hardening.py'
+          path = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle/scripts/apply_pr39_hardening.py'
           text = path.read_text(encoding='utf-8')
-          old = '''from typing import Any, Protocol, Self
-
-          from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-          from simorgh_core.agents.contracts import UsageVector
-          '''.replace('          ', '')
-          new = '''from typing import Any, Literal, Protocol, Self, TypeAlias
-
-          from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-          from simorgh_core.agents.contracts import InvocationState, UsageVector
-          '''.replace('          ', '')
-          compatible_old = '''from typing import Any, Protocol, Self
-          from uuid import NAMESPACE_URL, UUID, uuid5
-
-          from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-          from simorgh_core.agents.contracts import UsageVector
-          '''.replace('          ', '')
-          compatible_new = '''from typing import Any, Literal, Protocol, Self, TypeAlias
-          from uuid import NAMESPACE_URL, UUID, uuid5
-
-          from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-          from simorgh_core.agents.contracts import InvocationState, UsageVector
-          '''.replace('          ', '')
-          if text.count(old) != 1 or text.count(new) != 1:
-              raise SystemExit(
-                  f'unexpected publisher transform shape old={text.count(old)} new={text.count(new)}'
-              )
-          text = text.replace(old, compatible_old, 1).replace(new, compatible_new, 1)
-          path.write_text(text, encoding='utf-8')
+          old_source = (
+              'from typing import Any, Protocol, Self\\n\n'
+              'from pydantic import BaseModel, ConfigDict, Field, model_validator\\n\n'
+              'from simorgh_core.agents.contracts import UsageVector\\n'
+          )
+          new_source = (
+              'from typing import Any, Protocol, Self\\n'
+              'from uuid import NAMESPACE_URL, UUID, uuid5\\n\n'
+              'from pydantic import BaseModel, ConfigDict, Field, model_validator\\n\n'
+              'from simorgh_core.agents.contracts import UsageVector\\n'
+          )
+          old_final = (
+              'from typing import Any, Literal, Protocol, Self, TypeAlias\\n\n'
+              'from pydantic import BaseModel, ConfigDict, Field, model_validator\\n\n'
+              'from simorgh_core.agents.contracts import InvocationState, UsageVector\\n'
+          )
+          new_final = (
+              'from typing import Any, Literal, Protocol, Self, TypeAlias\\n'
+              'from uuid import NAMESPACE_URL, UUID, uuid5\\n\n'
+              'from pydantic import BaseModel, ConfigDict, Field, model_validator\\n\n'
+              'from simorgh_core.agents.contracts import InvocationState, UsageVector\\n'
+          )
+          counts = (
+              text.count(old_source),
+              text.count(old_final),
+              text.count(new_source),
+              text.count(new_final),
+          )
+          if counts != (1, 1, 0, 0):
+              raise SystemExit(f'unexpected publisher fragment counts: {counts!r}')
+          updated = text.replace(old_source, new_source, 1).replace(old_final, new_final, 1)
+          final_counts = (
+              updated.count(old_source),
+              updated.count(old_final),
+              updated.count(new_source),
+              updated.count(new_final),
+          )
+          if final_counts != (0, 0, 1, 1):
+              raise SystemExit(f'invalid patched publisher counts: {final_counts!r}')
+          path.write_text(updated, encoding='utf-8')
           PY
           python -m py_compile "$RUNNER_TEMP/pr39-rc3-bundle/scripts/apply_pr39_hardening.py"
 
@@ -190,7 +199,7 @@ jobs:
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 compatible finalizer: **running**
+          PR39 RC3 verified-compatible finalizer: **running**
 
           - Archive / publisher compatibility / transactional apply: passed
           - Targeted regressions / Ruff / strict MyPy / full Core: passed
@@ -252,7 +261,7 @@ jobs:
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 compatible finalizer: **failed closed**
+          PR39 RC3 verified-compatible finalizer: **failed closed**
 
           - Exact triggering head: \`${GITHUB_SHA}\`
           - No validated product commit was claimed.
