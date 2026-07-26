@@ -6,12 +6,12 @@ import time
 from collections.abc import Callable
 from enum import StrEnum
 from threading import RLock
-from typing import Any, Protocol, Self
+from typing import Any, Literal, Protocol, Self, TypeAlias
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from simorgh_core.agents.contracts import UsageVector
+from simorgh_core.agents.contracts import InvocationState, UsageVector
 
 MAX_INVOCATION_RESULT_BYTES = 1_000_000
 _ZERO_USAGE = UsageVector()
@@ -56,15 +56,7 @@ class InvocationStartKind(StrEnum):
     TERMINAL = "terminal"
 
 
-class InvocationPhase(StrEnum):
-    PENDING = "pending"
-    RESERVED = "reserved"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    EXPIRED = "expired"
-    UNKNOWN = "unknown"
-    UNKNOWN_SIDE_EFFECT = "unknown_side_effect"
+InvocationPhase: TypeAlias = InvocationState
 
 
 class InvocationKind(StrEnum):

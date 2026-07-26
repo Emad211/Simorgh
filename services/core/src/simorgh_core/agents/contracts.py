@@ -82,10 +82,13 @@ class RoutingState(StrEnum):
 
 class InvocationState(StrEnum):
     PENDING = "pending"
+    RESERVED = "reserved"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    UNKNOWN = "unknown"
+    UNKNOWN_SIDE_EFFECT = "unknown_side_effect"
 
 
 class UsageVector(BaseModel):
