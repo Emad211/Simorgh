@@ -1,0 +1,97 @@
+name: PR44 Specialist Authority Diagnostic
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-runtime-clean
+    paths:
+      - .github/workflows/pr44-authority-diagnostic.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr44-specialist-authority-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Apply authority patch ephemerally and capture exact failure
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY' > "$RUNNER_TEMP/diagnostic.log" 2>&1
+          from pathlib import Path
+          from textwrap import dedent
+
+          authority_test = Path(
+              'services/core/tests/test_specialist_authority_hardening.py'
+          )
+          test_text = authority_test.read_text(encoding='utf-8')
+          old = (
+              '        execution_mode=ExecutionMode.PLAN,\n'
+              '        allowed_data_sources=frozenset(),\n'
+              '    )\n'
+          )
+          new = (
+              '        execution_mode=ExecutionMode.PLAN,\n'
+              '        allowed_data_sources=frozenset(),\n'
+              '        budget=default_specialist_registry()\n'
+              '        .get("development.planner")\n'
+              '        .budget_ceiling,\n'
+              '    )\n'
+          )
+          print(f'fixture_anchor_count={test_text.count(old)}')
+          if test_text.count(old) != 1:
+              raise SystemExit('authority fixture anchor is not unique')
+          authority_test.write_text(test_text.replace(old, new, 1), encoding='utf-8')
+
+          source = Path('.github/workflows/pr44-authority-contract.yml').read_text(
+              encoding='utf-8'
+          )
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          print(f'embedded_start_count={source.count(start_marker)}')
+          remainder = source.split(start_marker, 1)[1]
+          print(f'embedded_end_count={remainder.count(end_marker)}')
+          embedded = dedent(remainder.split(end_marker, 1)[0])
+          print(f'embedded_bytes={len(embedded.encode("utf-8"))}')
+          exec(compile(embedded, 'pr44-authority-contract-embedded.py', 'exec'), {
+              '__name__': '__main__'
+          })
+          print('patch_status=0')
+          PY
+          status=$?
+          {
+            echo "head=$GITHUB_SHA"
+            echo "patch_status=$status"
+            echo "--- diagnostic_tail ---"
+            tail -c 12000 "$RUNNER_TEMP/diagnostic.log"
+          } > "$RUNNER_TEMP/report.txt"
+          cat "$RUNNER_TEMP/report.txt"
+          exit 0
+
+      - name: Report exact diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          body=$(python - <<'PY'
+          from pathlib import Path
+          text = Path('${{ runner.temp }}/report.txt').read_text(
+              encoding='utf-8', errors='replace'
+          )
+          print('PR #44 authority diagnostic — no product files persisted.\n\n```text\n' + text + '\n```')
+          PY
+          )
+          gh api "repos/${GITHUB_REPOSITORY}/issues/44/comments" -f body="$body"
