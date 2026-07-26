@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import StrEnum
 from threading import RLock
 from typing import Literal, Protocol, Self
@@ -341,7 +341,7 @@ class StaticProposalSpecialistExecutor:
         agent_version: str,
         output_contract: str,
         payload: dict[str, JsonValue],
-        wall_clock_millis: callable[[], int] | None = None,
+        wall_clock_millis: Callable[[], int] | None = None,
     ) -> None:
         self._agent_id = agent_id
         self._agent_version = agent_version
@@ -453,6 +453,8 @@ def build_specialist_execution_request(
         task.received_at_ms,
         int(time.time() * 1_000) if created_at_ms is None else created_at_ms,
     )
+    task_payload = task.model_dump(mode="json")
+    task_payload["allowed_data_sources"] = sorted(task.allowed_data_sources)
     return SpecialistExecutionRequest(
         request_id=task.request_id,
         invocation_id=invocation_id,
@@ -463,7 +465,7 @@ def build_specialist_execution_request(
         effect=effect,
         input_contract=definition.input_contract,
         output_contract=definition.output_contract,
-        task_fingerprint=canonical_fingerprint(task),
+        task_fingerprint=canonical_fingerprint(task_payload),
         context_fingerprint=context_fingerprint,
         capabilities=capabilities,
         effective_budget=intersect_budgets(task.budget, definition.budget_ceiling),
