@@ -1,0 +1,190 @@
+name: Phase 1.3 specialist execution publisher
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-interface
+    paths:
+      - .github/workflows/phase13-publish.yml
+      - .simorgh-patches/phase13/**
+
+concurrency:
+  group: phase13-specialist-execution-publisher
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact trigger head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Rebuild and verify product bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch_dir=.simorgh-patches/phase13
+          test -f "$patch_dir/part-00.b64"
+          test -f "$patch_dir/part-01.b64"
+          test -f "$patch_dir/part-02.b64"
+          test "$(find "$patch_dir" -maxdepth 1 -name 'part-*.b64' -type f | wc -l)" -eq 3
+          cat "$patch_dir"/part-00.b64 "$patch_dir"/part-01.b64 "$patch_dir"/part-02.b64 \
+            | base64 --decode > /tmp/phase13.tar.gz
+          echo "72d00ea5e892be5303c5a3a23365d44bf24084f893acd0984602882d5b2312b5  /tmp/phase13.tar.gz" \
+            | sha256sum --check --strict
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import tarfile
+
+          archive = Path('/tmp/phase13.tar.gz')
+          allowed = {
+              'docs/SPECIALIST_EXECUTION.md',
+              'docs/adr/0016-native-specialist-execution-authority.md',
+              'scripts/apply_phase13_docs.py',
+              'services/core/src/simorgh_core/agents/specialist_execution.py',
+              'services/core/tests/test_specialist_execution.py',
+          }
+          with tarfile.open(archive, 'r:gz') as handle:
+              members = handle.getmembers()
+              names = {member.name for member in members if member.isfile()}
+              if names != allowed:
+                  raise SystemExit(f'unexpected archive paths: {sorted(names ^ allowed)}')
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or '..' in path.parts:
+                      raise SystemExit(f'unsafe archive path: {member.name}')
+                  if not member.isfile():
+                      raise SystemExit(f'non-regular archive entry: {member.name}')
+              root = Path.cwd().resolve()
+              for member in members:
+                  target = (root / member.name).resolve()
+                  if root not in target.parents:
+                      raise SystemExit(f'archive escaped repository: {member.name}')
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  source = handle.extractfile(member)
+                  if source is None:
+                      raise SystemExit(f'could not read archive member: {member.name}')
+                  target.write_bytes(source.read())
+                  target.chmod(0o755 if member.name.startswith('scripts/') else 0o644)
+          PY
+
+      - name: Apply exact documentation transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/apply_phase13_docs.py
+
+      - name: Remove publisher-only files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/apply_phase13_docs.py
+          rmdir scripts 2>/dev/null || true
+          rm -rf .simorgh-patches/phase13
+          rm -f .github/workflows/phase13-publish.yml
+
+      - name: Verify bounded product diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git status --short | sed -E 's/^.. //' | sort)
+          printf '%s\n' "${changed[@]}"
+          allowed=$(cat <<'EOF'
+          .github/workflows/phase13-publish.yml
+          .simorgh-patches/phase13/part-00.b64
+          .simorgh-patches/phase13/part-01.b64
+          .simorgh-patches/phase13/part-02.b64
+          docs/AGENT_RUNTIME.md
+          docs/IMPLEMENTATION_MASTER_PLAN.md
+          docs/README.md
+          docs/SPECIALIST_EXECUTION.md
+          docs/adr/0016-native-specialist-execution-authority.md
+          services/core/src/simorgh_core/agents/specialist_execution.py
+          services/core/tests/test_specialist_execution.py
+          EOF
+          )
+          unexpected=$(comm -23 <(printf '%s\n' "${changed[@]}") <(printf '%s\n' "$allowed" | sort))
+          if [[ -n "$unexpected" ]]; then
+            echo "Unexpected changed paths:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          test -f services/core/src/simorgh_core/agents/specialist_execution.py
+          test -f services/core/tests/test_specialist_execution.py
+          test -f docs/SPECIALIST_EXECUTION.md
+          test -f docs/adr/0016-native-specialist-execution-authority.md
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install project and development tools
+        run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+
+      - name: Run Core quality gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install stable Android platform
+        run: sdkmanager 'platforms;android-36'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Run Android quality gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle \
+            :apps:android:assembleDebug \
+            :apps:android:testDebugUnitTest \
+            :apps:android:lintDebug \
+            --stacktrace
+
+      - name: Commit validated product change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'Core: add durable typed specialist execution interface'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/specialist-execution-interface
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
