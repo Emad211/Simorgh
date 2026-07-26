@@ -1,0 +1,81 @@
+name: PR39 RC3 MyPy Diagnostic
+
+on:
+  push:
+    branches:
+      - core/durable-agent-invocation-store
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: pr39-rc3-mypy-diagnostic
+  cancel-in-progress: true
+
+env:
+  STATUS_COMMENT_ID: '5083518493'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Core dependencies
+        run: python -m pip install --upgrade pip && pip install -e '.[dev]'
+
+      - name: Prepare exact RC3 product workspace
+        run: |
+          python .simorgh-patches/pr39-rc3/prepare_rc3.py \
+            "$GITHUB_WORKSPACE" \
+            --temp "$RUNNER_TEMP/pr39-prepare"
+          ruff check .
+
+      - name: Run strict MyPy diagnostic
+        id: mypy
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mypy services/core/src 2>&1 | tee "$RUNNER_TEMP/mypy.log"
+
+      - name: Publish MyPy result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MYPY_OUTCOME: ${{ steps.mypy.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          log = (temp / 'mypy.log').read_text(encoding='utf-8', errors='replace')[-14000:]
+          body = '\n'.join([
+              '<!-- pr39-rc3-status -->',
+              'PR39 RC3 MyPy diagnostic:',
+              '',
+              f"- Head: `{os.environ['GITHUB_SHA']}`",
+              '- Single-path RC3 prepare: **passed**',
+              '- Ruff: **passed**',
+              f"- Strict MyPy: **{os.environ.get('MYPY_OUTCOME', 'not-run')}**",
+              f"- Run: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              '', '```text', log, '```',
+          ])
+          (temp / 'comment.json').write_text(json.dumps({'body': body}), encoding='utf-8')
+          PY
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
+            --input "$RUNNER_TEMP/comment.json"
