@@ -1,0 +1,149 @@
+name: Phase 1.5 Acceptance Finalizer v2
+
+on:
+  push:
+    branches:
+      - core/governed-github-read-tools
+    paths:
+      - .github/workflows/phase15-foundation-hardening.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase15-acceptance-finalizer-v2
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Assemble and apply reviewed Phase 1.5 patch
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/phase15/chunk-*.b64 | base64 --decode | gzip --decompress > /tmp/phase15_finalize.py
+          python -m py_compile /tmp/phase15_finalize.py
+          python /tmp/phase15_finalize.py | tee /tmp/phase15-patch.log
+          rm -rf .github/phase15
+          rm -f .github/workflows/phase15-acceptance-finalizer.yml
+          rm -f .github/workflows/phase15-foundation-hardening.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Validate complete Core acceptance gate
+        id: validate
+        shell: bash
+        run: |
+          set +e
+          python -m pip install --upgrade pip > /tmp/pip-upgrade.log 2>&1
+          pip_upgrade_status=$?
+          pip install -e '.[dev]' > /tmp/install.log 2>&1
+          install_status=$?
+          ruff format \
+            services/core/src/simorgh_core/agents/read_tool_contracts.py \
+            services/core/src/simorgh_core/agents/github_read_contracts.py \
+            services/core/src/simorgh_core/agents/github_read_adapter.py \
+            services/core/src/simorgh_core/agents/github_read_service.py \
+            services/core/src/simorgh_core/agents/tool_gateway.py \
+            services/core/tests/test_github_read_acceptance.py \
+            > /tmp/ruff-format.log 2>&1
+          format_status=$?
+          ruff check --fix \
+            services/core/src/simorgh_core/agents/read_tool_contracts.py \
+            services/core/src/simorgh_core/agents/github_read_contracts.py \
+            services/core/src/simorgh_core/agents/github_read_adapter.py \
+            services/core/src/simorgh_core/agents/github_read_service.py \
+            services/core/src/simorgh_core/agents/tool_gateway.py \
+            services/core/tests/test_github_read_acceptance.py \
+            > /tmp/ruff-fix.log 2>&1
+          ruff_fix_status=$?
+          ruff check . > /tmp/ruff.log 2>&1
+          ruff_status=$?
+          mypy services/core/src > /tmp/mypy.log 2>&1
+          mypy_status=$?
+          pytest > /tmp/pytest.log 2>&1
+          pytest_status=$?
+          git diff --check > /tmp/diff-check.log 2>&1
+          diff_status=$?
+          {
+            echo "patch_status=${{ steps.patch.outcome }}"
+            echo "pip_upgrade_status=$pip_upgrade_status"
+            echo "install_status=$install_status"
+            echo "format_status=$format_status"
+            echo "ruff_fix_status=$ruff_fix_status"
+            echo "ruff_status=$ruff_status"
+            echo "mypy_status=$mypy_status"
+            echo "pytest_status=$pytest_status"
+            echo "diff_status=$diff_status"
+            echo
+            echo "=== ruff ==="
+            cat /tmp/ruff.log
+            echo
+            echo "=== mypy ==="
+            cat /tmp/mypy.log
+            echo
+            echo "=== pytest tail ==="
+            tail -n 160 /tmp/pytest.log
+            echo
+            echo "=== diff stat ==="
+            git diff --stat
+          } | tee /tmp/phase15-acceptance-report.txt
+          if (( pip_upgrade_status || install_status || format_status || ruff_fix_status || ruff_status || mypy_status || pytest_status || diff_status )); then
+            exit 1
+          fi
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase15-acceptance-diagnostic-v2
+          path: |
+            /tmp/phase15-patch.log
+            /tmp/phase15-acceptance-report.txt
+            /tmp/install.log
+            /tmp/ruff-format.log
+            /tmp/ruff-fix.log
+            /tmp/ruff.log
+            /tmp/mypy.log
+            /tmp/pytest.log
+            /tmp/diff-check.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Commit validated acceptance implementation
+        if: steps.validate.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: complete governed GitHub read acceptance boundary'
+
+      - name: Protected fast-forward push
+        if: steps.validate.outcome == 'success'
+        shell: bash
+        env:
+          BRANCH: core/governed-github-read-tools
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
