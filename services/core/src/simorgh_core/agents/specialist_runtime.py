@@ -16,8 +16,6 @@ from simorgh_core.agents.contracts import (
     UsageVector,
 )
 from simorgh_core.agents.invocations import (
-    InvocationConflictError,
-    InvocationEffect,
     InvocationKind,
     InvocationRecord,
     InvocationStartKind,
@@ -99,16 +97,11 @@ class SpecialistExecutionRuntime:
             invocation_id=invocation_id,
             context_fingerprint=context_fingerprint,
             requested_capabilities=capabilities,
-            created_at_ms=self._now_ms(),
+            # Creation identity must survive process restart. Current time is checked separately
+            # for execution admission and is intentionally excluded from durable input identity.
+            created_at_ms=task.received_at_ms,
         )
         self._require_budget(request=request, budget=budget)
-        self._require_not_cancelled(
-            request=request,
-            budget=budget,
-            cancellation=token,
-        )
-        self._require_not_expired(request)
-        executor = self._executors.require_definition(definition)
         fingerprint = specialist_execution_fingerprint(request)
 
         try:
@@ -143,7 +136,14 @@ class SpecialistExecutionRuntime:
             )
 
         try:
-            token.raise_if_cancelled()
+            self._require_not_cancelled(
+                budget=budget,
+                cancellation=token,
+            )
+            self._require_not_expired(request)
+            # Executor availability is required only for a new invocation. Completed durable
+            # replay must not depend on the current in-process implementation registry.
+            executor = self._executors.require_definition(definition)
             raw_result = await executor.execute(
                 request=request,
                 cancellation=token,
@@ -154,7 +154,6 @@ class SpecialistExecutionRuntime:
                 raw_result=raw_result,
             )
             self._require_not_cancelled(
-                request=request,
                 budget=budget,
                 cancellation=token,
             )
@@ -257,11 +256,9 @@ class SpecialistExecutionRuntime:
     def _require_not_cancelled(
         self,
         *,
-        request: SpecialistExecutionRequest,
         budget: BudgetAccount,
         cancellation: SpecialistCancellation,
     ) -> None:
-        del request
         cancellation.raise_if_cancelled()
         if budget.snapshot().cancelled:
             raise SpecialistExecutionCancelledError(
@@ -347,6 +344,7 @@ class SpecialistExecutionRuntime:
 
 def specialist_execution_fingerprint(request: SpecialistExecutionRequest) -> str:
     payload: dict[str, Any] = request.model_dump(mode="json")
+    payload.pop("created_at_ms", None)
     capabilities = payload["capabilities"]
     if not isinstance(capabilities, dict):
         raise SpecialistResultContractError(
@@ -402,5 +400,9 @@ def validate_specialist_result(
     if result.replay != SpecialistReplayDisposition.FRESH:
         raise SpecialistResultContractError(
             "specialist implementation cannot claim durable replay"
+        )
+    if result.committed_usage != _ZERO_USAGE:
+        raise SpecialistResultContractError(
+            "native specialist result cannot bypass governed model/tool accounting"
         )
     return result
