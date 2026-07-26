@@ -15,6 +15,7 @@ from simorgh_core.agents.contracts import (
 )
 from simorgh_core.agents.defaults import default_specialist_registry
 from simorgh_core.agents.invocations import InMemoryInvocationStore
+from simorgh_core.agents.registry import intersect_budgets
 from simorgh_core.agents.specialist_control import (
     SpecialistTaskExecutionAdapter,
     SpecialistTaskNotExecutableError,
@@ -60,12 +61,12 @@ def _decision(task: TaskEnvelope, *, version: str = "1.0.0") -> RoutingDecision:
 
 def _routed_record(task: TaskEnvelope, *, version: str = "1.0.0") -> AgentTaskRecord:
     definition = default_specialist_registry().get("development.planner")
-    limits = definition.budget_ceiling.model_copy(
+    limits = intersect_budgets(task.budget, definition.budget_ceiling).model_copy(
         update={
             "max_model_calls": 0,
             "max_tool_calls": 0,
             "max_estimated_cost_microusd": 0,
-            "max_elapsed_ms": 30_000,
+            "max_elapsed_ms": min(task.budget.max_elapsed_ms, 30_000),
         }
     )
     account = BudgetAccount(
