@@ -1,4 +1,4 @@
-name: Phase 1.5 GitHub Read Foundation Finalizer v3
+name: Phase 1.5 GitHub Read Foundation Finalizer v4
 
 on:
   push:
@@ -54,9 +54,25 @@ jobs:
           )
           replace_once(
               contracts,
+              '_ARGUMENT_ADAPTER = TypeAdapter(GitHubReadArguments)\n',
+              '_ARGUMENT_ADAPTER: TypeAdapter[GitHubReadArguments] = TypeAdapter(\n'
+              '    GitHubReadArguments\n'
+              ')\n',
+              label='GitHub argument adapter typing',
+          )
+          replace_once(
+              contracts,
               'GitHubReadProjection: TypeAlias = Annotated[\n',
               'type GitHubReadProjection = Annotated[\n',
               label='GitHub projection alias',
+          )
+          replace_once(
+              contracts,
+              '_PROJECTION_ADAPTER = TypeAdapter(GitHubReadProjection)\n',
+              '_PROJECTION_ADAPTER: TypeAdapter[GitHubReadProjection] = TypeAdapter(\n'
+              '    GitHubReadProjection\n'
+              ')\n',
+              label='GitHub projection adapter typing',
           )
 
           service = 'services/core/src/simorgh_core/agents/github_read_service.py'
@@ -152,6 +168,27 @@ jobs:
               '        )\n\n\n'
               'def _require_manifest_limits(\n',
               label='projection policy helper',
+          )
+
+          tests = 'services/core/tests/test_github_read_service.py'
+          replace_once(
+              tests,
+              '    GitHubReadToolInvoker,\n',
+              '',
+              label='remove service invoker from adapter import',
+          )
+          replace_once(
+              tests,
+              'from simorgh_core.agents.github_read_service import (\n'
+              '    GitHubReadPolicyError,\n'
+              '    GovernedGitHubReadService,\n'
+              ')\n',
+              'from simorgh_core.agents.github_read_service import (\n'
+              '    GitHubReadPolicyError,\n'
+              '    GitHubReadToolInvoker,\n'
+              '    GovernedGitHubReadService,\n'
+              ')\n',
+              label='import invoker from service module',
           )
           PY
           rm -f .github/workflows/phase15-foundation-hardening.yml
