@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; a zero-external native specialist execution runtime is validating in PR #44. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; the zero-external native specialist execution runtime merged in PR #44. The default API remains routing-only.
 
 ## Purpose
 
@@ -29,7 +29,7 @@ internal typed specialist execution
 durable specialist invocation result or honest terminal uncertainty
 ```
 
-The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #44 adds an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint.
+The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #44 merged an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint.
 
 ## Native durable authorities
 
@@ -454,7 +454,7 @@ The invocation schema includes parent identity and attempt metadata for future e
 Follow-up issues:
 
 - #36 complete the native runtime and GitHub workflow;
-- #40 / PR #44 validate the native specialist execution interface;
+- #40 / PR #44 native specialist execution interface, complete;
 - #31 Persian Voice/Wake word;
 - #32 Notification intelligence;
 - #33 governed MCP registry;

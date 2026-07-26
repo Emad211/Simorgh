@@ -1,6 +1,6 @@
 # Simorgh specialist execution runtime
 
-Status: Phase 1 Step 1.3 is validating in issue #40 and Draft PR #44; ADR 0016 is accepted.
+Status: Phase 1 Step 1.3 merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`; issue #40 is complete and ADR 0016 is accepted.
 
 This runtime executes exactly one specialist that has already been selected by the durable routing control plane. It does not route a task, discover permissions, connect to external systems, or authorize a side effect.
 

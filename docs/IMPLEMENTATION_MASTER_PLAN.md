@@ -43,7 +43,7 @@ A step is not complete because code exists. It is complete only when its failure
 Phase 0 Governance                       COMPLETE
 Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
-Phase 1.3 Specialist Execution           VALIDATING — issue #40 / PR #44
+Phase 1.3 Specialist Execution           COMPLETE — PR #44
 Phase 1.4 Typed Results and Artifacts    QUEUED
 Phase 1.5 Governed GitHub Read Tools     QUEUED
 Phase 1.6 Cancellation Propagation       QUEUED
@@ -203,11 +203,11 @@ durable completed result or terminal uncertainty
 - no Voice/Notification/MCP work;
 - no distributed multi-process store lease.
 
-## 1.3 Specialist execution interface — VALIDATING
+## 1.3 Specialist execution interface — COMPLETE
 
-Issue #40; Draft PR #44. ADR 0016 accepted.
+Merged through PR #44 at `2bc113a29960a1935db3f91c27cb6863f0ac35b5`. Issue #40 completed; ADR 0016 accepted.
 
-Implemented in the open PR:
+Delivered in PR #44:
 
 - immutable request/result contracts derived from durable route and compiled policy;
 - concrete `SpecialistPlanPayload`; arbitrary final dictionaries and raw model text rejected;
