@@ -258,7 +258,7 @@ async def test_static_proposal_executor_returns_typed_zero_usage_result() -> Non
 
     assert result.outcome == SpecialistExecutionOutcome.COMPLETED
     assert result.payload is not None
-    assert result.payload["steps"] == ["تعریف قرارداد", "اجرای تست"]
+    assert result.payload.steps == ("تعریف قرارداد", "اجرای تست")
     assert result.committed_usage.model_calls == 0
     assert result.committed_usage.tool_calls == 0
     assert budget.snapshot().committed.model_calls == 0

@@ -36,6 +36,12 @@ from simorgh_core.agents.specialist_execution import (
     SpecialistResultContractError,
     build_specialist_execution_request,
 )
+from simorgh_core.agents.tracing import (
+    NullTraceSink,
+    TraceEventKind,
+    TraceSink,
+    trace_event,
+)
 
 _SPECIALIST_OPERATION = "specialist.execute"
 _ZERO_USAGE = UsageVector()
@@ -69,10 +75,12 @@ class SpecialistExecutionRuntime:
         *,
         executor_registry: SpecialistExecutorRegistry,
         invocation_store: InvocationStore,
+        trace_sink: TraceSink | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
     ) -> None:
         self._executors = executor_registry
         self._invocations = invocation_store
+        self._traces = trace_sink or NullTraceSink()
         self._wall_clock_millis = wall_clock_millis or (
             lambda: int(time.time() * 1_000)
         )
@@ -101,6 +109,7 @@ class SpecialistExecutionRuntime:
             # for execution admission and is intentionally excluded from durable input identity.
             created_at_ms=task.received_at_ms,
         )
+        token.require_owner(request.cancellation_owner_id)
         self._require_budget(request=request, budget=budget)
         fingerprint = specialist_execution_fingerprint(request)
 
@@ -121,10 +130,18 @@ class SpecialistExecutionRuntime:
             ) from exc
 
         if started.kind == InvocationStartKind.REPLAY:
-            return self._replay_completed(
+            replayed = self._replay_completed(
                 request=request,
                 record=started.record,
             )
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.INVOCATION_REPLAYED,
+                outcome=replayed.outcome.value,
+                usage=replayed.committed_usage,
+                replayed=True,
+            )
+            return replayed
         if started.kind == InvocationStartKind.IN_PROGRESS:
             raise SpecialistInvocationInProgressError(
                 f"specialist invocation {request.invocation_id} is already in progress"
@@ -145,6 +162,11 @@ class SpecialistExecutionRuntime:
             # Executor availability is required only for a new invocation. Completed durable
             # replay must not depend on the current in-process implementation registry.
             executor = self._executors.require_definition(definition)
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_STARTED,
+                outcome="started",
+            )
             raw_result = await executor.execute(
                 request=request,
                 cancellation=token,
@@ -161,12 +183,30 @@ class SpecialistExecutionRuntime:
             self._require_not_expired(request)
             self._require_elapsed_available(budget)
         except SpecialistExecutionCancelledError:
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.CANCELLED.value,
+                reason="specialist_cancelled",
+            )
             self._cancel_invocation(request.invocation_id)
             raise
         except SpecialistExecutionExpiredError:
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.EXPIRED.value,
+                reason="specialist_expired",
+            )
             self._expire_invocation(request.invocation_id)
             raise
         except asyncio.CancelledError:
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.UNKNOWN.value,
+                reason="specialist_coroutine_cancelled",
+            )
             self._mark_unknown(
                 invocation_id=request.invocation_id,
                 failure_code="specialist_coroutine_cancelled",
@@ -176,6 +216,12 @@ class SpecialistExecutionRuntime:
             )
             raise
         except (ValidationError, SpecialistResultContractError) as exc:
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.FAILED.value,
+                reason="specialist_result_contract_invalid",
+            )
             self._fail_invocation(
                 invocation_id=request.invocation_id,
                 failure_code="specialist_result_contract_invalid",
@@ -185,6 +231,12 @@ class SpecialistExecutionRuntime:
                 "specialist result failed typed contract validation"
             ) from exc
         except SpecialistExecutionPolicyError as exc:
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.FAILED.value,
+                reason="specialist_policy_failure",
+            )
             self._fail_invocation(
                 invocation_id=request.invocation_id,
                 failure_code="specialist_policy_failure",
@@ -192,6 +244,12 @@ class SpecialistExecutionRuntime:
             )
             raise
         except Exception as exc:
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.FAILED.value,
+                reason="specialist_execution_failure",
+            )
             self._fail_invocation(
                 invocation_id=request.invocation_id,
                 failure_code="specialist_execution_failure",
@@ -209,9 +267,21 @@ class SpecialistExecutionRuntime:
             self._mark_unknown_after_completion_failure(
                 invocation_id=request.invocation_id,
             )
+            self._emit_trace(
+                request=request,
+                kind=TraceEventKind.SPECIALIST_FAILED,
+                outcome=SpecialistExecutionOutcome.UNKNOWN.value,
+                reason="specialist_result_commit_failed",
+            )
             raise SpecialistExecutionStoreError(
                 "specialist result could not be durably committed"
             ) from exc
+        self._emit_trace(
+            request=request,
+            kind=TraceEventKind.SPECIALIST_COMPLETED,
+            outcome=result.outcome.value,
+            usage=result.committed_usage,
+        )
         return result
 
     def _replay_completed(
@@ -351,6 +421,37 @@ class SpecialistExecutionRuntime:
             raise SpecialistExecutionStoreError(
                 "specialist failure could not be durably recorded"
             ) from exc
+
+    def _emit_trace(
+        self,
+        *,
+        request: SpecialistExecutionRequest,
+        kind: TraceEventKind,
+        outcome: str,
+        usage: UsageVector | None = None,
+        reason: str | None = None,
+        replayed: bool = False,
+    ) -> None:
+        self._traces.emit(
+            trace_event(
+                request_id=request.request_id,
+                invocation_id=request.invocation_id,
+                kind=kind,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                usage=usage,
+                outcome=outcome,
+                reason=reason,
+                metadata={
+                    "context_bundle_id": str(request.context_bundle_id),
+                    "output_contract": request.output_contract,
+                    "effect": request.effect.value,
+                    "replayed": replayed,
+                    "monotonic_timeout_ms": request.monotonic_timeout_ms,
+                },
+                wall_clock_millis=self._wall_clock_millis,
+            )
+        )
 
     def _now_ms(self) -> int:
         return max(0, int(self._wall_clock_millis()))

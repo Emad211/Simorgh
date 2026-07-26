@@ -41,6 +41,9 @@ def _task(*, private_marker: str = "fixture") -> TaskEnvelope:
         explicit_task_kind=TaskKind.DEVELOPMENT_PLANNING,
         execution_mode=ExecutionMode.PLAN,
         allowed_data_sources=frozenset(),
+        budget=default_specialist_registry()
+        .get("development.planner")
+        .budget_ceiling,
     )
 
 

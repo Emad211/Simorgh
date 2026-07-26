@@ -26,6 +26,14 @@ _FORBIDDEN_METADATA_FRAGMENTS = (
     "document_content",
     "email_body",
     "accessibility_tree",
+    "prompt",
+    "context_body",
+    "context_content",
+    "result_payload",
+    "tool_arguments",
+    "tool_results",
+    "audio",
+    "notification",
 )
 
 
@@ -41,6 +49,9 @@ class TraceEventKind(StrEnum):
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     TOOL_FAILED = "tool_failed"
+    SPECIALIST_STARTED = "specialist_started"
+    SPECIALIST_COMPLETED = "specialist_completed"
+    SPECIALIST_FAILED = "specialist_failed"
     ESCALATION = "escalation"
     TERMINAL = "terminal"
 

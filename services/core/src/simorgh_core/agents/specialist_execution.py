@@ -6,9 +6,9 @@ from collections.abc import Callable, Iterable
 from enum import StrEnum
 from threading import RLock
 from typing import Literal, Protocol, Self
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from simorgh_core.agents.budget import BudgetAccount
 from simorgh_core.agents.contracts import (
@@ -29,6 +29,10 @@ from simorgh_core.agents.invocations import (
     canonical_size_bytes,
 )
 from simorgh_core.agents.registry import intersect_budgets
+from simorgh_core.agents.specialist_results import (
+    SPECIALIST_PLAN_OUTPUT_CONTRACT,
+    SpecialistPlanPayload,
+)
 
 SPECIALIST_EXECUTION_CONTRACT_VERSION: Literal["1.0"] = "1.0"
 MAX_SPECIALIST_INLINE_RESULT_BYTES = 256_000
@@ -134,6 +138,8 @@ class SpecialistExecutionRequest(BaseModel):
     schema_version: Literal["1.0"] = SPECIALIST_EXECUTION_CONTRACT_VERSION
     request_id: UUID
     invocation_id: UUID
+    context_bundle_id: UUID
+    cancellation_owner_id: UUID
     agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)
     agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)
     task_kind: TaskKind
@@ -153,9 +159,10 @@ class SpecialistExecutionRequest(BaseModel):
     )
     capabilities: SpecialistCapabilitySet
     effective_budget: TaskBudget
+    monotonic_timeout_ms: int = Field(ge=1, le=86_400_000)
     created_at_ms: int = Field(ge=0)
     deadline_at_ms: int | None = Field(default=None, ge=0)
-    parent_invocation_id: None = None
+    parent_invocation_id: UUID | None = None
     attempt: Literal[1] = 1
 
     @model_validator(mode="after")
@@ -171,6 +178,10 @@ class SpecialistExecutionRequest(BaseModel):
             raise ValueError("typed mutation capability requires a mutation specialist invocation")
         if self.effect == InvocationEffect.PROPOSAL and not self.capabilities.proposal_allowed:
             raise ValueError("proposal specialist execution requires proposal capability")
+        if self.monotonic_timeout_ms != self.effective_budget.max_elapsed_ms:
+            raise ValueError(
+                "specialist monotonic timeout must equal the effective budget limit"
+            )
         return self
 
 
@@ -210,13 +221,17 @@ class SpecialistExecutionResult(BaseModel):
     effect: InvocationEffect
     outcome: SpecialistExecutionOutcome
     output_contract: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
-    payload: dict[str, JsonValue] | None = None
+    payload: SpecialistPlanPayload | None = None
     references: tuple[SpecialistResultReference, ...] = Field(default=(), max_length=256)
     committed_usage: UsageVector = Field(default_factory=UsageVector)
     reason: str | None = Field(default=None, max_length=2_000)
     replay: SpecialistReplayDisposition = SpecialistReplayDisposition.FRESH
     started_at_ms: int = Field(ge=0)
     completed_at_ms: int = Field(ge=0)
+
+    @property
+    def replayed(self) -> bool:
+        return self.replay == SpecialistReplayDisposition.REPLAYED
 
     @model_validator(mode="after")
     def validate_terminal_shape(self) -> Self:
@@ -225,6 +240,10 @@ class SpecialistExecutionResult(BaseModel):
         if self.outcome == SpecialistExecutionOutcome.COMPLETED:
             if self.payload is None:
                 raise ValueError("completed specialist execution requires a typed payload")
+            if self.output_contract != SPECIALIST_PLAN_OUTPUT_CONTRACT:
+                raise ValueError(
+                    "specialist plan payload requires the typed-plan output contract"
+                )
             if self.reason is not None:
                 raise ValueError("completed specialist execution cannot contain a failure reason")
             if canonical_size_bytes(self.payload) > MAX_SPECIALIST_INLINE_RESULT_BYTES:
@@ -250,10 +269,26 @@ class SpecialistExecutionResult(BaseModel):
 class SpecialistCancellation:
     """Small thread-safe token for cooperative in-process cancellation."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, owner_id: UUID | None = None) -> None:
         self._lock = RLock()
+        self._owner_id = owner_id
         self._cancelled = False
         self._reason: str | None = None
+
+    @property
+    def owner_id(self) -> UUID | None:
+        with self._lock:
+            return self._owner_id
+
+    def require_owner(self, expected_owner_id: UUID) -> None:
+        with self._lock:
+            if self._owner_id is None:
+                self._owner_id = expected_owner_id
+                return
+            if self._owner_id != expected_owner_id:
+                raise SpecialistExecutionPolicyError(
+                    "specialist cancellation owner does not match execution request"
+                )
 
     @property
     def cancelled(self) -> bool:
@@ -357,13 +392,17 @@ class StaticProposalSpecialistExecutor:
         agent_id: str,
         agent_version: str,
         output_contract: str,
-        payload: dict[str, JsonValue],
+        payload: SpecialistPlanPayload | dict[str, object],
         wall_clock_millis: Callable[[], int] | None = None,
     ) -> None:
         self._agent_id = agent_id
         self._agent_version = agent_version
+        if output_contract != SPECIALIST_PLAN_OUTPUT_CONTRACT:
+            raise SpecialistExecutionPolicyError(
+                "static proposal executor requires the typed-plan output contract"
+            )
         self._output_contract = output_contract
-        self._payload = dict(payload)
+        self._payload = SpecialistPlanPayload.model_validate(payload)
         self._wall_clock_millis = wall_clock_millis or (lambda: int(time.time() * 1_000))
         # Validate the static fixture immediately rather than at execution time.
         canonical_size_bytes(self._payload)
@@ -472,9 +511,18 @@ def build_specialist_execution_request(
     )
     task_payload = task.model_dump(mode="json")
     task_payload["allowed_data_sources"] = sorted(task.allowed_data_sources)
+    effective_budget = intersect_budgets(task.budget, definition.budget_ceiling)
     return SpecialistExecutionRequest(
         request_id=task.request_id,
         invocation_id=invocation_id,
+        context_bundle_id=uuid5(
+            NAMESPACE_URL,
+            f"simorgh-context:{task.request_id}:{context_fingerprint}",
+        ),
+        cancellation_owner_id=uuid5(
+            NAMESPACE_URL,
+            f"simorgh-cancellation:{task.request_id}:{invocation_id}",
+        ),
         agent_id=definition.agent_id,
         agent_version=definition.version,
         task_kind=task_kind,
@@ -485,7 +533,8 @@ def build_specialist_execution_request(
         task_fingerprint=canonical_fingerprint(task_payload),
         context_fingerprint=context_fingerprint,
         capabilities=capabilities,
-        effective_budget=intersect_budgets(task.budget, definition.budget_ceiling),
+        effective_budget=effective_budget,
+        monotonic_timeout_ms=effective_budget.max_elapsed_ms,
         created_at_ms=now,
         deadline_at_ms=task.deadline_at_ms,
     )

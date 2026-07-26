@@ -4,6 +4,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+SPECIALIST_PLAN_OUTPUT_CONTRACT = "simorgh.typed-plan.v1"
+
 
 class SpecialistPlanPayload(BaseModel):
     """Concrete Phase 1.3 proposal payload.
