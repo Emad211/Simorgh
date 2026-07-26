@@ -1,0 +1,91 @@
+name: PR47 Result Store Finalizer
+
+on:
+  push:
+    branches:
+      - core/typed-results-artifacts
+    paths:
+      - .github/workflows/pr47-store-finalizer.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr47-result-store-finalizer
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact store formatting correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('services/core/src/simorgh_core/agents/result_store.py')
+          text = path.read_text(encoding='utf-8')
+          old = (
+              '        self._connection.execute(\n'
+              '            "CREATE TABLE IF NOT EXISTS result_store_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"\n'
+              '        )\n'
+          )
+          new = (
+              '        self._connection.execute(\n'
+              '            "CREATE TABLE IF NOT EXISTS result_store_meta("\n'
+              '            "key TEXT PRIMARY KEY, value TEXT NOT NULL)"\n'
+              '        )\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit(f'result-store formatting anchor count={text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm -f .github/workflows/pr47-store-finalizer.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run complete Core authority gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Commit validated result authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: validate SQLite typed result and artifact authority'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/typed-results-artifacts
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
