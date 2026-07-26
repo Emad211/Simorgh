@@ -1,0 +1,74 @@
+name: Phase 1.3 code hardening diagnostic
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-interface
+    paths:
+      - .github/workflows/phase13-code-hardening-diagnostic.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: phase13-code-hardening-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Diagnose verification and patch anchors without persisting
+        id: diagnose
+        shell: bash
+        run: |
+          set +e
+          b64_sha=$(sha256sum scripts/phase13_reconcile.py.gz.b64 | awk '{print $1}')
+          base64 --decode scripts/phase13_reconcile.py.gz.b64 | gunzip > "$RUNNER_TEMP/phase13.py" 2>"$RUNNER_TEMP/decode.log"
+          decode_status=$?
+          if [[ -f "$RUNNER_TEMP/phase13.py" ]]; then
+            script_sha=$(sha256sum "$RUNNER_TEMP/phase13.py" | awk '{print $1}')
+          else
+            script_sha=missing
+          fi
+          if [[ $decode_status -eq 0 ]]; then
+            python "$RUNNER_TEMP/phase13.py" >"$RUNNER_TEMP/patch.log" 2>&1
+            patch_status=$?
+          else
+            patch_status=99
+            cp "$RUNNER_TEMP/decode.log" "$RUNNER_TEMP/patch.log"
+          fi
+          {
+            echo "head=$GITHUB_SHA"
+            echo "b64_sha=$b64_sha"
+            echo "expected_b64_sha=f3f2faa897fc91dc53554c7e8c4e68ad9dd4aad58da5ae9af120271870d0e8e9"
+            echo "decode_status=$decode_status"
+            echo "script_sha=$script_sha"
+            echo "expected_script_sha=d78f40938624a8b545c46c0449f8d637be089f43225744ef70dbc053bc0adff9"
+            echo "patch_status=$patch_status"
+            echo "--- patch_log_tail ---"
+            tail -c 7000 "$RUNNER_TEMP/patch.log"
+          } > "$RUNNER_TEMP/report.txt"
+          cat "$RUNNER_TEMP/report.txt"
+          exit 0
+
+      - name: Report diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          body=$(python - <<'PY'
+          from pathlib import Path
+          text = Path('${{ runner.temp }}/report.txt').read_text(encoding='utf-8', errors='replace')
+          print('Phase 1.3 hardening diagnostic (no product files persisted):\n\n```text\n' + text + '\n```')
+          PY
+          )
+          gh api "repos/${GITHUB_REPOSITORY}/issues/41/comments" -f body="$body"
