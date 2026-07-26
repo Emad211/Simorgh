@@ -1,0 +1,234 @@
+name: PR44 Specialist Authority Contract
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-runtime-clean
+    paths:
+      - .github/workflows/pr44-authority-contract.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr44-specialist-authority-contract
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact authority-contract changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"anchor count={count}, expected=1: {old[:120]!r}")
+              return text.replace(old, new, 1)
+
+          path = Path('services/core/src/simorgh_core/agents/specialist_execution.py')
+          text = path.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              'from uuid import UUID\n',
+              'from uuid import NAMESPACE_URL, UUID, uuid5\n',
+          )
+          text = replace_once(
+              text,
+              'from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator\n',
+              'from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator\n',
+          )
+          text = replace_once(
+              text,
+              'from simorgh_core.agents.registry import intersect_budgets\n',
+              'from simorgh_core.agents.registry import intersect_budgets\n'
+              'from simorgh_core.agents.specialist_results import SpecialistPlanPayload\n',
+          )
+          text = replace_once(
+              text,
+              '    request_id: UUID\n'
+              '    invocation_id: UUID\n'
+              '    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)\n',
+              '    request_id: UUID\n'
+              '    invocation_id: UUID\n'
+              '    context_bundle_id: UUID\n'
+              '    cancellation_owner_id: UUID\n'
+              '    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)\n',
+          )
+          text = replace_once(
+              text,
+              '    capabilities: SpecialistCapabilitySet\n'
+              '    effective_budget: TaskBudget\n'
+              '    created_at_ms: int = Field(ge=0)\n',
+              '    capabilities: SpecialistCapabilitySet\n'
+              '    effective_budget: TaskBudget\n'
+              '    monotonic_timeout_ms: int = Field(ge=1, le=86_400_000)\n'
+              '    created_at_ms: int = Field(ge=0)\n',
+          )
+          text = replace_once(
+              text,
+              '        if self.effect == InvocationEffect.PROPOSAL and not self.capabilities.proposal_allowed:\n'
+              '            raise ValueError("proposal specialist execution requires proposal capability")\n'
+              '        return self\n',
+              '        if self.effect == InvocationEffect.PROPOSAL and not self.capabilities.proposal_allowed:\n'
+              '            raise ValueError("proposal specialist execution requires proposal capability")\n'
+              '        if self.monotonic_timeout_ms != self.effective_budget.max_elapsed_ms:\n'
+              '            raise ValueError(\n'
+              '                "specialist monotonic timeout must equal the effective budget limit"\n'
+              '            )\n'
+              '        return self\n',
+          )
+          text = replace_once(
+              text,
+              '    payload: dict[str, JsonValue] | None = None\n',
+              '    payload: SpecialistPlanPayload | None = None\n',
+          )
+          text = replace_once(
+              text,
+              '    def __init__(self) -> None:\n'
+              '        self._lock = RLock()\n'
+              '        self._cancelled = False\n'
+              '        self._reason: str | None = None\n',
+              '    def __init__(self, *, owner_id: UUID | None = None) -> None:\n'
+              '        self._lock = RLock()\n'
+              '        self._owner_id = owner_id\n'
+              '        self._cancelled = False\n'
+              '        self._reason: str | None = None\n',
+          )
+          text = replace_once(
+              text,
+              '    @property\n'
+              '    def cancelled(self) -> bool:\n'
+              '        with self._lock:\n'
+              '            return self._cancelled\n',
+              '    @property\n'
+              '    def owner_id(self) -> UUID | None:\n'
+              '        with self._lock:\n'
+              '            return self._owner_id\n\n'
+              '    def require_owner(self, expected_owner_id: UUID) -> None:\n'
+              '        with self._lock:\n'
+              '            if self._owner_id is None:\n'
+              '                self._owner_id = expected_owner_id\n'
+              '                return\n'
+              '            if self._owner_id != expected_owner_id:\n'
+              '                raise SpecialistExecutionPolicyError(\n'
+              '                    "specialist cancellation owner does not match execution request"\n'
+              '                )\n\n'
+              '    @property\n'
+              '    def cancelled(self) -> bool:\n'
+              '        with self._lock:\n'
+              '            return self._cancelled\n',
+          )
+          text = replace_once(
+              text,
+              '        payload: dict[str, JsonValue],\n',
+              '        payload: SpecialistPlanPayload | dict[str, object],\n',
+          )
+          text = replace_once(
+              text,
+              '        self._payload = dict(payload)\n',
+              '        self._payload = SpecialistPlanPayload.model_validate(payload)\n',
+          )
+          text = replace_once(
+              text,
+              '    task_payload = task.model_dump(mode="json")\n'
+              '    task_payload["allowed_data_sources"] = sorted(task.allowed_data_sources)\n'
+              '    return SpecialistExecutionRequest(\n',
+              '    task_payload = task.model_dump(mode="json")\n'
+              '    task_payload["allowed_data_sources"] = sorted(task.allowed_data_sources)\n'
+              '    effective_budget = intersect_budgets(task.budget, definition.budget_ceiling)\n'
+              '    return SpecialistExecutionRequest(\n',
+          )
+          text = replace_once(
+              text,
+              '        request_id=task.request_id,\n'
+              '        invocation_id=invocation_id,\n'
+              '        agent_id=definition.agent_id,\n',
+              '        request_id=task.request_id,\n'
+              '        invocation_id=invocation_id,\n'
+              '        context_bundle_id=uuid5(\n'
+              '            NAMESPACE_URL,\n'
+              '            f"simorgh-context:{task.request_id}:{context_fingerprint}",\n'
+              '        ),\n'
+              '        cancellation_owner_id=uuid5(\n'
+              '            NAMESPACE_URL,\n'
+              '            f"simorgh-cancellation:{task.request_id}:{invocation_id}",\n'
+              '        ),\n'
+              '        agent_id=definition.agent_id,\n',
+          )
+          text = replace_once(
+              text,
+              '        capabilities=capabilities,\n'
+              '        effective_budget=intersect_budgets(task.budget, definition.budget_ceiling),\n'
+              '        created_at_ms=now,\n',
+              '        capabilities=capabilities,\n'
+              '        effective_budget=effective_budget,\n'
+              '        monotonic_timeout_ms=effective_budget.max_elapsed_ms,\n'
+              '        created_at_ms=now,\n',
+          )
+          path.write_text(text, encoding='utf-8')
+
+          runtime = Path('services/core/src/simorgh_core/agents/specialist_runtime.py')
+          runtime_text = runtime.read_text(encoding='utf-8')
+          runtime_text = replace_once(
+              runtime_text,
+              '        self._require_budget(request=request, budget=budget)\n'
+              '        fingerprint = specialist_execution_fingerprint(request)\n',
+              '        token.require_owner(request.cancellation_owner_id)\n'
+              '        self._require_budget(request=request, budget=budget)\n'
+              '        fingerprint = specialist_execution_fingerprint(request)\n',
+          )
+          runtime.write_text(runtime_text, encoding='utf-8')
+
+          contracts_test = Path(
+              'services/core/tests/test_specialist_execution_contracts.py'
+          )
+          test_text = contracts_test.read_text(encoding='utf-8')
+          test_text = replace_once(
+              test_text,
+              '    assert result.payload is not None\n'
+              '    assert result.payload["steps"] == ["تعریف قرارداد", "اجرای تست"]\n',
+              '    assert result.payload is not None\n'
+              '    assert result.payload.steps == ("تعریف قرارداد", "اجرای تست")\n',
+          )
+          contracts_test.write_text(test_text, encoding='utf-8')
+          PY
+          rm -f .github/workflows/pr44-authority-contract.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Validate authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Commit validated authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: bind specialist result context and cancellation authority'
+          git push origin HEAD:core/specialist-execution-runtime-clean
