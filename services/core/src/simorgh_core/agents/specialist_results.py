@@ -4,7 +4,9 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SPECIALIST_PLAN_OUTPUT_CONTRACT = "simorgh.typed-plan.v1"
+SPECIALIST_PLAN_OUTPUT_CONTRACT: Literal[
+    "simorgh.typed-plan.v1"
+] = "simorgh.typed-plan.v1"
 
 
 class SpecialistPlanPayload(BaseModel):
