@@ -19,22 +19,70 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
-      - name: Verify and extract script without executing it
+      - name: Diagnose and extract script without executing it
         shell: bash
         run: |
           set -euo pipefail
-          source=scripts/phase13_reconcile.py.gz.b64
-          test -f "$source"
-          echo "34531d58090371fa05a0a4f4a3c43f1c7595596ba5f0e23fe969fc03ca023b5c  $source" \
-            | sha256sum --check --strict
           mkdir -p "$RUNNER_TEMP/audit"
-          base64 --decode "$source" | gunzip > "$RUNNER_TEMP/audit/phase13_reconcile.py"
-          echo "e93d4c22ea804cc408da10dadbe9dd8b4c3888b9619c4b3b07f5f8f5bdea87e2  $RUNNER_TEMP/audit/phase13_reconcile.py" \
-            | sha256sum --check --strict
-          python -m py_compile "$RUNNER_TEMP/audit/phase13_reconcile.py"
-          sha256sum "$RUNNER_TEMP/audit/phase13_reconcile.py" > "$RUNNER_TEMP/audit/SHA256SUMS.txt"
+          python - <<'PY'
+          from __future__ import annotations
 
-      - name: Upload plain script for human audit
+          import base64
+          import gzip
+          import hashlib
+          import os
+          from pathlib import Path
+          import py_compile
+
+          source = Path('scripts/phase13_reconcile.py.gz.b64')
+          audit = Path(os.environ['RUNNER_TEMP']) / 'audit'
+          report: list[str] = [f'head={os.environ["GITHUB_SHA"]}']
+          expected_source = '34531d58090371fa05a0a4f4a3c43f1c7595596ba5f0e23fe969fc03ca023b5c'
+          expected_script = 'e93d4c22ea804cc408da10dadbe9dd8b4c3888b9619c4b3b07f5f8f5bdea87e2'
+          if not source.is_file():
+              report.append('source=missing')
+          else:
+              raw = source.read_bytes()
+              source_hash = hashlib.sha256(raw).hexdigest()
+              report.extend([
+                  f'source_bytes={len(raw)}',
+                  f'source_sha256={source_hash}',
+                  f'source_expected_sha256={expected_source}',
+                  f'source_hash_match={source_hash == expected_source}',
+              ])
+              compressed: bytes | None = None
+              try:
+                  compressed = base64.b64decode(raw.strip(), validate=True)
+                  report.append('base64_status=valid')
+                  report.append(f'gzip_bytes={len(compressed)}')
+                  (audit / 'phase13_reconcile.py.gz').write_bytes(compressed)
+              except Exception as exc:
+                  report.append(f'base64_status=invalid:{exc.__class__.__name__}')
+              if compressed is not None:
+                  try:
+                      script = gzip.decompress(compressed)
+                      script_hash = hashlib.sha256(script).hexdigest()
+                      report.extend([
+                          'gzip_status=valid',
+                          f'script_bytes={len(script)}',
+                          f'script_sha256={script_hash}',
+                          f'script_expected_sha256={expected_script}',
+                          f'script_hash_match={script_hash == expected_script}',
+                      ])
+                      script_path = audit / 'phase13_reconcile.py'
+                      script_path.write_bytes(script)
+                      try:
+                          py_compile.compile(str(script_path), doraise=True)
+                          report.append('syntax_status=valid')
+                      except Exception as exc:
+                          report.append(f'syntax_status=invalid:{exc.__class__.__name__}')
+                  except Exception as exc:
+                      report.append(f'gzip_status=invalid:{exc.__class__.__name__}')
+          (audit / 'REPORT.txt').write_text('\n'.join(report) + '\n', encoding='utf-8')
+          print('\n'.join(report))
+          PY
+
+      - name: Upload diagnostics and extracted script
         uses: actions/upload-artifact@v4
         with:
           name: phase13-reconciliation-script-audit
