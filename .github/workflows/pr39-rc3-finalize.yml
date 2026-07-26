@@ -1,4 +1,4 @@
-name: PR39 RC3 Product Finalize
+name: PR39 RC3 AST-Normalized Finalize
 
 on:
   push:
@@ -32,15 +32,13 @@ jobs:
       - name: Report start
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           gh api --method PATCH \
             "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 product finalizer: **running**
+          PR39 RC3 AST-normalized finalizer: **running**
 
-          - Exact triggering head: \`${GITHUB_SHA}\`
-          - Current gate: archive verification, publisher compatibility, and transactional apply
+          - Exact head: \`${GITHUB_SHA}\`
           - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - uses: actions/setup-python@v5
@@ -48,20 +46,19 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Reconstruct and verify RC3 archive
+      - name: Reconstruct and verify RC3
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import base64, hashlib, os, stat, zipfile
           from pathlib import Path, PurePosixPath
-
           root = Path('.simorgh-patches/pr39-rc3')
           names = [f'part-{i:02d}.b64' for i in range(9)]
           lengths = [8000] * 8 + [7748]
-          if sorted(path.name for path in root.glob('part-*.b64')) != names:
-              raise SystemExit('unexpected RC3 chunk set')
-          pieces: list[str] = []
+          if sorted(p.name for p in root.glob('part-*.b64')) != names:
+              raise SystemExit('unexpected chunk set')
+          pieces = []
           for name, length in zip(names, lengths, strict=True):
               raw = (root / name).read_bytes()
               if len(raw) != length:
@@ -70,41 +67,37 @@ jobs:
           archive = base64.b64decode(''.join(pieces), validate=True)
           expected = 'dde9c1eed40d319b1fde9e913b3510aa0fd4fa0e36b31436d58c8d231fa2f2a4'
           if len(archive) != 53811 or hashlib.sha256(archive).hexdigest() != expected:
-              raise SystemExit('RC3 archive identity mismatch')
+              raise SystemExit('archive identity mismatch')
           bundle = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle'
           bundle.mkdir(parents=True, exist_ok=False)
           archive_path = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3.zip'
           archive_path.write_bytes(archive)
           with zipfile.ZipFile(archive_path) as zf:
               if zf.testzip() is not None:
-                  raise SystemExit('corrupt RC3 archive member')
+                  raise SystemExit('corrupt archive')
               for info in zf.infolist():
                   path = PurePosixPath(info.filename)
-                  if path.is_absolute() or '..' in path.parts:
-                      raise SystemExit('unsafe RC3 archive path')
-                  if stat.S_ISLNK(info.external_attr >> 16):
-                      raise SystemExit('RC3 archive symlink is forbidden')
+                  if path.is_absolute() or '..' in path.parts or stat.S_ISLNK(info.external_attr >> 16):
+                      raise SystemExit('unsafe archive member')
               zf.extractall(bundle)
           if (bundle / 'VERSION').read_text(encoding='utf-8').strip() != '2026.07.26-pr39-step1.2-hardening-rc3':
-              raise SystemExit('RC3 VERSION mismatch')
+              raise SystemExit('version mismatch')
           PY
           BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
           chmod 0755 "$BUNDLE/apply_pr39_complete_hardening.sh" "$BUNDLE/scripts/apply_pr39_complete_hardening.sh"
 
-      - name: Install Core development dependencies
+      - name: Install Core dependencies
         run: python -m pip install --upgrade pip && pip install -e '.[dev]'
 
-      - name: Run original RC3 self-test
-        run: python "$RUNNER_TEMP/pr39-rc3-bundle/scripts/selftest_pr39_hardening_bundle.py"
-
-      - name: Patch Publisher for exact current import shape
+      - name: Self-test and exact Publisher compatibility
         shell: bash
         run: |
           set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
+          python "$BUNDLE/scripts/selftest_pr39_hardening_bundle.py"
           python - <<'PY'
           import os
           from pathlib import Path
-
           path = Path(os.environ['RUNNER_TEMP']) / 'pr39-rc3-bundle/scripts/apply_pr39_hardening.py'
           text = path.read_text(encoding='utf-8')
           pairs = [
@@ -123,25 +116,24 @@ jobs:
               text = text.replace(old, new, 1)
           path.write_text(text, encoding='utf-8')
           PY
-          python -m py_compile "$RUNNER_TEMP/pr39-rc3-bundle/scripts/apply_pr39_hardening.py"
 
-      - name: Exact-head dry-run and transactional apply
+      - name: Dry-run and apply RC3 transactionally
         shell: bash
         run: |
           set -euo pipefail
           BUNDLE="$RUNNER_TEMP/pr39-rc3-bundle"
           bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
-            --dry-run \
-            --backup-dir "$RUNNER_TEMP/pr39-backups"
+            --dry-run --backup-dir "$RUNNER_TEMP/pr39-backups"
           bash "$BUNDLE/apply_pr39_complete_hardening.sh" "$GITHUB_WORKSPACE" \
-            --backup-dir "$RUNNER_TEMP/pr39-backups" \
-            --run-targeted-tests
+            --backup-dir "$RUNNER_TEMP/pr39-backups" --run-targeted-tests
 
-      - name: Normalize modern alias and exact Ruff findings
+      - name: AST-normalize exact Ruff findings
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          from __future__ import annotations
+          import ast
           from pathlib import Path
 
           invocations = Path('services/core/src/simorgh_core/agents/invocations.py')
@@ -150,127 +142,120 @@ jobs:
           old_alias = 'InvocationPhase: TypeAlias = InvocationState\n'
           if text.count(old_import) != 1 or text.count(old_alias) != 1:
               raise SystemExit('unexpected post-RC3 alias state')
-          text = text.replace(old_import, 'from typing import Any, Literal, Protocol, Self\n', 1)
-          text = text.replace(old_alias, 'type InvocationPhase = InvocationState\n', 1)
-          invocations.write_text(text, encoding='utf-8')
+          invocations.write_text(
+              text.replace(old_import, 'from typing import Any, Literal, Protocol, Self\n', 1)
+                  .replace(old_alias, 'type InvocationPhase = InvocationState\n', 1),
+              encoding='utf-8',
+          )
 
-          gateway_specs = [
-              (
-                  Path('services/core/src/simorgh_core/agents/model_gateway.py'),
-                  'ModelGatewayError',
-                  'model',
-              ),
-              (
-                  Path('services/core/src/simorgh_core/agents/tool_gateway.py'),
-                  'ToolGatewayError',
-                  'tool',
-              ),
-          ]
-          for path, gateway_error, label in gateway_specs:
+          def handler_names(node: ast.expr | None) -> set[str]:
+              if isinstance(node, ast.Name):
+                  return {node.id}
+              if isinstance(node, ast.Tuple):
+                  return {item.id for item in node.elts if isinstance(item, ast.Name)}
+              return set()
+
+          def statement_text(lines: list[str], statement: ast.stmt, indent: str) -> str:
+              segment = lines[statement.lineno - 1 : statement.end_lineno]
+              dedented = []
+              for line in segment:
+                  if line.strip():
+                      dedented.append(line[statement.col_offset:])
+                  else:
+                      dedented.append(line)
+              return ''.join(indent + line for line in dedented)
+
+          for filename, gateway_error in (
+              ('services/core/src/simorgh_core/agents/model_gateway.py', 'ModelGatewayError'),
+              ('services/core/src/simorgh_core/agents/tool_gateway.py', 'ToolGatewayError'),
+          ):
+              path = Path(filename)
               source = path.read_text(encoding='utf-8')
-              if source.count('from contextlib import suppress\n') == 0:
-                  if source.count('import asyncio\n') != 1:
-                      raise SystemExit(f'{label}: asyncio import anchor mismatch')
-                  source = source.replace(
+              tree = ast.parse(source)
+              lines = source.splitlines(keepends=True)
+              edits: list[tuple[int, int, str]] = []
+              release_count = 0
+              cancel_count = 0
+              for node in ast.walk(tree):
+                  if not isinstance(node, ast.Try) or len(node.body) != 1 or len(node.handlers) != 1:
+                      continue
+                  statement = node.body[0]
+                  if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+                      continue
+                  call = statement.value
+                  handler = node.handlers[0]
+                  if handler.body != [handler.body[0]] or not isinstance(handler.body[0], ast.Pass):
+                      continue
+                  indent = ' ' * node.col_offset
+                  body_indent = indent + '    '
+                  func = call.func
+                  if (
+                      isinstance(func, ast.Attribute)
+                      and isinstance(func.value, ast.Name)
+                      and func.value.id == 'budget'
+                      and func.attr == 'release'
+                      and handler_names(handler.type) == {
+                          'BudgetCancelledError',
+                          'BudgetReservationNotFoundError',
+                      }
+                  ):
+                      replacement = (
+                          indent + 'with suppress(\n'
+                          + body_indent + 'BudgetCancelledError,\n'
+                          + body_indent + 'BudgetReservationNotFoundError,\n'
+                          + indent + '):\n'
+                          + statement_text(lines, statement, body_indent)
+                      )
+                      edits.append((node.lineno - 1, node.end_lineno, replacement))
+                      release_count += 1
+                  elif (
+                      isinstance(func, ast.Attribute)
+                      and isinstance(func.value, ast.Name)
+                      and func.value.id == 'self'
+                      and func.attr == '_mark_unknown_and_settle'
+                      and handler_names(handler.type) == {gateway_error}
+                  ):
+                      replacement = (
+                          indent + f'with suppress({gateway_error}):\n'
+                          + statement_text(lines, statement, body_indent)
+                      )
+                      edits.append((node.lineno - 1, node.end_lineno, replacement))
+                      cancel_count += 1
+              if (release_count, cancel_count) != (1, 1):
+                  raise SystemExit(
+                      f'{filename}: expected one release and one cancellation Try, '
+                      f'found {(release_count, cancel_count)}'
+                  )
+              for start, end, replacement in sorted(edits, reverse=True):
+                  lines[start:end] = [replacement]
+              updated = ''.join(lines)
+              if updated.count('from contextlib import suppress\n') == 0:
+                  if updated.count('import asyncio\n') != 1:
+                      raise SystemExit(f'{filename}: asyncio import anchor mismatch')
+                  updated = updated.replace(
                       'import asyncio\n',
                       'import asyncio\nfrom contextlib import suppress\n',
                       1,
                   )
-
-              release_old = '''            try:
-                  budget.release(reservation.reservation_id)
-              except (BudgetCancelledError, BudgetReservationNotFoundError):
-                  pass
-          '''.replace('          ', '')
-              release_new = '''            with suppress(
-                  BudgetCancelledError,
-                  BudgetReservationNotFoundError,
-              ):
-                  budget.release(reservation.reservation_id)
-          '''.replace('          ', '')
-              if source.count(release_old) != 1:
-                  raise SystemExit(f'{label}: release suppress anchor mismatch')
-              source = source.replace(release_old, release_new, 1)
-
-              if label == 'model':
-                  cancel_old = '''            try:
-                      self._mark_unknown_and_settle(
-                          invocation_id=request.invocation_id,
-                          failure_code="provider_call_cancelled",
-                          failure_detail=(
-                              "model provider coroutine was cancelled after durable reservation; "
-                              "completion is uncertain"
-                          ),
-                          budget=budget,
-                          reservation_id=reservation.reservation_id,
-                      )
-                  except ModelGatewayError:
-                      # Preserve cooperative cancellation. A failed durable store remains
-                      # unhealthy and blocks subsequent invocation operations.
-                      pass
-              '''.replace('              ', '')
-                  cancel_new = '''            with suppress(ModelGatewayError):
-                      self._mark_unknown_and_settle(
-                          invocation_id=request.invocation_id,
-                          failure_code="provider_call_cancelled",
-                          failure_detail=(
-                              "model provider coroutine was cancelled after durable reservation; "
-                              "completion is uncertain"
-                          ),
-                          budget=budget,
-                          reservation_id=reservation.reservation_id,
-                      )
-              '''.replace('              ', '')
-              else:
-                  cancel_old = '''            try:
-                      self._mark_unknown_and_settle(
-                          invocation_id=request.invocation_id,
-                          failure_code="tool_call_cancelled",
-                          failure_detail=(
-                              "tool coroutine was cancelled after durable reservation; "
-                              "completion is uncertain"
-                          ),
-                          budget=budget,
-                          reservation_id=reservation.reservation_id,
-                      )
-                  except ToolGatewayError:
-                      # Preserve cooperative cancellation. A failed durable store remains
-                      # unhealthy and blocks subsequent invocation operations.
-                      pass
-              '''.replace('              ', '')
-                  cancel_new = '''            with suppress(ToolGatewayError):
-                      self._mark_unknown_and_settle(
-                          invocation_id=request.invocation_id,
-                          failure_code="tool_call_cancelled",
-                          failure_detail=(
-                              "tool coroutine was cancelled after durable reservation; "
-                              "completion is uncertain"
-                          ),
-                          budget=budget,
-                          reservation_id=reservation.reservation_id,
-                      )
-              '''.replace('              ', '')
-              if source.count(cancel_old) != 1:
-                  raise SystemExit(f'{label}: cancellation suppress anchor mismatch')
-              source = source.replace(cancel_old, cancel_new, 1)
-              path.write_text(source, encoding='utf-8')
+              path.write_text(updated, encoding='utf-8')
 
           test_path = Path('services/core/tests/test_gateway_failure_semantics_rc3.py')
           test_text = test_path.read_text(encoding='utf-8')
           old_default = '        committed_usage: UsageVector = UsageVector(),\n'
-          new_default = '        committed_usage: UsageVector | None = None,\n'
-          if test_text.count(old_default) != 1 or test_text.count(new_default) != 0:
+          if test_text.count(old_default) != 1:
               raise SystemExit('B008 default anchor mismatch')
-          test_path.write_text(test_text.replace(old_default, new_default, 1), encoding='utf-8')
+          test_path.write_text(
+              test_text.replace(
+                  old_default,
+                  '        committed_usage: UsageVector | None = None,\n',
+                  1,
+              ),
+              encoding='utf-8',
+          )
           PY
           ruff check --fix --select I \
             services/core/src/simorgh_core/agents/model_gateway.py \
             services/core/src/simorgh_core/agents/tool_gateway.py
-          python -m py_compile \
-            services/core/src/simorgh_core/agents/invocations.py \
-            services/core/src/simorgh_core/agents/model_gateway.py \
-            services/core/src/simorgh_core/agents/tool_gateway.py \
-            services/core/tests/test_gateway_failure_semantics_rc3.py
 
       - name: Remove transient Publisher inputs
         shell: bash
@@ -296,14 +281,12 @@ jobs:
       - name: Report Core success
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 product finalizer: **running**
+          PR39 RC3 AST-normalized finalizer: **running**
 
-          - Archive / Publisher / transactional RC3 apply: passed
-          - Targeted regressions / Ruff / strict MyPy / full Core: passed
+          - RC3 / targeted regressions / Ruff / strict MyPy / full Core: passed
           - Current gate: Android build, JVM tests, lint, and APK
           - Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
@@ -332,15 +315,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git diff --cached --check
-          if git diff --cached --quiet; then
-            echo 'RC3 produced no product changes' >&2
-            exit 1
-          fi
+          test -n "$(git diff --cached --name-only)"
           BAD=$(git diff --cached --name-status | awk '($2 ~ /^\.simorgh-patches\// || $2 ~ /^\.github\/workflows\/pr39-rc3-/) && $1 != "D" {print}')
-          if [ -n "$BAD" ]; then
-            echo "$BAD"
-            exit 1
-          fi
+          if [ -n "$BAD" ]; then echo "$BAD"; exit 1; fi
           git commit -m 'core: harden durable invocation replay and recovery'
           git push origin "HEAD:${PR_BRANCH}"
 
@@ -348,7 +325,6 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           NEW_HEAD=$(git rev-parse HEAD)
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
@@ -364,11 +340,10 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${STATUS_COMMENT_ID}" \
             -f body="<!-- pr39-rc3-status -->
-          PR39 RC3 product finalizer: **failed closed**
+          PR39 RC3 AST-normalized finalizer: **failed closed**
 
           - Exact triggering head: \`${GITHUB_SHA}\`
           - No validated product commit was claimed.
