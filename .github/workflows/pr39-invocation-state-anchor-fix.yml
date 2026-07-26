@@ -1,4 +1,4 @@
-name: PR39 Canonical Invocation State Preflight Correction
+name: PR39 AST-Verified Invocation State Correction
 
 on:
   push:
@@ -34,82 +34,132 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Apply complete canonical-state preflight correction
+      - name: Apply AST-verified correction
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          from __future__ import annotations
+
+          import ast
           from pathlib import Path
 
-          contracts = Path('services/core/src/simorgh_core/agents/contracts.py')
-          contract_text = contracts.read_text(encoding='utf-8')
-          old_state = '''class InvocationState(StrEnum):
-              PENDING = "pending"
-              COMPLETED = "completed"
-              FAILED = "failed"
-              CANCELLED = "cancelled"
-              EXPIRED = "expired"
-          '''.replace('          ', '')
-          new_state = '''class InvocationState(StrEnum):
-              PENDING = "pending"
-              RESERVED = "reserved"
-              COMPLETED = "completed"
-              FAILED = "failed"
-              CANCELLED = "cancelled"
-              EXPIRED = "expired"
-              UNKNOWN = "unknown"
-              UNKNOWN_SIDE_EFFECT = "unknown_side_effect"
-          '''.replace('          ', '')
-          if contract_text.count(old_state) != 1 or contract_text.count(new_state) != 0:
-              raise SystemExit(
-                  'InvocationState contract anchor mismatch: '
-                  f'old={contract_text.count(old_state)} final={contract_text.count(new_state)}'
-              )
-          contracts.write_text(contract_text.replace(old_state, new_state, 1), encoding='utf-8')
+          def enum_members(node: ast.ClassDef) -> list[tuple[str, str]]:
+              members: list[tuple[str, str]] = []
+              for statement in node.body:
+                  if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+                      continue
+                  target = statement.targets[0]
+                  value = statement.value
+                  if (
+                      isinstance(target, ast.Name)
+                      and isinstance(value, ast.Constant)
+                      and isinstance(value.value, str)
+                  ):
+                      members.append((target.id, value.value))
+              return members
 
-          invocations = Path('services/core/src/simorgh_core/agents/invocations.py')
-          text = invocations.read_text(encoding='utf-8')
-          replacements = [
+          contracts_path = Path('services/core/src/simorgh_core/agents/contracts.py')
+          contracts_text = contracts_path.read_text(encoding='utf-8')
+          contracts_tree = ast.parse(contracts_text)
+          state_nodes = [
+              node for node in contracts_tree.body
+              if isinstance(node, ast.ClassDef) and node.name == 'InvocationState'
+          ]
+          if len(state_nodes) != 1:
+              raise SystemExit(f'expected one InvocationState class, found {len(state_nodes)}')
+          state_node = state_nodes[0]
+          expected_current = [
+              ('PENDING', 'pending'),
+              ('COMPLETED', 'completed'),
+              ('FAILED', 'failed'),
+              ('CANCELLED', 'cancelled'),
+              ('EXPIRED', 'expired'),
+          ]
+          if enum_members(state_node) != expected_current:
+              raise SystemExit(
+                  f'unexpected InvocationState members: {enum_members(state_node)!r}'
+              )
+          contracts_lines = contracts_text.splitlines(keepends=True)
+          canonical_state = (
+              'class InvocationState(StrEnum):\n'
+              '    PENDING = "pending"\n'
+              '    RESERVED = "reserved"\n'
+              '    COMPLETED = "completed"\n'
+              '    FAILED = "failed"\n'
+              '    CANCELLED = "cancelled"\n'
+              '    EXPIRED = "expired"\n'
+              '    UNKNOWN = "unknown"\n'
+              '    UNKNOWN_SIDE_EFFECT = "unknown_side_effect"\n'
+          )
+          contracts_lines[state_node.lineno - 1 : state_node.end_lineno] = [canonical_state]
+          contracts_path.write_text(''.join(contracts_lines), encoding='utf-8')
+
+          invocations_path = Path('services/core/src/simorgh_core/agents/invocations.py')
+          invocations_text = invocations_path.read_text(encoding='utf-8')
+          invocations_tree = ast.parse(invocations_text)
+
+          phase_nodes = [
+              node for node in invocations_tree.body
+              if isinstance(node, ast.ClassDef) and node.name == 'InvocationPhase'
+          ]
+          if len(phase_nodes) != 1:
+              raise SystemExit(f'expected one InvocationPhase class, found {len(phase_nodes)}')
+          phase_node = phase_nodes[0]
+          expected_phase = [
+              ('PENDING', 'pending'),
+              ('RESERVED', 'reserved'),
+              ('COMPLETED', 'completed'),
+              ('FAILED', 'failed'),
+              ('CANCELLED', 'cancelled'),
+              ('EXPIRED', 'expired'),
+              ('UNKNOWN', 'unknown'),
+              ('UNKNOWN_SIDE_EFFECT', 'unknown_side_effect'),
+          ]
+          if enum_members(phase_node) != expected_phase:
+              raise SystemExit(
+                  f'unexpected InvocationPhase members: {enum_members(phase_node)!r}'
+              )
+
+          typing_imports = [
+              node for node in invocations_tree.body
+              if isinstance(node, ast.ImportFrom) and node.module == 'typing'
+          ]
+          contract_imports = [
+              node for node in invocations_tree.body
+              if isinstance(node, ast.ImportFrom)
+              and node.module == 'simorgh_core.agents.contracts'
+          ]
+          if len(typing_imports) != 1 or [alias.name for alias in typing_imports[0].names] != [
+              'Any', 'Protocol', 'Self'
+          ]:
+              raise SystemExit('unexpected typing import shape')
+          if len(contract_imports) != 1 or [alias.name for alias in contract_imports[0].names] != [
+              'UsageVector'
+          ]:
+              raise SystemExit('unexpected agent-contract import shape')
+
+          lines = invocations_text.splitlines(keepends=True)
+          edits = [
               (
-                  'typing import',
-                  'from typing import Any, Protocol, Self\n',
+                  typing_imports[0].lineno - 1,
+                  typing_imports[0].end_lineno,
                   'from typing import Any, Literal, Protocol, Self, TypeAlias\n',
               ),
               (
-                  'canonical state import',
-                  'from simorgh_core.agents.contracts import UsageVector\n',
+                  contract_imports[0].lineno - 1,
+                  contract_imports[0].end_lineno,
                   'from simorgh_core.agents.contracts import InvocationState, UsageVector\n',
               ),
               (
-                  'duplicate phase enum',
-                  '''class InvocationPhase(StrEnum):
-                      PENDING = "pending"
-                      RESERVED = "reserved"
-                      COMPLETED = "completed"
-                      FAILED = "failed"
-                      CANCELLED = "cancelled"
-                      EXPIRED = "expired"
-                      UNKNOWN = "unknown"
-                      UNKNOWN_SIDE_EFFECT = "unknown_side_effect"
-
-
-                  class InvocationKind(StrEnum):
-                  '''.replace('                  ', ''),
-                  '''InvocationPhase: TypeAlias = InvocationState
-
-
-                  class InvocationKind(StrEnum):
-                  '''.replace('                  ', ''),
+                  phase_node.lineno - 1,
+                  phase_node.end_lineno,
+                  'InvocationPhase: TypeAlias = InvocationState\n',
               ),
           ]
-          current = text
-          for label, old, new in replacements:
-              if current.count(old) != 1 or current.count(new) != 0:
-                  raise SystemExit(
-                      f'{label}: invalid anchor old={current.count(old)} final={current.count(new)}'
-                  )
-              current = current.replace(old, new, 1)
-          invocations.write_text(current, encoding='utf-8')
+          for start, end, replacement in sorted(edits, reverse=True):
+              lines[start:end] = [replacement]
+          invocations_path.write_text(''.join(lines), encoding='utf-8')
           PY
           python -m py_compile \
             services/core/src/simorgh_core/agents/contracts.py \
@@ -152,7 +202,7 @@ jobs:
 
           - Triggering head: \`${GITHUB_SHA}\`
           - Corrected head: \`${NEW_HEAD}\`
-          - Central state contract: complete
+          - AST contract validation: passed
           - Runtime compatibility / MyPy / focused tests: passed
           - Next: RC3 exact-head preflight and transactional apply"
 
