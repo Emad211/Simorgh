@@ -1,0 +1,114 @@
+name: PR48 master plan sync
+
+on:
+  push:
+    branches:
+      - core/typed-specialist-results
+    paths:
+      - .github/workflows/pr48-master-plan-sync.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: core/typed-specialist-results
+          fetch-depth: 1
+      - name: Patch master plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("docs/IMPLEMENTATION_MASTER_PLAN.md")
+          content = path.read_text(encoding="utf-8")
+          status_old = "Phase 1.4 Typed Results and Artifacts    QUEUED"
+          status_new = "Phase 1.4 Typed Results and Artifacts    VALIDATING — PR #48"
+          if content.count(status_old) != 1:
+              raise SystemExit("master plan status anchor mismatch")
+          content = content.replace(status_old, status_new)
+
+          old = """## 1.4 Typed result and artifact model — QUEUED
+
+### Objective
+
+Separate durable structured results and evidence from user-facing natural-language presentation.
+
+### Deliverables
+
+- `SpecialistResult` contract;
+- artifact ID, hash, media type, size and producer identity;
+- evidence references with source, retrieval time and freshness;
+- explicit uncertainty and unresolved risks;
+- result schema/version identity;
+- bounded inline result and external artifact references;
+- Persian renderer outside authority fields;
+- immutable completed result;
+- privacy classification and retention metadata.
+
+### Gate
+
+No live connector payload or arbitrary model text may be persisted as a final specialist result without passing this contract.
+"""
+          new = """## 1.4 Typed result and artifact model — VALIDATING
+
+Implementation is under review in PR #48 for issue #46; ADR 0017 is proposed until the exact-head merge gate closes.
+
+### Objective
+
+Separate durable structured results and evidence from user-facing natural-language presentation.
+
+### Implemented in PR #48
+
+- exact-version result registry for `simorgh.typed-plan.v1`, `simorgh.specialist-plan-result`, schema `1.0`;
+- immutable `AuthoritativeSpecialistResult` tied to request, invocation, producer, output contract and direct usage identity;
+- canonical result ID and SHA-256 independent of replay disposition and presentation;
+- bounded artifact metadata with hash, media type, byte size, producer, storage disposition, privacy and retention;
+- bounded evidence metadata with source/tool/connector identity, freshness, cache disposition, taint, citation and artifact linkage;
+- explicit uncertainty, unresolved risks and verification requirements;
+- conservative privacy and retention composition across linked references;
+- strict in-memory and SQLite WAL result stores with process ownership, schema/integrity checks and immutable one-result-per-invocation replay;
+- cross-authority terminalization against the completed Phase 1.3 invocation payload and committed usage;
+- deterministic Persian renderer outside authority fields;
+- privacy-safe result commit/replay/failure traces;
+- dedicated Core lifespan store path and startup unwind;
+- fake/local restart, conflict, corruption, privacy and presentation tests.
+
+### Merge gate
+
+- no live connector payload, arbitrary model text or presentation text is admitted as an authoritative result;
+- completed replay performs no specialist/model/tool/connector call and no new usage charge;
+- artifact bytes remain outside this metadata authority until a separate storage boundary;
+- ADR 0017 and operational/validation documentation are synchronized;
+- no unresolved review thread;
+- exact PR Head has green Core Ruff, strict MyPy and full tests;
+- exact PR Head has green Android build, JVM tests, lint and APK;
+- PR remains limited to Phase 1.4.
+
+### Explicit non-goals
+
+- no public result endpoint;
+- no production artifact-byte storage;
+- no live provider, GitHub connector, MCP, mutation executor, Voice, Notification, Memory or new Android effect.
+"""
+          if content.count(old) != 1:
+              raise SystemExit("master plan Phase 1.4 block anchor mismatch")
+          path.write_text(content.replace(old, new), encoding="utf-8")
+          PY
+          rm .github/workflows/pr48-master-plan-sync.yml
+          git diff --check
+      - name: Commit master plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/IMPLEMENTATION_MASTER_PLAN.md .github/workflows/pr48-master-plan-sync.yml
+          git commit -m "Docs: mark Phase 1.4 result authority validating"
+          git push origin HEAD:core/typed-specialist-results
