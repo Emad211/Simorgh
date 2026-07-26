@@ -1,0 +1,182 @@
+name: PR44 Final Specialist Runtime Guards
+
+on:
+  push:
+    branches:
+      - core/specialist-execution-runtime-clean
+    paths:
+      - services/core/tests/test_specialist_final_guards.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr44-final-specialist-runtime-guards
+  cancel-in-progress: true
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact identity cancellation and elapsed guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          execution = Path('services/core/src/simorgh_core/agents/specialist_execution.py')
+          text = execution.read_text(encoding='utf-8')
+          transitions = (
+              ('import time\n', 'import re\nimport time\n'),
+              (
+                  '_RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"\n',
+                  '_AGENT_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"\n'
+                  '_POLICY_VERSION_PATTERN = r"^[0-9]+\\.[0-9]+\\.[0-9]+$"\n'
+                  '_RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"\n',
+              ),
+              (
+                  '    agent_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=r"^[0-9]+\\.[0-9]+\\.[0-9]+$", max_length=32)\n',
+                  '    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)\n',
+              ),
+              (
+                  '    agent_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=r"^[0-9]+\\.[0-9]+\\.[0-9]+$", max_length=32)\n',
+                  '    agent_id: str = Field(pattern=_AGENT_ID_PATTERN, max_length=128)\n'
+                  '    agent_version: str = Field(pattern=_POLICY_VERSION_PATTERN, max_length=32)\n',
+              ),
+              (
+                  '    def cancel(self, reason: str = "specialist execution cancelled") -> None:\n'
+                  '        normalized = reason.strip()[:1_000]\n'
+                  '        if not normalized:\n'
+                  '            raise ValueError("cancellation reason cannot be empty")\n'
+                  '        with self._lock:\n'
+                  '            self._cancelled = True\n'
+                  '            self._reason = normalized\n',
+                  '    def cancel(self, reason: str = "specialist execution cancelled") -> None:\n'
+                  '        with self._lock:\n'
+                  '            if self._cancelled:\n'
+                  '                return\n'
+                  '            normalized = reason.strip()[:1_000]\n'
+                  '            if not normalized:\n'
+                  '                raise ValueError("cancellation reason cannot be empty")\n'
+                  '            self._cancelled = True\n'
+                  '            self._reason = normalized\n',
+              ),
+              (
+                  '        for executor in executors:\n'
+                  '            identity = (executor.agent_id, executor.agent_version)\n',
+                  '        for executor in executors:\n'
+                  '            if re.fullmatch(_AGENT_ID_PATTERN, executor.agent_id) is None:\n'
+                  '                raise SpecialistExecutionPolicyError(\n'
+                  '                    "specialist executor agent_id is invalid"\n'
+                  '                )\n'
+                  '            if re.fullmatch(_POLICY_VERSION_PATTERN, executor.agent_version) is None:\n'
+                  '                raise SpecialistExecutionPolicyError(\n'
+                  '                    "specialist executor version is invalid"\n'
+                  '                )\n'
+                  '            if re.fullmatch(_RESOURCE_ID_PATTERN, executor.output_contract) is None:\n'
+                  '                raise SpecialistExecutionPolicyError(\n'
+                  '                    "specialist executor output contract is invalid"\n'
+                  '                )\n'
+                  '            identity = (executor.agent_id, executor.agent_version)\n',
+              ),
+          )
+          current = text
+          for old, new in transitions:
+              if current.count(old) != 1:
+                  raise SystemExit(f'execution anchor count={current.count(old)} for {old[:70]!r}')
+              current = current.replace(old, new, 1)
+          execution.write_text(current, encoding='utf-8')
+
+          runtime = Path('services/core/src/simorgh_core/agents/specialist_runtime.py')
+          runtime_text = runtime.read_text(encoding='utf-8')
+          runtime_transitions = (
+              (
+                  '            self._require_not_expired(request)\n'
+                  '            # Executor availability is required only for a new invocation. Completed durable\n',
+                  '            self._require_not_expired(request)\n'
+                  '            self._require_elapsed_available(budget)\n'
+                  '            # Executor availability is required only for a new invocation. Completed durable\n',
+              ),
+              (
+                  '            self._require_not_expired(request)\n'
+                  '        except SpecialistExecutionCancelledError:\n',
+                  '            self._require_not_expired(request)\n'
+                  '            self._require_elapsed_available(budget)\n'
+                  '        except SpecialistExecutionCancelledError:\n',
+              ),
+              (
+                  '        if budget.limits != request.effective_budget:\n'
+                  '            raise SpecialistExecutionPolicyError(\n'
+                  '                "specialist budget limits do not match the effective policy intersection"\n'
+                  '            )\n\n'
+                  '    def _require_not_cancelled(\n',
+                  '        if budget.limits != request.effective_budget:\n'
+                  '            raise SpecialistExecutionPolicyError(\n'
+                  '                "specialist budget limits do not match the effective policy intersection"\n'
+                  '            )\n'
+                  '        snapshot = budget.snapshot()\n'
+                  '        if snapshot.exhausted_dimension is not None:\n'
+                  '            raise SpecialistExecutionPolicyError(\n'
+                  '                "exhausted specialist budget cannot enter execution"\n'
+                  '            )\n\n'
+                  '    def _require_elapsed_available(self, budget: BudgetAccount) -> None:\n'
+                  '        snapshot = budget.snapshot()\n'
+                  '        if snapshot.elapsed_ms > budget.limits.max_elapsed_ms:\n'
+                  '            raise SpecialistExecutionExpiredError(\n'
+                  '                "specialist elapsed budget has expired"\n'
+                  '            )\n\n'
+                  '    def _require_not_cancelled(\n',
+              ),
+          )
+          current_runtime = runtime_text
+          for old, new in runtime_transitions:
+              if current_runtime.count(old) != 1:
+                  raise SystemExit(f'runtime anchor count={current_runtime.count(old)} for {old[:70]!r}')
+              current_runtime = current_runtime.replace(old, new, 1)
+          runtime.write_text(current_runtime, encoding='utf-8')
+          PY
+          rm -f .github/workflows/pr44-final-hardening.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Validate final guards
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check \
+            services/core/src/simorgh_core/agents/specialist_execution.py \
+            services/core/src/simorgh_core/agents/specialist_runtime.py \
+            services/core/tests/test_specialist_final_guards.py
+          mypy \
+            services/core/src/simorgh_core/agents/specialist_execution.py \
+            services/core/src/simorgh_core/agents/specialist_runtime.py
+          pytest -q \
+            services/core/tests/test_specialist_execution_contracts.py \
+            services/core/tests/test_specialist_final_guards.py \
+            services/core/tests/test_specialist_runtime.py \
+            services/core/tests/test_specialist_service.py
+
+      - name: Commit validated final guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: enforce specialist identity and elapsed budget guards'
+          git push origin HEAD:core/specialist-execution-runtime-clean
