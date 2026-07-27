@@ -1,0 +1,209 @@
+name: Phase 1.6 Cancellation Coordinator Gate v1
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase16-coordinator-launcher.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase16-cancellation-coordinator
+  cancel-in-progress: false
+
+jobs:
+  validate-publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Apply coordinator patch fail-closed
+        id: patch
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY' > "$RUNNER_TEMP/phase16-coordinator-patch.log" 2>&1
+          from pathlib import Path
+
+          source = Path(
+              ".github/workflows/phase16-cancellation-coordinator.yml"
+          ).read_text(encoding="utf-8")
+          start = "          python - <<'PY'\n"
+          end = "\n          PY\n"
+          if source.count(start) != 1:
+              raise SystemExit("coordinator source start marker is not unique")
+          remainder = source.split(start, 1)[1]
+          if remainder.count(end) != 1:
+              raise SystemExit("coordinator source end marker is not unique")
+          raw = remainder.split(end, 1)[0]
+          embedded = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in raw.splitlines()
+          )
+
+          fixes = (
+              (
+                  '"             previous_store.close()\\n',
+                  '"            previous_store.close()\\n',
+                  "reset anchor indentation",
+              ),
+              (
+                  '"    CancellationOwnerRegistry,\\n"\n'
+                  '              "    cancellation_owner_registry,\\n"\n'
+                  '              ")\\n",',
+                  '"    CancellationOwnerRegistry,\\n"\n'
+                  '              ")\\n",',
+                  "control-plane unused global registry import",
+              ),
+              (
+                  '        input_fingerprint=(kind.value[0] * 64),',
+                  '        input_fingerprint=({\\n'
+                  '            InvocationKind.MODEL: "a",\\n'
+                  '            InvocationKind.TOOL: "b",\\n'
+                  '            InvocationKind.SPECIALIST: "c",\\n'
+                  '        }[kind] * 64),',
+                  "test fingerprint alphabet",
+              ),
+              (
+                  '              expected=1,\n'
+                  '          )\n\n'
+                  '          app = "services/core/src/simorgh_core/app.py"',
+                  '              expected=2,\n'
+                  '          )\n\n'
+                  '          app = "services/core/src/simorgh_core/app.py"',
+                  "API conflict mapping anchor count",
+              ),
+          )
+          for old, new, label in fixes:
+              count = embedded.count(old)
+              if count != 1:
+                  raise SystemExit(f"preflight fix {label} count={count}, expected=1")
+              embedded = embedded.replace(old, new, 1)
+
+          exec(
+              compile(embedded, "phase16-coordinator.py", "exec"),
+              {"__name__": "__main__"},
+          )
+          print("coordinator_patch_complete=true")
+          PY
+          status=$?
+          if [[ "$status" == "0" ]]; then
+            rm -f .github/workflows/phase16-cancellation-coordinator.yml
+            rm -f .github/workflows/phase16-coordinator-launcher.yml
+            git diff --check >> "$RUNNER_TEMP/phase16-coordinator-patch.log" 2>&1
+            status=$?
+          fi
+          echo "patch_status=$status" >> "$RUNNER_TEMP/phase16-coordinator-patch.log"
+          exit "$status"
+
+      - name: Upload patch diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase16-coordinator-patch-diagnostic
+          path: ${{ runner.temp }}/phase16-coordinator-patch.log
+          retention-days: 2
+          if-no-files-found: error
+
+      - name: Stop on patch failure
+        if: steps.patch.outcome != 'success'
+        shell: bash
+        run: exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Run separated quality diagnostics
+        id: quality
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
+          pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
+          install_status=$?
+          if [[ "$install_status" == "0" ]]; then
+            ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_control_plane.py > "$RUNNER_TEMP/ruff-fix.log" 2>&1
+            ruff_fix_status=$?
+            ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
+            ruff_status=$?
+            mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
+            mypy_status=$?
+            pytest -q > "$RUNNER_TEMP/pytest.log" 2>&1
+            pytest_status=$?
+          else
+            ruff_fix_status=99
+            ruff_status=99
+            mypy_status=99
+            pytest_status=99
+            : > "$RUNNER_TEMP/ruff-fix.log"
+            : > "$RUNNER_TEMP/ruff.log"
+            : > "$RUNNER_TEMP/mypy.log"
+            : > "$RUNNER_TEMP/pytest.log"
+          fi
+          {
+            echo "install_status=$install_status"
+            echo "ruff_fix_status=$ruff_fix_status"
+            echo "ruff_status=$ruff_status"
+            echo "mypy_status=$mypy_status"
+            echo "pytest_status=$pytest_status"
+            echo "--- install_tail ---"
+            tail -c 4000 "$RUNNER_TEMP/install.log"
+            echo "--- ruff_fix_tail ---"
+            tail -c 4000 "$RUNNER_TEMP/ruff-fix.log"
+            echo "--- ruff_tail ---"
+            tail -c 8000 "$RUNNER_TEMP/ruff.log"
+            echo "--- mypy_tail ---"
+            tail -c 12000 "$RUNNER_TEMP/mypy.log"
+            echo "--- pytest_tail ---"
+            tail -c 16000 "$RUNNER_TEMP/pytest.log"
+          } > "$RUNNER_TEMP/phase16-coordinator-quality.txt"
+          if [[ "$install_status" != "0" || "$ruff_fix_status" != "0" || "$ruff_status" != "0" || "$mypy_status" != "0" || "$pytest_status" != "0" ]]; then
+            exit 1
+          fi
+          exit 0
+
+      - name: Upload quality diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase16-coordinator-quality-diagnostic
+          path: ${{ runner.temp }}/phase16-coordinator-quality.txt
+          retention-days: 2
+          if-no-files-found: error
+
+      - name: Stop on quality failure
+        if: steps.quality.outcome != 'success'
+        shell: bash
+        run: exit 1
+
+      - name: Publish exact validated coordinator
+        shell: bash
+        env:
+          BRANCH: core/cancellation-propagation
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: propagate durable cancellation through native control plane'
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$EXPECTED_HEAD" ]]; then
+            echo "Branch moved during validation: $remote_head != $EXPECTED_HEAD" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
