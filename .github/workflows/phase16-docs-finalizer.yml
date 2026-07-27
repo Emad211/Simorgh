@@ -1,0 +1,61 @@
+name: Phase 1.6 Documentation Finalizer
+
+on:
+  push:
+    branches:
+      - core/cancellation-propagation
+    paths:
+      - .github/workflows/phase16-docs-finalizer.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase16-documentation-finalizer
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact documentation changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/phase16_finalize_docs.py
+          rm -f .github/scripts/phase16_finalize_docs.py
+          rm -f .github/workflows/phase16-docs-finalizer.yml
+          git diff --check
+
+      - name: Verify synchronized status
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'Phase 1.5 Governed GitHub Read Tools     COMPLETE — PR #52' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F 'Phase 1.6 Cancellation Propagation       VALIDATING — PR #54' docs/IMPLEMENTATION_MASTER_PLAN.md
+          grep -F 'CANCELLATION_PROPAGATION.md' docs/README.md
+          grep -F 'ADR 0019' docs/README.md
+          test ! -e .github/scripts/phase16_finalize_docs.py
+          test ! -e .github/workflows/phase16-docs-finalizer.yml
+
+      - name: Publish synchronized documentation
+        shell: bash
+        env:
+          BRANCH: core/cancellation-propagation
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: synchronize Phase 1.5 and 1.6 runtime status'
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          test "$remote_head" = "$GITHUB_SHA"
+          git push origin "HEAD:refs/heads/$BRANCH"
