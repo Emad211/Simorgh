@@ -534,6 +534,36 @@ class SQLiteContextStore:
         raise failure
 
 
+class ContextStoreRegistry:
+    """Process-wide context authority configured once per Core lifespan."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._store: ContextStore = InMemoryContextStore()
+
+    def current(self) -> ContextStore:
+        with self._lock:
+            return self._store
+
+    def configure(self, store: ContextStore) -> None:
+        store.load()
+        with self._lock:
+            previous = self._store
+            self._store = store
+        if previous is not store:
+            previous.close()
+
+    def reset_to_memory(self) -> None:
+        replacement = InMemoryContextStore()
+        with self._lock:
+            previous = self._store
+            self._store = replacement
+        previous.close()
+
+
+context_store_registry = ContextStoreRegistry()
+
+
 def _validated_fresh_record(record: SpecialistContextBundle) -> SpecialistContextBundle:
     candidate = SpecialistContextBundle.model_validate(record.model_dump(mode="json"))
     if candidate.replay != ContextReplayDisposition.FRESH:
@@ -583,8 +613,10 @@ __all__ = [
     "ContextStoreCorruptionError",
     "ContextStoreError",
     "ContextStoreInUseError",
+    "ContextStoreRegistry",
     "ContextStoreSchemaError",
     "ContextStoreUnhealthyError",
     "InMemoryContextStore",
     "SQLiteContextStore",
+    "context_store_registry",
 ]

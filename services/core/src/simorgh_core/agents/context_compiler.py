@@ -67,6 +67,13 @@ from simorgh_core.agents.result_authority import (
 from simorgh_core.agents.specialist_execution import SpecialistCapabilitySet
 from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
 from simorgh_core.agents.task_store import AgentTaskStore
+from simorgh_core.agents.tracing import (
+    CacheDisposition,
+    NullTraceSink,
+    TraceEventKind,
+    TraceSink,
+    trace_event,
+)
 
 
 class ContextCompilerError(RuntimeError):
@@ -126,6 +133,7 @@ class ContextCompilerService:
         material_registry: ContextMaterialRegistry | None = None,
         reviewed_tool_schemas: Mapping[str, ContextToolSchemaProjection],
         policy: ContextCompilerPolicy | None = None,
+        trace_sink: TraceSink | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
     ) -> None:
         self._task_store = task_store
@@ -136,11 +144,21 @@ class ContextCompilerService:
         self._materials = material_registry or ContextMaterialRegistry()
         self._tool_schemas = dict(reviewed_tool_schemas)
         self._policy = policy or ContextCompilerPolicy()
+        self._trace_sink = trace_sink or NullTraceSink()
         self._wall_clock_millis = wall_clock_millis or (
             lambda: int(time.time() * 1_000)
         )
 
     def compile(self, request: ContextCompilationRequest) -> ContextCompilationResult:
+        try:
+            result = self._compile(request)
+        except Exception as exc:
+            self._emit_failure(request=request, failure=exc)
+            raise
+        self._emit_result(result)
+        return result
+
+    def _compile(self, request: ContextCompilationRequest) -> ContextCompilationResult:
         if not self._policy.enabled:
             raise ContextCompilerDisabledError("context compiler is disabled")
         now_ms = self._now_ms()
@@ -545,6 +563,69 @@ class ContextCompilerService:
             raise ContextCompilerCancelledError(
                 "task deadline expired before context handoff"
             )
+
+    def _emit_result(self, result: ContextCompilationResult) -> None:
+        bundle = result.bundle
+        self._trace_sink.emit(
+            trace_event(
+                request_id=bundle.request_id,
+                invocation_id=bundle.specialist_invocation_id,
+                kind=(
+                    TraceEventKind.CONTEXT_REPLAYED
+                    if result.replayed
+                    else TraceEventKind.CONTEXT_COMPILED
+                ),
+                agent_id=bundle.agent_id,
+                agent_version=bundle.agent_version,
+                cache=(
+                    CacheDisposition.HIT
+                    if result.replayed
+                    else CacheDisposition.MISS
+                ),
+                outcome="completed",
+                reason="bounded specialist context authority committed",
+                metadata={
+                    "compiler_version": bundle.compiler_version,
+                    "context_bundle_id": str(bundle.context_bundle_id),
+                    "context_sha256": bundle.canonical_sha256,
+                    "source_manifest_sha256": bundle.source_manifest_sha256,
+                    "section_count": bundle.section_count,
+                    "evidence_count": bundle.evidence_count,
+                    "tool_count": bundle.tool_count,
+                    "omission_count": bundle.omission_count,
+                    "total_bytes": bundle.total_bytes,
+                    "estimated_unit_count": bundle.estimated_tokens,
+                    "privacy": bundle.privacy.value,
+                    "retention": bundle.retention.value,
+                    "tainted": bundle.tainted,
+                },
+                wall_clock_millis=self._wall_clock_millis,
+            )
+        )
+
+    def _emit_failure(
+        self,
+        *,
+        request: ContextCompilationRequest,
+        failure: Exception,
+    ) -> None:
+        self._trace_sink.emit(
+            trace_event(
+                request_id=request.request_id,
+                invocation_id=request.specialist_invocation_id,
+                kind=TraceEventKind.CONTEXT_FAILED,
+                agent_id=request.agent_id,
+                agent_version=request.agent_version,
+                cache=CacheDisposition.BYPASSED_POLICY,
+                outcome="failed",
+                reason=failure.__class__.__name__,
+                metadata={
+                    "compiler_version": self._policy.compiler_version,
+                    "failure_type": failure.__class__.__name__,
+                },
+                wall_clock_millis=self._wall_clock_millis,
+            )
+        )
 
     def _now_ms(self) -> int:
         return max(0, int(self._wall_clock_millis()))

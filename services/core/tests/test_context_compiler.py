@@ -73,6 +73,7 @@ from simorgh_core.agents.task_store import (
     InMemoryAgentTaskStore,
     new_task_store_entry,
 )
+from simorgh_core.agents.tracing import InMemoryTraceSink, TraceEventKind
 
 _NOW_MS = 2_500
 
@@ -231,6 +232,7 @@ def _runtime(
     policy: ContextCompilerPolicy | None = None,
     invocation_store: InMemoryInvocationStore | None = None,
     approved_materials: tuple[ContextMaterial, ...] = (),
+    trace_sink: InMemoryTraceSink | None = None,
 ) -> tuple[
     ContextCompilerService,
     TaskEnvelope,
@@ -258,6 +260,7 @@ def _runtime(
         material_registry=ContextMaterialRegistry(approved_materials),
         reviewed_tool_schemas={item.tool_id: item for item in tool_schemas},
         policy=policy,
+        trace_sink=trace_sink,
         wall_clock_millis=lambda: _NOW_MS,
     )
     return service, current_task, task_store, invocations, contexts
@@ -494,6 +497,71 @@ def test_optional_evidence_truncation_preserves_original_length_and_taint() -> N
     assert section.original_characters == 500
     assert section.included_characters == 160
     assert section.tainted
+
+
+def test_context_trace_contains_only_bounded_authority_metadata() -> None:
+    task = _task()
+    marker = "PRIVATE_CONTEXT_MARKER_9d1f"
+    evidence = _material(
+        request_id=task.request_id,
+        source_kind=ContextSourceKind.EVIDENCE,
+        source_id="github.trace",
+        content=marker,
+    )
+    trace = InMemoryTraceSink()
+    service, *_ = _runtime(
+        task=task,
+        approved_materials=(evidence,),
+        trace_sink=trace,
+    )
+    request = _request(
+        task=task,
+        invocation_id=uuid4(),
+        materials=(evidence,),
+    )
+
+    service.compile(request)
+    service.compile(request)
+    events = trace.for_request(task.request_id)
+    serialized = repr([event.model_dump(mode="json") for event in events])
+
+    assert [event.kind for event in events] == [
+        TraceEventKind.CONTEXT_COMPILED,
+        TraceEventKind.CONTEXT_REPLAYED,
+    ]
+    assert marker not in serialized
+    assert events[0].metadata["section_count"] == 2
+    assert events[0].metadata["tainted"] is True
+    assert "context_sha256" in events[0].metadata
+
+
+def test_context_failure_trace_redacts_material_and_exception_content() -> None:
+    task = _task()
+    marker = "FAILED_CONTEXT_MARKER_b72e"
+    unapproved = _material(
+        request_id=task.request_id,
+        source_kind=ContextSourceKind.EVIDENCE,
+        source_id="github.failed-trace",
+        content=marker,
+    )
+    trace = InMemoryTraceSink()
+    service, *_ = _runtime(task=task, trace_sink=trace)
+
+    with pytest.raises(UnknownContextMaterialError):
+        service.compile(
+            _request(
+                task=task,
+                invocation_id=uuid4(),
+                materials=(unapproved,),
+            )
+        )
+
+    events = trace.for_request(task.request_id)
+    serialized = repr([event.model_dump(mode="json") for event in events])
+    assert len(events) == 1
+    assert events[0].kind == TraceEventKind.CONTEXT_FAILED
+    assert events[0].reason == "UnknownContextMaterialError"
+    assert marker not in serialized
 
 
 def _cancellation(task: TaskEnvelope, *, version: int = 0) -> TaskCancellationRequest:
