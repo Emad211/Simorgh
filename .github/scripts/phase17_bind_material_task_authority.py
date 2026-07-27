@@ -16,10 +16,22 @@ def patch_contracts() -> None:
     path = "services/core/src/simorgh_core/agents/context_contracts.py"
     replace_once(
         path,
-        '''    material_id: UUID
+        '''class ContextMaterial(BaseModel):
+    """One approved bounded source candidate before deterministic compilation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
+    material_id: UUID
     source_kind: ContextSourceKind
 ''',
-        '''    material_id: UUID
+        '''class ContextMaterial(BaseModel):
+    """One approved bounded source candidate before deterministic compilation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
+    material_id: UUID
     request_id: UUID
     source_kind: ContextSourceKind
 ''',
@@ -50,16 +62,20 @@ def patch_contracts() -> None:
     )
     replace_once(
         path,
-        '''    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
+        '''class ContextOmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
     material_id: UUID
     source_kind: ContextSourceKind
-    source_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
 ''',
-        '''    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
+        '''class ContextOmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
     material_id: UUID
     request_id: UUID
     source_kind: ContextSourceKind
-    source_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
 ''',
         label="omission task ownership",
     )
@@ -95,16 +111,6 @@ def patch_sources() -> None:
     path = "services/core/src/simorgh_core/agents/context_sources.py"
     replace_once(
         path,
-        '''    return ContextMaterial(
-        material_id=context_material_id_for(
-''',
-        '''    return ContextMaterial(
-        material_id=context_material_id_for(
-''',
-        label="GitHub material constructor anchor",
-    )
-    replace_once(
-        path,
         '''            source_sha256=validated.projection_sha256,
         ),
         source_kind=ContextSourceKind.EVIDENCE,
@@ -120,16 +126,6 @@ def patch_sources() -> None:
 
 def patch_compiler() -> None:
     path = "services/core/src/simorgh_core/agents/context_compiler.py"
-    replace_once(
-        path,
-        '''        user_material = ContextMaterial(
-            material_id=context_material_id_for(
-''',
-        '''        user_material = ContextMaterial(
-            material_id=context_material_id_for(
-''',
-        label="user material constructor anchor",
-    )
     replace_once(
         path,
         '''                source_sha256=user_source_sha,
