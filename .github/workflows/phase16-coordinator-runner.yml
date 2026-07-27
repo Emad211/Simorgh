@@ -1,4 +1,4 @@
-name: Phase 1.6 Coordinator Runner v2
+name: Phase 1.6 Coordinator Runner v3
 
 on:
   pull_request:
@@ -25,10 +25,12 @@ jobs:
           fetch-depth: 0
 
       - name: Apply exact coordinator patch
+        id: patch
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
+          set +e
+          python - <<'PY' > "$RUNNER_TEMP/phase16-coordinator-runner-patch.log" 2>&1
           from pathlib import Path
 
           source = Path(
@@ -87,11 +89,32 @@ jobs:
               compile(embedded, "phase16-coordinator.py", "exec"),
               {"__name__": "__main__"},
           )
+          print("coordinator_patch_complete=true")
           PY
-          rm -f .github/workflows/phase16-cancellation-coordinator.yml
-          rm -f .github/workflows/phase16-coordinator-launcher.yml
-          rm -f .github/workflows/phase16-coordinator-runner.yml
-          git diff --check
+          status=$?
+          if [[ "$status" == "0" ]]; then
+            rm -f .github/workflows/phase16-cancellation-coordinator.yml
+            rm -f .github/workflows/phase16-coordinator-launcher.yml
+            rm -f .github/workflows/phase16-coordinator-runner.yml
+            git diff --check >> "$RUNNER_TEMP/phase16-coordinator-runner-patch.log" 2>&1
+            status=$?
+          fi
+          echo "patch_status=$status" >> "$RUNNER_TEMP/phase16-coordinator-runner-patch.log"
+          exit "$status"
+
+      - name: Upload runner patch diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase16-coordinator-runner-patch-diagnostic
+          path: ${{ runner.temp }}/phase16-coordinator-runner-patch.log
+          retention-days: 2
+          if-no-files-found: error
+
+      - name: Stop on patch failure
+        if: steps.patch.outcome != 'success'
+        shell: bash
+        run: exit 1
 
       - uses: actions/setup-python@v5
         with:
