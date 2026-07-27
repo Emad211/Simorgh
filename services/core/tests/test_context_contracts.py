@@ -46,6 +46,7 @@ def _evidence_material(
             source_id="github.fixture",
             source_sha256=source_sha256,
         ),
+        request_id=request_id,
         source_kind=ContextSourceKind.EVIDENCE,
         trust=trust,
         source_id="github.fixture",

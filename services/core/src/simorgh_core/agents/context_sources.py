@@ -107,6 +107,7 @@ def context_material_from_github_projection(
             source_id=source_id,
             source_sha256=validated.projection_sha256,
         ),
+        request_id=request_id,
         source_kind=ContextSourceKind.EVIDENCE,
         trust=ContextTrustClass.UNTRUSTED_EXTERNAL_EVIDENCE,
         source_id=source_id,

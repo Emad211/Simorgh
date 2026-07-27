@@ -103,6 +103,7 @@ class ContextMaterial(BaseModel):
 
     schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
     material_id: UUID
+    request_id: UUID
     source_kind: ContextSourceKind
     trust: ContextTrustClass
     source_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
@@ -177,6 +178,7 @@ class ContextSection(BaseModel):
 
     schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
     material_id: UUID
+    request_id: UUID
     source_kind: ContextSourceKind
     trust: ContextTrustClass
     source_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
@@ -260,6 +262,7 @@ class ContextOmission(BaseModel):
 
     schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
     material_id: UUID
+    request_id: UUID
     source_kind: ContextSourceKind
     source_id: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
     source_sha256: str = Field(
@@ -626,6 +629,7 @@ def context_section_from_material(
     )
     return ContextSection(
         material_id=material.material_id,
+        request_id=material.request_id,
         source_kind=material.source_kind,
         trust=material.trust,
         source_id=material.source_id,
@@ -698,6 +702,7 @@ def context_source_manifest_sha256(
         "sections": [
             {
                 "material_id": str(section.material_id),
+                "request_id": str(section.request_id),
                 "source_kind": section.source_kind.value,
                 "source_id": section.source_id,
                 "source_sha256": section.source_sha256,

@@ -37,6 +37,7 @@ from simorgh_core.agents.context_contracts import (
 from simorgh_core.agents.context_projections import (
     build_specialist_plan_context_output_schema,
 )
+from simorgh_core.agents.context_sources import ContextMaterialRegistry
 from simorgh_core.agents.context_store import ContextClaimKind, ContextStore
 from simorgh_core.agents.contracts import (
     ExecutionMode,
@@ -122,6 +123,7 @@ class ContextCompilerService:
         specialist_registry: SpecialistRegistry,
         result_schema_registry: ResultSchemaRegistry,
         context_store: ContextStore,
+        material_registry: ContextMaterialRegistry | None = None,
         reviewed_tool_schemas: Mapping[str, ContextToolSchemaProjection],
         policy: ContextCompilerPolicy | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
@@ -131,6 +133,7 @@ class ContextCompilerService:
         self._specialists = specialist_registry
         self._results = result_schema_registry
         self._contexts = context_store
+        self._materials = material_registry or ContextMaterialRegistry()
         self._tool_schemas = dict(reviewed_tool_schemas)
         self._policy = policy or ContextCompilerPolicy()
         self._wall_clock_millis = wall_clock_millis or (
@@ -334,6 +337,7 @@ class ContextCompilerService:
                 source_id="task.user-content",
                 source_sha256=user_source_sha,
             ),
+            request_id=record.request_id,
             source_kind=ContextSourceKind.USER_TASK,
             trust=ContextTrustClass.UNTRUSTED_USER_CONTENT,
             source_id="task.user-content",
@@ -349,7 +353,14 @@ class ContextCompilerService:
             privacy=PrivacyClassification.INTERNAL,
             retention=RetentionDisposition.SESSION,
         )
-        materials = (user_material, *request.materials)
+        approved = tuple(
+            self._materials.require(material) for material in request.materials
+        )
+        if any(material.request_id != record.request_id for material in approved):
+            raise ContextCompilerPolicyError(
+                "context material does not belong to task"
+            )
+        materials = (user_material, *approved)
         material_ids = [item.material_id for item in materials]
         if len(set(material_ids)) != len(material_ids):
             raise ContextCompilerPolicyError("context material identity conflicts")
@@ -499,6 +510,7 @@ class ContextCompilerService:
                 omissions.append(
                     ContextOmission(
                         material_id=current.material_id,
+                        request_id=current.request_id,
                         source_kind=current.source_kind,
                         source_id=current.source_id,
                         source_sha256=current.source_sha256,
@@ -670,6 +682,7 @@ def _omission(
 ) -> ContextOmission:
     return ContextOmission(
         material_id=material.material_id,
+        request_id=material.request_id,
         source_kind=material.source_kind,
         source_id=material.source_id,
         source_sha256=material.source_sha256,
@@ -686,6 +699,7 @@ def _truncate_section(section: ContextSection, content: str) -> ContextSection:
         )
     return ContextSection(
         material_id=section.material_id,
+        request_id=section.request_id,
         source_kind=section.source_kind,
         trust=section.trust,
         source_id=section.source_id,

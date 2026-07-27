@@ -34,6 +34,10 @@ from simorgh_core.agents.context_projections import (
     build_github_context_tool_schemas,
     build_specialist_plan_context_output_schema,
 )
+from simorgh_core.agents.context_sources import (
+    ContextMaterialRegistry,
+    UnknownContextMaterialError,
+)
 from simorgh_core.agents.context_store import (
     ContextConflictError,
     ContextStoreCorruptionError,
@@ -174,6 +178,7 @@ def _material(
             source_id=source_id,
             source_sha256=source_sha256,
         ),
+        request_id=request_id,
         source_kind=source_kind,
         trust=trust,
         source_id=source_id,
@@ -225,6 +230,7 @@ def _runtime(
     context_store: InMemoryContextStore | SQLiteContextStore | None = None,
     policy: ContextCompilerPolicy | None = None,
     invocation_store: InMemoryInvocationStore | None = None,
+    approved_materials: tuple[ContextMaterial, ...] = (),
 ) -> tuple[
     ContextCompilerService,
     TaskEnvelope,
@@ -249,6 +255,7 @@ def _runtime(
         specialist_registry=default_specialist_registry(),
         result_schema_registry=default_result_schema_registry(),
         context_store=contexts,
+        material_registry=ContextMaterialRegistry(approved_materials),
         reviewed_tool_schemas={item.tool_id: item for item in tool_schemas},
         policy=policy,
         wall_clock_millis=lambda: _NOW_MS,
@@ -308,8 +315,9 @@ def test_material_input_order_does_not_change_canonical_bundle() -> None:
         content="bounded typed evidence",
         priority=500,
     )
-    first_service, *_ = _runtime(task=task)
-    second_service, *_ = _runtime(task=task)
+    approved = (project, evidence)
+    first_service, *_ = _runtime(task=task, approved_materials=approved)
+    second_service, *_ = _runtime(task=task, approved_materials=approved)
 
     first = first_service.compile(
         _request(
@@ -332,7 +340,7 @@ def test_material_input_order_does_not_change_canonical_bundle() -> None:
 
 
 def test_prompt_injection_stays_untrusted_and_cannot_widen_tools() -> None:
-    service, task, *_ = _runtime()
+    task = _task()
     malicious = _material(
         request_id=task.request_id,
         source_kind=ContextSourceKind.EVIDENCE,
@@ -344,6 +352,10 @@ def test_prompt_injection_stays_untrusted_and_cannot_widen_tools() -> None:
         priority=800,
     )
 
+    service, task, *_ = _runtime(
+        task=task,
+        approved_materials=(malicious,),
+    )
     result = service.compile(
         _request(task=task, invocation_id=uuid4(), materials=(malicious,))
     )
@@ -362,6 +374,41 @@ def test_prompt_injection_stays_untrusted_and_cannot_widen_tools() -> None:
     )
 
 
+def test_approved_material_from_another_task_is_rejected() -> None:
+    task = _task()
+    foreign_task = _task()
+    foreign = _material(
+        request_id=foreign_task.request_id,
+        source_kind=ContextSourceKind.EVIDENCE,
+        source_id="github.foreign",
+        content="foreign evidence",
+    )
+    service, *_ = _runtime(
+        task=task,
+        approved_materials=(foreign,),
+    )
+
+    with pytest.raises(ContextCompilerPolicyError, match="does not belong"):
+        service.compile(
+            _request(task=task, invocation_id=uuid4(), materials=(foreign,))
+        )
+
+
+def test_unapproved_material_is_rejected_before_compilation() -> None:
+    service, task, *_ = _runtime()
+    unapproved = _material(
+        request_id=task.request_id,
+        source_kind=ContextSourceKind.EVIDENCE,
+        source_id="github.unapproved",
+        content="unapproved evidence",
+    )
+
+    with pytest.raises(UnknownContextMaterialError, match="not approved"):
+        service.compile(
+            _request(task=task, invocation_id=uuid4(), materials=(unapproved,))
+        )
+
+
 def test_required_stale_evidence_fails_and_optional_stale_is_reported() -> None:
     task = _task()
     stale = _material(
@@ -371,7 +418,7 @@ def test_required_stale_evidence_fails_and_optional_stale_is_reported() -> None:
         content="stale evidence",
         fresh_until_ms=2_000,
     )
-    service, *_ = _runtime(task=task)
+    service, *_ = _runtime(task=task, approved_materials=(stale,))
     result = service.compile(
         _request(task=task, invocation_id=uuid4(), materials=(stale,))
     )
@@ -380,8 +427,12 @@ def test_required_stale_evidence_fails_and_optional_stale_is_reported() -> None:
     assert result.bundle.omissions[0].reason == ContextOmissionReason.STALE
 
     required = stale.model_copy(update={"required": True})
+    required_service, *_ = _runtime(
+        task=task,
+        approved_materials=(required,),
+    )
     with pytest.raises(ContextCompilerFreshnessError, match="fresh"):
-        service.compile(
+        required_service.compile(
             _request(task=task, invocation_id=uuid4(), materials=(required,))
         )
 
@@ -395,7 +446,7 @@ def test_privacy_ceiling_omits_optional_and_rejects_required_material() -> None:
         content="PRIVATE_MARKER_7ef3",
         privacy=PrivacyClassification.PRIVATE,
     )
-    service, *_ = _runtime(task=task)
+    service, *_ = _runtime(task=task, approved_materials=(private,))
     result = service.compile(
         _request(task=task, invocation_id=uuid4(), materials=(private,))
     )
@@ -403,12 +454,17 @@ def test_privacy_ceiling_omits_optional_and_rejects_required_material() -> None:
     assert all("PRIVATE_MARKER_7ef3" not in item.content for item in result.bundle.sections)
     assert result.bundle.omissions[0].reason == ContextOmissionReason.PRIVACY_CEILING
 
+    required_private = private.model_copy(update={"required": True})
+    required_service, *_ = _runtime(
+        task=task,
+        approved_materials=(required_private,),
+    )
     with pytest.raises(ContextCompilerPolicyError, match="required"):
-        service.compile(
+        required_service.compile(
             _request(
                 task=task,
                 invocation_id=uuid4(),
-                materials=(private.model_copy(update={"required": True}),),
+                materials=(required_private,),
             )
         )
 
@@ -424,7 +480,11 @@ def test_optional_evidence_truncation_preserves_original_length_and_taint() -> N
     policy = ContextCompilerPolicy(
         limits=ContextCompilerLimits(max_text_characters=160)
     )
-    service, *_ = _runtime(task=task, policy=policy)
+    service, *_ = _runtime(
+        task=task,
+        policy=policy,
+        approved_materials=(long_evidence,),
+    )
     result = service.compile(
         _request(task=task, invocation_id=uuid4(), materials=(long_evidence,))
     )
@@ -526,7 +586,7 @@ def test_sqlite_context_replays_after_reopen_and_detects_corruption(
 
 
 def test_same_specialist_invocation_cannot_claim_changed_context() -> None:
-    service, task, *_ = _runtime()
+    task = _task()
     invocation_id = uuid4()
     first = _material(
         request_id=task.request_id,
@@ -541,6 +601,10 @@ def test_same_specialist_invocation_cannot_claim_changed_context() -> None:
         source_id="project.changed",
         content="changed goal",
         fresh_until_ms=None,
+    )
+    service, *_ = _runtime(
+        task=task,
+        approved_materials=(first, changed),
     )
     service.compile(
         _request(task=task, invocation_id=invocation_id, materials=(first,))
