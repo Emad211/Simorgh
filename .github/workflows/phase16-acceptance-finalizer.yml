@@ -1,0 +1,18 @@
+name: Phase 1.6 Acceptance Finalizer Probe
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase16-acceptance-finalizer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "phase16_acceptance_finalizer=registered"
