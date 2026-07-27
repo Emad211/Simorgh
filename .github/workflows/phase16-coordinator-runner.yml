@@ -1,0 +1,127 @@
+name: Phase 1.6 Coordinator Runner v1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/phase16-coordinator-runner.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase16-cancellation-coordinator
+  cancel-in-progress: false
+
+jobs:
+  validate-publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Apply exact coordinator patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              ".github/workflows/phase16-cancellation-coordinator.yml"
+          ).read_text(encoding="utf-8")
+          start = "          python - <<'PY'\n"
+          end = "\n          PY\n"
+          if source.count(start) != 1:
+              raise SystemExit("coordinator source start marker is not unique")
+          remainder = source.split(start, 1)[1]
+          if remainder.count(end) != 1:
+              raise SystemExit("coordinator source end marker is not unique")
+          raw = remainder.split(end, 1)[0]
+          embedded = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in raw.splitlines()
+          )
+
+          old_reset = '"             previous_store.close()\\n'
+          if embedded.count(old_reset) != 2:
+              raise SystemExit("reset anchor preflight cardinality changed")
+          embedded = embedded.replace(
+              old_reset,
+              '"            previous_store.close()\\n',
+          )
+
+          old_fingerprint = '        input_fingerprint=(kind.value[0] * 64),'
+          if embedded.count(old_fingerprint) != 1:
+              raise SystemExit("test fingerprint preflight cardinality changed")
+          embedded = embedded.replace(
+              old_fingerprint,
+              '        input_fingerprint=({\\n'
+              '            InvocationKind.MODEL: "a",\\n'
+              '            InvocationKind.TOOL: "b",\\n'
+              '            InvocationKind.SPECIALIST: "c",\\n'
+              '        }[kind] * 64),',
+          )
+
+          api_start = embedded.index(
+              '          api = "services/core/src/simorgh_core/agents/api.py"'
+          )
+          app_start = embedded.index(
+              '          app = "services/core/src/simorgh_core/app.py"'
+          )
+          api_segment = embedded[api_start:app_start]
+          expected_anchor = "              expected=1,\n"
+          if api_segment.count(expected_anchor) != 1:
+              raise SystemExit("API conflict anchor preflight cardinality changed")
+          api_segment = api_segment.replace(
+              expected_anchor,
+              "              expected=2,\n",
+          )
+          embedded = embedded[:api_start] + api_segment + embedded[app_start:]
+
+          exec(
+              compile(embedded, "phase16-coordinator.py", "exec"),
+              {"__name__": "__main__"},
+          )
+          PY
+          rm -f .github/workflows/phase16-cancellation-coordinator.yml
+          rm -f .github/workflows/phase16-coordinator-launcher.yml
+          rm -f .github/workflows/phase16-coordinator-runner.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Validate complete Core runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_control_plane.py
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Publish exact tested head
+        shell: bash
+        env:
+          BRANCH: core/cancellation-propagation
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: propagate durable cancellation through native control plane'
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          test "$remote_head" = "$EXPECTED_HEAD"
+          git push origin "HEAD:refs/heads/$BRANCH"
