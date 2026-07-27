@@ -1,4 +1,4 @@
-name: Phase 1.6 Coordinator Runner v4
+name: Phase 1.6 Coordinator Runner v5
 
 on:
   pull_request:
@@ -76,13 +76,9 @@ jobs:
               'app = "services/core/src/simorgh_core/app.py"'
           )
           api_segment = embedded[api_start:app_start]
-          expected_anchor = "              expected=1,\n"
-          if api_segment.count(expected_anchor) != 1:
+          if api_segment.count("expected=1") != 1:
               raise SystemExit("API conflict anchor preflight cardinality changed")
-          api_segment = api_segment.replace(
-              expected_anchor,
-              "              expected=2,\n",
-          )
+          api_segment = api_segment.replace("expected=1", "expected=2")
           embedded = embedded[:api_start] + api_segment + embedded[app_start:]
 
           exec(
