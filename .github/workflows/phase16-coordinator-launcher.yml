@@ -1,4 +1,4 @@
-name: Phase 1.6 Cancellation Coordinator Gate v3
+name: Phase 1.6 Cancellation Coordinator Gate v4
 
 on:
   pull_request:
@@ -56,15 +56,6 @@ jobs:
                   '"            previous_store.close()\\n',
                   "reset anchor indentation",
                   2,
-              ),
-              (
-                  '"    CancellationOwnerRegistry,\\n"\n'
-                  '              "    cancellation_owner_registry,\\n"\n'
-                  '              ")\\n",',
-                  '"    CancellationOwnerRegistry,\\n"\n'
-                  '              ")\\n",',
-                  "control-plane unused global registry import",
-                  1,
               ),
               (
                   '        input_fingerprint=(kind.value[0] * 64),',
