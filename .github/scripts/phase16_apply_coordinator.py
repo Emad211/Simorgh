@@ -5,6 +5,10 @@ from pathlib import Path
 
 SOURCE = Path(".github/workflows/phase16-cancellation-coordinator.yml")
 CONTROL_PLANE = Path("services/core/src/simorgh_core/agents/control_plane.py")
+CANCELLATION_AUTHORITY_TEST = Path(
+    "services/core/tests/test_cancellation_invocation_authority.py"
+)
+SPECIALIST_RUNTIME_TEST = Path("services/core/tests/test_specialist_runtime.py")
 START_MARKER = "          python - <<'PY'\n"
 END_MARKER = "\n          PY\n"
 
@@ -35,20 +39,29 @@ async def cancel(
 
         existing_request = state.record.cancellation_request
         if existing_request is not None:
-            candidate_id = cancellation_id or existing_request.cancellation_id
-            candidate = existing_request.model_copy(
-                update={
-                    "cancellation_id": candidate_id,
-                    "reason_code": reason_code,
-                    "operator_reason": normalized_reason,
-                    "requester_authority": requester_authority,
-                }
-            )
-            if candidate != existing_request:
-                raise AgentTaskConflictError(
-                    "cancellation identity was replayed with different content"
+            if cancellation_id is None:
+                cancellation_request = existing_request
+                normalized_reason = (
+                    existing_request.operator_reason
+                    or state.cancel_reason
+                    or normalized_reason
                 )
-            cancellation_request = existing_request
+                reason_code = existing_request.reason_code
+                requester_authority = existing_request.requester_authority
+            else:
+                candidate = existing_request.model_copy(
+                    update={
+                        "cancellation_id": cancellation_id,
+                        "reason_code": reason_code,
+                        "operator_reason": normalized_reason,
+                        "requester_authority": requester_authority,
+                    }
+                )
+                if candidate != existing_request:
+                    raise AgentTaskConflictError(
+                        "cancellation identity was replayed with different content"
+                    )
+                cancellation_request = existing_request
             if state.record.cancellation_result is not None:
                 return state.record
         else:
@@ -312,6 +325,62 @@ def patch_control_plane_cancel() -> None:
     )
 
 
+def patch_compatibility_tests() -> None:
+    authority_text = CANCELLATION_AUTHORITY_TEST.read_text(encoding="utf-8")
+    authority_text = replace_exact(
+        authority_text,
+        '''    assert [item.invocation_id for item in fence.owned_invocations] == [
+        first.invocation_id,
+        second.invocation_id,
+    ]
+    assert fence.owned_invocations[0].cancellation_owner_id == owner_id
+''',
+        '''    expected = sorted(
+        (first, second),
+        key=lambda item: (item.created_at_ms, str(item.invocation_id)),
+    )
+    assert [item.invocation_id for item in fence.owned_invocations] == [
+        item.invocation_id for item in expected
+    ]
+    owned_by_id = {
+        item.invocation_id: item for item in fence.owned_invocations
+    }
+    assert owned_by_id[first.invocation_id].cancellation_owner_id == owner_id
+''',
+        label="deterministic ownership fixture",
+    )
+    CANCELLATION_AUTHORITY_TEST.write_text(authority_text, encoding="utf-8")
+
+    specialist_text = SPECIALIST_RUNTIME_TEST.read_text(encoding="utf-8")
+    specialist_text = replace_exact(
+        specialist_text,
+        '''        connector_id: str | None = None,
+        parent_invocation_id: UUID | None = None,
+        attempt: int = 1,
+''',
+        '''        connector_id: str | None = None,
+        parent_invocation_id: UUID | None = None,
+        cancellation_owner_id: UUID | None = None,
+        attempt: int = 1,
+''',
+        label="begin-failing store owner signature",
+    )
+    specialist_text = replace_exact(
+        specialist_text,
+        '''            connector_id,
+            parent_invocation_id,
+            attempt,
+''',
+        '''            connector_id,
+            parent_invocation_id,
+            cancellation_owner_id,
+            attempt,
+''',
+        label="begin-failing store owner disposal",
+    )
+    SPECIALIST_RUNTIME_TEST.write_text(specialist_text, encoding="utf-8")
+
+
 def main() -> None:
     embedded = harden_embedded_source(extract_embedded_source())
     exec(
@@ -319,6 +388,7 @@ def main() -> None:
         {"__name__": "__main__"},
     )
     patch_control_plane_cancel()
+    patch_compatibility_tests()
     print("coordinator_patch_complete=true")
 
 
