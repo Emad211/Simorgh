@@ -1,4 +1,4 @@
-name: Phase 1.6 Coordinator Runner v1
+name: Phase 1.6 Coordinator Runner v2
 
 on:
   pull_request:
