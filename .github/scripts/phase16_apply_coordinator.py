@@ -103,6 +103,24 @@ def harden_embedded_source(embedded: str) -> str:
         expected=2,
     )
     embedded = embedded[:github_start] + github_segment + embedded[model_start:]
+
+    structural_cancel = '''control_file = Path(start)
+control_text = control_file.read_text(encoding="utf-8")
+cancel_start = control_text.index("    async def cancel(\\n")
+cancel_end = control_text.index(
+    "    async def clear_for_test", cancel_start
+)
+replacement = new_cancel.rstrip() + "\\n\\n"
+control_file.write_text(
+    control_text[:cancel_start] + replacement + control_text[cancel_end:],
+    encoding="utf-8",
+)'''
+    embedded = replace_exact(
+        embedded,
+        "replace_count(start, old_cancel, new_cancel)",
+        structural_cancel,
+        label="control-plane cancellation structural replacement",
+    )
     return embedded
 
 
