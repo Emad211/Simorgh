@@ -1,4 +1,4 @@
-name: Phase 1.6 Foundation Launcher v4
+name: Phase 1.6 Foundation Launcher v5
 
 on:
   pull_request:
@@ -33,7 +33,6 @@ jobs:
           set +e
           python - <<'PY' > "$RUNNER_TEMP/phase16-patch.log" 2>&1
           from pathlib import Path
-          from textwrap import dedent
 
           source = Path(
               ".github/workflows/phase16-cancellation-foundation.yml"
@@ -45,7 +44,11 @@ jobs:
           remainder = source.split(start, 1)[1]
           if remainder.count(end) != 1:
               raise SystemExit("foundation end marker is not unique")
-          embedded = dedent(remainder.split(end, 1)[0])
+          raw = remainder.split(end, 1)[0]
+          embedded = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in raw.splitlines()
+          )
           exec(compile(embedded, "phase16-foundation.py", "exec"), {"__name__": "__main__"})
           PY
           status=$?
