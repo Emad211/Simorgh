@@ -1,9 +1,8 @@
-name: Phase 1.6 Cancellation Coordinator Gate v4
+name: Phase 1.6 Cancellation Coordinator Gate v7
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
       - .github/workflows/phase16-coordinator-launcher.yml
 
@@ -11,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: phase16-cancellation-coordinator
+  group: phase16-cancellation-coordinator-final
   cancel-in-progress: false
 
 jobs:
@@ -25,13 +24,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Apply coordinator patch fail-closed
+      - name: Apply exact coordinator patch
         id: patch
         continue-on-error: true
         shell: bash
         run: |
           set +e
-          python - <<'PY' > "$RUNNER_TEMP/phase16-coordinator-patch.log" 2>&1
+          python - <<'PY' > "$RUNNER_TEMP/phase16-final-patch.log" 2>&1
           from pathlib import Path
 
           source = Path(
@@ -50,41 +49,62 @@ jobs:
               for line in raw.splitlines()
           )
 
-          fixes = (
-              (
-                  '"             previous_store.close()\\n',
-                  '"            previous_store.close()\\n',
-                  "reset anchor indentation",
-                  2,
-              ),
-              (
-                  '        input_fingerprint=(kind.value[0] * 64),',
-                  '        input_fingerprint=({\\n'
-                  '            InvocationKind.MODEL: "a",\\n'
-                  '            InvocationKind.TOOL: "b",\\n'
-                  '            InvocationKind.SPECIALIST: "c",\\n'
-                  '        }[kind] * 64),',
-                  "test fingerprint alphabet",
-                  1,
-              ),
-              (
-                  '              expected=1,\n'
-                  '          )\n\n'
-                  '          app = "services/core/src/simorgh_core/app.py"',
-                  '              expected=2,\n'
-                  '          )\n\n'
-                  '          app = "services/core/src/simorgh_core/app.py"',
-                  "API conflict mapping anchor count",
-                  1,
-              ),
+          old_reset = '"             previous_store.close()\\n'
+          if embedded.count(old_reset) != 2:
+              raise SystemExit("reset anchor preflight cardinality changed")
+          embedded = embedded.replace(
+              old_reset,
+              '"            previous_store.close()\\n',
           )
-          for old, new, label, expected in fixes:
-              count = embedded.count(old)
-              if count != expected:
-                  raise SystemExit(
-                      f"preflight fix {label} count={count}, expected={expected}"
-                  )
-              embedded = embedded.replace(old, new)
+
+          old_fingerprint = '        input_fingerprint=(kind.value[0] * 64),'
+          if embedded.count(old_fingerprint) != 1:
+              raise SystemExit("test fingerprint preflight cardinality changed")
+          embedded = embedded.replace(
+              old_fingerprint,
+              '        input_fingerprint=({\\n'
+              '            InvocationKind.MODEL: "a",\\n'
+              '            InvocationKind.TOOL: "b",\\n'
+              '            InvocationKind.SPECIALIST: "c",\\n'
+              '        }[kind] * 64),',
+          )
+
+          api_start = embedded.index(
+              'api = "services/core/src/simorgh_core/agents/api.py"'
+          )
+          app_start = embedded.index(
+              'app = "services/core/src/simorgh_core/app.py"'
+          )
+          api_segment = embedded[api_start:app_start]
+          if api_segment.count("expected=1") != 1:
+              raise SystemExit("API conflict anchor preflight cardinality changed")
+          api_segment = api_segment.replace("expected=1", "expected=2")
+          embedded = embedded[:api_start] + api_segment + embedded[app_start:]
+
+          old_tool_patch = '''replace_count(
+    tool_gateway,
+    "                connector_id=request.connector_id,\n"
+    "            )\n",
+    "                connector_id=request.connector_id,\n"
+    "                cancellation_owner_id=request.cancellation_owner_id,\n"
+    "            )\n",
+    expected=1,
+)'''
+          new_tool_patch = '''replace_count(
+    tool_gateway,
+    "                effect=InvocationEffect.READ_ONLY,\n"
+    "                tool_id=request.tool_id,\n"
+    "                connector_id=request.connector_id,\n"
+    "            )\n",
+    "                effect=InvocationEffect.READ_ONLY,\n"
+    "                tool_id=request.tool_id,\n"
+    "                connector_id=request.connector_id,\n"
+    "                cancellation_owner_id=request.cancellation_owner_id,\n"
+    "            )\n",
+)'''
+          if embedded.count(old_tool_patch) != 1:
+              raise SystemExit("tool gateway owner patch preflight cardinality changed")
+          embedded = embedded.replace(old_tool_patch, new_tool_patch)
 
           exec(
               compile(embedded, "phase16-coordinator.py", "exec"),
@@ -96,18 +116,19 @@ jobs:
           if [[ "$status" == "0" ]]; then
             rm -f .github/workflows/phase16-cancellation-coordinator.yml
             rm -f .github/workflows/phase16-coordinator-launcher.yml
-            git diff --check >> "$RUNNER_TEMP/phase16-coordinator-patch.log" 2>&1
+            rm -f .github/workflows/phase16-coordinator-runner.yml
+            git diff --check >> "$RUNNER_TEMP/phase16-final-patch.log" 2>&1
             status=$?
           fi
-          echo "patch_status=$status" >> "$RUNNER_TEMP/phase16-coordinator-patch.log"
+          echo "patch_status=$status" >> "$RUNNER_TEMP/phase16-final-patch.log"
           exit "$status"
 
       - name: Upload patch diagnostic
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase16-coordinator-patch-diagnostic
-          path: ${{ runner.temp }}/phase16-coordinator-patch.log
+          name: phase16-final-patch-diagnostic
+          path: ${{ runner.temp }}/phase16-final-patch.log
           retention-days: 2
           if-no-files-found: error
 
@@ -121,71 +142,18 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Run separated quality diagnostics
-        id: quality
-        continue-on-error: true
+      - name: Validate complete Core runtime
         shell: bash
         run: |
-          set +e
-          python -m pip install --upgrade pip > "$RUNNER_TEMP/install.log" 2>&1
-          pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
-          install_status=$?
-          if [[ "$install_status" == "0" ]]; then
-            ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_control_plane.py > "$RUNNER_TEMP/ruff-fix.log" 2>&1
-            ruff_fix_status=$?
-            ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
-            ruff_status=$?
-            mypy services/core/src > "$RUNNER_TEMP/mypy.log" 2>&1
-            mypy_status=$?
-            pytest -q > "$RUNNER_TEMP/pytest.log" 2>&1
-            pytest_status=$?
-          else
-            ruff_fix_status=99
-            ruff_status=99
-            mypy_status=99
-            pytest_status=99
-            : > "$RUNNER_TEMP/ruff-fix.log"
-            : > "$RUNNER_TEMP/ruff.log"
-            : > "$RUNNER_TEMP/mypy.log"
-            : > "$RUNNER_TEMP/pytest.log"
-          fi
-          {
-            echo "install_status=$install_status"
-            echo "ruff_fix_status=$ruff_fix_status"
-            echo "ruff_status=$ruff_status"
-            echo "mypy_status=$mypy_status"
-            echo "pytest_status=$pytest_status"
-            echo "--- install_tail ---"
-            tail -c 4000 "$RUNNER_TEMP/install.log"
-            echo "--- ruff_fix_tail ---"
-            tail -c 4000 "$RUNNER_TEMP/ruff-fix.log"
-            echo "--- ruff_tail ---"
-            tail -c 8000 "$RUNNER_TEMP/ruff.log"
-            echo "--- mypy_tail ---"
-            tail -c 12000 "$RUNNER_TEMP/mypy.log"
-            echo "--- pytest_tail ---"
-            tail -c 16000 "$RUNNER_TEMP/pytest.log"
-          } > "$RUNNER_TEMP/phase16-coordinator-quality.txt"
-          if [[ "$install_status" != "0" || "$ruff_fix_status" != "0" || "$ruff_status" != "0" || "$mypy_status" != "0" || "$pytest_status" != "0" ]]; then
-            exit 1
-          fi
-          exit 0
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_control_plane.py
+          ruff check .
+          mypy services/core/src
+          pytest
 
-      - name: Upload quality diagnostic
-        if: always() && steps.patch.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: phase16-coordinator-quality-diagnostic
-          path: ${{ runner.temp }}/phase16-coordinator-quality.txt
-          retention-days: 2
-          if-no-files-found: error
-
-      - name: Stop on quality failure
-        if: steps.quality.outcome != 'success' && steps.patch.outcome == 'success'
-        shell: bash
-        run: exit 1
-
-      - name: Publish exact validated coordinator
+      - name: Publish exact tested head
         shell: bash
         env:
           BRANCH: core/cancellation-propagation
@@ -199,8 +167,5 @@ jobs:
           git commit -m 'core: propagate durable cancellation through native control plane'
           git fetch origin "$BRANCH"
           remote_head=$(git rev-parse "origin/$BRANCH")
-          if [[ "$remote_head" != "$EXPECTED_HEAD" ]]; then
-            echo "Branch moved during validation: $remote_head != $EXPECTED_HEAD" >&2
-            exit 1
-          fi
+          test "$remote_head" = "$EXPECTED_HEAD"
           git push origin "HEAD:refs/heads/$BRANCH"
