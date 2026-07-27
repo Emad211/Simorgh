@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 
@@ -99,6 +99,7 @@ def _task() -> TaskEnvelope:
 
 def _decision(task: TaskEnvelope) -> RoutingDecision:
     return RoutingDecision(
+        decision_id=uuid5(NAMESPACE_URL, f"simorgh-test-route:{task.request_id}"),
         request_id=task.request_id,
         state=RoutingState.ROUTED,
         selected_agent_id="development.planner",
