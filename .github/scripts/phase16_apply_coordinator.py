@@ -90,6 +90,19 @@ def harden_embedded_source(embedded: str) -> str:
         expected=2,
     )
     embedded = embedded[:tool_start] + tool_segment + embedded[github_start:]
+
+    model_start = embedded.index(
+        'model_gateway = "services/core/src/simorgh_core/agents/model_gateway.py"'
+    )
+    github_segment = embedded[github_start:model_start]
+    github_segment = replace_exact(
+        github_segment,
+        "task.allowed_data_sources",
+        "request.allowed_data_sources",
+        label="GitHub read effective data-source anchor",
+        expected=2,
+    )
+    embedded = embedded[:github_start] + github_segment + embedded[model_start:]
     return embedded
 
 
