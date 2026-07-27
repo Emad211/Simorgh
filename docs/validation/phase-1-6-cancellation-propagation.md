@@ -5,7 +5,8 @@
 - Branch: `core/cancellation-propagation`
 - Base Phase 1.5 merge: `7fef6a5262de1e84be89c9afc30c25053945a4ac`
 - Product acceptance candidate: `c45ad0d4d4640aee60ddbdecda627030bedb702e`
-- Status: product acceptance passed; documentation and final exact-head merge gates validating
+- Documentation-synchronized predecessor: `a0eb60f6619f129ca807eeb3821b520b1bfc7980`
+- Status: implementation, acceptance and operational documentation complete; final exact-head Core/Android CI and review audit validating
 
 ## Scope under validation
 
@@ -40,7 +41,22 @@ strict MyPy: passed
 
 The publisher removed its temporary scripts and workflow before committing the product candidate. They are not part of the PR product diff.
 
-The ordinary CI attached to the acceptance source head also completed successfully. A fresh ordinary CI run on the final documentation candidate remains a separate merge gate because the bot-published product commit required workflow approval rather than reporting a product failure.
+The ordinary CI attached to the acceptance source head also completed successfully. The exact final PR head receives a separate ordinary CI gate because the bot-published product/documentation commits required workflow approval rather than reporting product failures.
+
+## Documentation synchronization evidence
+
+The documentation predecessor `a0eb60f6619f129ca807eeb3821b520b1bfc7980` adds and synchronizes:
+
+- `docs/CANCELLATION_PROPAGATION.md`;
+- ADR 0019;
+- this acceptance record;
+- Phase 1.5 completion and Phase 1.6 validating status in the master plan;
+- cancellation semantics in the agent runtime guide;
+- documentation index, roadmap, ADR and durability references;
+- completed Phase 1.5 status in its operational guide and ADR;
+- a supersession link from the Phase 1.6 start record.
+
+The exact-anchor documentation publisher removed itself and its script before committing. A changed-file audit confirms no temporary publisher file remains in the pull request.
 
 ## Contract validation
 
@@ -159,11 +175,9 @@ References:
 
 Before PR #54 may merge:
 
-- synchronize master plan, runtime guide and documentation index;
-- run ordinary CI on the exact final documentation candidate;
+- run ordinary CI on the exact final candidate;
 - confirm Core install, Ruff, strict MyPy and all tests pass;
 - confirm Android build, JVM tests, lint and debug APK generation pass;
-- audit changed files for temporary publisher content;
 - audit unresolved review threads and submitted reviews;
-- update this record with the exact final head and CI run;
+- update the PR body with the exact candidate and CI evidence;
 - mark the PR ready and merge only with expected-head protection.
