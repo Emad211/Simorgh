@@ -69,33 +69,28 @@ def harden_embedded_source(embedded: str) -> str:
     )
     embedded = embedded[:api_start] + api_segment + embedded[app_start:]
 
-    old_tool_patch = '''replace_count(
-    tool_gateway,
-    "                connector_id=request.connector_id,\n"
-    "            )\n",
-    "                connector_id=request.connector_id,\n"
-    "                cancellation_owner_id=request.cancellation_owner_id,\n"
-    "            )\n",
-    expected=1,
-)'''
-    new_tool_patch = '''replace_count(
-    tool_gateway,
-    "                effect=InvocationEffect.READ_ONLY,\n"
-    "                tool_id=request.tool_id,\n"
-    "                connector_id=request.connector_id,\n"
-    "            )\n",
-    "                effect=InvocationEffect.READ_ONLY,\n"
-    "                tool_id=request.tool_id,\n"
-    "                connector_id=request.connector_id,\n"
-    "                cancellation_owner_id=request.cancellation_owner_id,\n"
-    "            )\n",
-)'''
-    return replace_exact(
-        embedded,
-        old_tool_patch,
-        new_tool_patch,
-        label="tool gateway owner patch",
+    tool_start = embedded.index(
+        'tool_gateway = "services/core/src/simorgh_core/agents/tool_gateway.py"'
     )
+    github_start = embedded.index(
+        'github_service = "services/core/src/simorgh_core/agents/github_read_service.py"'
+    )
+    tool_segment = embedded[tool_start:github_start]
+    connector_literal = '"                connector_id=request.connector_id,\\n"'
+    narrowed_literal = (
+        '"                effect=InvocationEffect.READ_ONLY,\\n"\n'
+        '    "                tool_id=request.tool_id,\\n"\n'
+        '    "                connector_id=request.connector_id,\\n"'
+    )
+    tool_segment = replace_exact(
+        tool_segment,
+        connector_literal,
+        narrowed_literal,
+        label="tool gateway owner patch literals",
+        expected=2,
+    )
+    embedded = embedded[:tool_start] + tool_segment + embedded[github_start:]
+    return embedded
 
 
 def main() -> None:
