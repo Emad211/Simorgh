@@ -166,6 +166,20 @@ class InvocationCancellationAcknowledgement(BaseModel):
     cancellation_owner_id: UUID | None = None
     disposition: AdapterCancellationDisposition
     acknowledged_at_ms: int = Field(ge=0)
+    usage_reservation_released: bool = False
+
+    @model_validator(mode="after")
+    def validate_non_entry_proof(self) -> Self:
+        if self.disposition == AdapterCancellationDisposition.PROVEN_NOT_ENTERED:
+            if not self.usage_reservation_released:
+                raise ValueError(
+                    "proven_not_entered acknowledgement must release its reservation"
+                )
+        elif self.usage_reservation_released:
+            raise ValueError(
+                "only proven_not_entered acknowledgement may release reservation"
+            )
+        return self
 
 
 class InvocationCancellationAdapter(Protocol):
