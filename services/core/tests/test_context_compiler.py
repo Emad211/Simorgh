@@ -121,8 +121,12 @@ def _record(task: TaskEnvelope) -> AgentTaskRecord:
         budget=BudgetSnapshot(
             request_id=task.request_id,
             limits=task.budget,
-            committed=UsageVector(model_calls=1, input_tokens=200),
-            reserved=UsageVector(tool_calls=1),
+            committed=UsageVector(
+                model_calls=1,
+                tool_calls=1,
+                input_tokens=200,
+            ),
+            reserved=UsageVector(),
             elapsed_ms=2_000,
             cancelled=False,
         ),
