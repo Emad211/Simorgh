@@ -1,10 +1,199 @@
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 SOURCE = Path(".github/workflows/phase16-cancellation-coordinator.yml")
+CONTROL_PLANE = Path("services/core/src/simorgh_core/agents/control_plane.py")
 START_MARKER = "          python - <<'PY'\n"
 END_MARKER = "\n          PY\n"
+
+CANCEL_METHOD = textwrap.dedent(
+    '''\
+async def cancel(
+    self,
+    *,
+    request_id: UUID,
+    reason: str,
+    cancellation_id: UUID | None = None,
+    reason_code: str = "operator_requested",
+    requester_authority: CancellationRequesterAuthority = (
+        CancellationRequesterAuthority.OPERATOR
+    ),
+) -> AgentTaskRecord:
+    normalized_reason = " ".join(reason.strip().split())[:1_000]
+    if not normalized_reason:
+        normalized_reason = "operator requested cancellation"
+
+    with self._lock:
+        self._require_store_healthy_locked()
+        state = self._states.get(request_id)
+        if state is None:
+            raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
+        if state.record.phase == AgentTaskPhase.EXPIRED:
+            return state.record
+
+        existing_request = state.record.cancellation_request
+        if existing_request is not None:
+            candidate_id = cancellation_id or existing_request.cancellation_id
+            candidate = existing_request.model_copy(
+                update={
+                    "cancellation_id": candidate_id,
+                    "reason_code": reason_code,
+                    "operator_reason": normalized_reason,
+                    "requester_authority": requester_authority,
+                }
+            )
+            if candidate != existing_request:
+                raise AgentTaskConflictError(
+                    "cancellation identity was replayed with different content"
+                )
+            cancellation_request = existing_request
+            if state.record.cancellation_result is not None:
+                return state.record
+        else:
+            now = self._now_ms()
+            resolved_id = cancellation_id or stable_cancellation_id(
+                request_id=request_id,
+                reason_code=reason_code,
+                operator_reason=normalized_reason,
+                requester_authority=requester_authority,
+            )
+            cancellation_request = TaskCancellationRequest(
+                request_id=request_id,
+                cancellation_id=resolved_id,
+                requested_at_ms=now,
+                reason_code=reason_code,
+                operator_reason=normalized_reason,
+                requester_authority=requester_authority,
+                observed_task_phase=state.record.phase.value,
+                observed_task_version=state.record.updated_at_ms,
+            )
+            state.cancelled = True
+            state.cancel_reason = normalized_reason
+            state.account.cancel()
+            accepted_record = AgentTaskRecord(
+                request_id=request_id,
+                phase=AgentTaskPhase.CANCELLED,
+                created_at_ms=state.record.created_at_ms,
+                updated_at_ms=self._next_record_time(state.record.updated_at_ms),
+                task=state.task,
+                routing_decision=state.record.routing_decision,
+                budget=state.account.snapshot(),
+                cancel_reason=state.cancel_reason,
+                cancellation_request=cancellation_request,
+                detail=state.cancel_reason,
+            )
+            self._persist_transition_locked(
+                state=state,
+                account=state.account,
+                record=accepted_record,
+            )
+
+    fence = self._invocations.accept_cancellation(cancellation_request)
+    signal_dispositions = self._cancellation_owners.signal_request(
+        request_id=request_id,
+        reason=normalized_reason,
+    )
+    settled = self._invocations.settle_cancellation(request_id)
+    settled_by_id = {record.invocation_id: record for record in settled}
+
+    outcomes: list[InvocationCancellationOutcome] = []
+    terminal_count = 0
+    pending_cancelled_count = 0
+    reserved_uncertain_count = 0
+    signalled_count = 0
+    signalled_owner_ids: set[UUID] = set()
+
+    for owned in fence.owned_invocations:
+        final = settled_by_id[owned.invocation_id]
+        if owned.cancellation_owner_id is None:
+            signal = CancellationSignalDisposition.NOT_REGISTERED
+        elif owned.cancellation_owner_id in signalled_owner_ids:
+            signal = CancellationSignalDisposition.ALREADY_SIGNALLED
+        else:
+            raw_signal = signal_dispositions.get(
+                owned.cancellation_owner_id,
+                CancellationSignalDisposition.NOT_REGISTERED,
+            )
+            if raw_signal in {
+                CancellationSignalDisposition.SIGNALLED,
+                CancellationSignalDisposition.ALREADY_SIGNALLED,
+            }:
+                signal = CancellationSignalDisposition.SIGNALLED
+                signalled_owner_ids.add(owned.cancellation_owner_id)
+                signalled_count += 1
+            else:
+                signal = raw_signal
+
+        if owned.terminal:
+            terminal_count += 1
+            adapter = AdapterCancellationDisposition.ALREADY_TERMINAL
+        elif owned.state == InvocationPhase.PENDING.value:
+            pending_cancelled_count += 1
+            adapter = AdapterCancellationDisposition.PROVEN_NOT_ENTERED
+        else:
+            reserved_uncertain_count += 1
+            adapter = AdapterCancellationDisposition.NOT_SUPPORTED
+
+        outcomes.append(
+            InvocationCancellationOutcome(
+                invocation_id=owned.invocation_id,
+                prior_state=owned.state,
+                final_state=final.state.value,
+                signal_disposition=signal,
+                adapter_disposition=adapter,
+                usage_sha256=canonical_fingerprint(final.committed_usage),
+            )
+        )
+
+    if reserved_uncertain_count:
+        disposition = CancellationDisposition.PARTIALLY_UNCERTAIN
+    elif outcomes and terminal_count == len(outcomes):
+        disposition = CancellationDisposition.OBSERVED_TERMINAL
+    else:
+        disposition = CancellationDisposition.APPLIED
+
+    result = TaskCancellationResult(
+        request=cancellation_request,
+        accepted_at_ms=fence.accepted_at_ms,
+        completed_at_ms=max(fence.accepted_at_ms, self._now_ms()),
+        ownership_snapshot_sha256=fence.ownership_snapshot_sha256,
+        outcomes=tuple(outcomes),
+        terminal_count=terminal_count,
+        pending_cancelled_count=pending_cancelled_count,
+        reserved_uncertain_count=reserved_uncertain_count,
+        signalled_count=signalled_count,
+        disposition=disposition,
+        audit_event_id=stable_cancellation_audit_id(
+            request_id=request_id,
+            cancellation_id=cancellation_request.cancellation_id,
+            ownership_snapshot_sha256=fence.ownership_snapshot_sha256,
+        ),
+    )
+
+    with self._lock:
+        self._require_store_healthy_locked()
+        state = self._states[request_id]
+        if state.record.cancellation_result is not None:
+            return state.record
+        completed_record = state.record.model_copy(
+            update={
+                "updated_at_ms": self._next_record_time(
+                    state.record.updated_at_ms
+                ),
+                "cancellation_result": result,
+                "detail": "durable cancellation propagation completed",
+            }
+        )
+        self._persist_transition_locked(
+            state=state,
+            account=state.account,
+            record=completed_record,
+        )
+        return completed_record
+'''
+)
 
 
 def replace_exact(
@@ -104,24 +293,23 @@ def harden_embedded_source(embedded: str) -> str:
     )
     embedded = embedded[:github_start] + github_segment + embedded[model_start:]
 
-    structural_cancel = '''control_file = Path(start)
-control_text = control_file.read_text(encoding="utf-8")
-cancel_start = control_text.index("    async def cancel(\\n")
-cancel_end = control_text.index(
-    "    async def clear_for_test", cancel_start
-)
-replacement = new_cancel.rstrip() + "\\n\\n"
-control_file.write_text(
-    control_text[:cancel_start] + replacement + control_text[cancel_end:],
-    encoding="utf-8",
-)'''
-    embedded = replace_exact(
+    return replace_exact(
         embedded,
         "replace_count(start, old_cancel, new_cancel)",
-        structural_cancel,
-        label="control-plane cancellation structural replacement",
+        "pass  # cancellation method is patched by the outer gate",
+        label="disable malformed embedded cancellation replacement",
     )
-    return embedded
+
+
+def patch_control_plane_cancel() -> None:
+    text = CONTROL_PLANE.read_text(encoding="utf-8")
+    start = text.index("    async def cancel(\n")
+    end = text.index("    async def clear_for_test", start)
+    replacement = textwrap.indent(CANCEL_METHOD.rstrip(), "    ") + "\n\n"
+    CONTROL_PLANE.write_text(
+        text[:start] + replacement + text[end:],
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
@@ -130,6 +318,7 @@ def main() -> None:
         compile(embedded, "phase16-coordinator.py", "exec"),
         {"__name__": "__main__"},
     )
+    patch_control_plane_cancel()
     print("coordinator_patch_complete=true")
 
 
