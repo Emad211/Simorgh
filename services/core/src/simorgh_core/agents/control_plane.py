@@ -8,8 +8,27 @@ from threading import RLock
 from uuid import UUID
 
 from simorgh_core.agents.budget import BudgetAccount
+from simorgh_core.agents.cancellation_contracts import (
+    AdapterCancellationDisposition,
+    CancellationDisposition,
+    CancellationRequesterAuthority,
+    CancellationSignalDisposition,
+    InvocationCancellationOutcome,
+    TaskCancellationRequest,
+    TaskCancellationResult,
+    stable_cancellation_audit_id,
+    stable_cancellation_id,
+)
+from simorgh_core.agents.cancellation_runtime import (
+    CancellationOwnerRegistry,
+)
 from simorgh_core.agents.contracts import TaskBudget, TaskEnvelope, UsageVector
-from simorgh_core.agents.invocations import canonical_fingerprint
+from simorgh_core.agents.invocations import (
+    InMemoryInvocationStore,
+    InvocationPhase,
+    InvocationStore,
+    canonical_fingerprint,
+)
 from simorgh_core.agents.router import SpecialistRouter
 from simorgh_core.agents.task_state import (
     DECISION_PHASES,
@@ -63,11 +82,18 @@ class AgentTaskControlPlane:
         *,
         router: SpecialistRouter,
         store: AgentTaskStore | None = None,
+        invocation_store: InvocationStore | None = None,
+        cancellation_registry: CancellationOwnerRegistry | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
         monotonic_millis: Callable[[], int] | None = None,
     ) -> None:
         self._router = router
         self._store = store or InMemoryAgentTaskStore()
+        self._invocations = invocation_store or InMemoryInvocationStore()
+        self._cancellation_owners = (
+            cancellation_registry
+            or CancellationOwnerRegistry(self._invocations)
+        )
         self._wall_clock_millis = wall_clock_millis or (
             lambda: int(time.time() * 1_000)
         )
@@ -104,6 +130,14 @@ class AgentTaskControlPlane:
             if previous_store is not store:
                 previous_store.close()
 
+    async def configure_invocation_store(
+        self, store: InvocationStore
+    ) -> None:
+        store.load()
+        with self._lock:
+            self._invocations = store
+            self._cancellation_owners.configure_store(store)
+
     async def reset_to_memory_store(self) -> None:
         """Detach runtime durability without modifying prior on-disk contents."""
 
@@ -120,6 +154,11 @@ class AgentTaskControlPlane:
             self._states = {}
             self._store_failure = None
             previous_store.close()
+            replacement_invocations = InMemoryInvocationStore()
+            self._invocations = replacement_invocations
+            self._cancellation_owners.configure_store(
+                replacement_invocations
+            )
 
     async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:
         fingerprint = _task_fingerprint(task)
@@ -249,39 +288,192 @@ class AgentTaskControlPlane:
         *,
         request_id: UUID,
         reason: str,
+        cancellation_id: UUID | None = None,
+        reason_code: str = "operator_requested",
+        requester_authority: CancellationRequesterAuthority = (
+            CancellationRequesterAuthority.OPERATOR
+        ),
     ) -> AgentTaskRecord:
-        normalized_reason = reason.strip() or "operator requested cancellation"
+        normalized_reason = " ".join(reason.strip().split())[:1_000]
+        if not normalized_reason:
+            normalized_reason = "operator requested cancellation"
+
         with self._lock:
             self._require_store_healthy_locked()
             state = self._states.get(request_id)
             if state is None:
                 raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
-            if state.record.phase in {
-                AgentTaskPhase.CANCELLED,
-                AgentTaskPhase.EXPIRED,
-            }:
+            if state.record.phase == AgentTaskPhase.EXPIRED:
                 return state.record
 
-            state.cancelled = True
-            state.cancel_reason = normalized_reason[:1_000]
-            state.account.cancel()
-            cancelled_record = AgentTaskRecord(
+            existing_request = state.record.cancellation_request
+            if existing_request is not None:
+                if cancellation_id is None:
+                    cancellation_request = existing_request
+                    normalized_reason = (
+                        existing_request.operator_reason
+                        or state.cancel_reason
+                        or normalized_reason
+                    )
+                    reason_code = existing_request.reason_code
+                    requester_authority = existing_request.requester_authority
+                else:
+                    candidate = existing_request.model_copy(
+                        update={
+                            "cancellation_id": cancellation_id,
+                            "reason_code": reason_code,
+                            "operator_reason": normalized_reason,
+                            "requester_authority": requester_authority,
+                        }
+                    )
+                    if candidate != existing_request:
+                        raise AgentTaskConflictError(
+                            "cancellation identity was replayed with different content"
+                        )
+                    cancellation_request = existing_request
+                if state.record.cancellation_result is not None:
+                    return state.record
+            else:
+                now = self._now_ms()
+                resolved_id = cancellation_id or stable_cancellation_id(
+                    request_id=request_id,
+                    reason_code=reason_code,
+                    operator_reason=normalized_reason,
+                    requester_authority=requester_authority,
+                )
+                cancellation_request = TaskCancellationRequest(
+                    request_id=request_id,
+                    cancellation_id=resolved_id,
+                    requested_at_ms=now,
+                    reason_code=reason_code,
+                    operator_reason=normalized_reason,
+                    requester_authority=requester_authority,
+                    observed_task_phase=state.record.phase.value,
+                    observed_task_version=state.record.updated_at_ms,
+                )
+                state.cancelled = True
+                state.cancel_reason = normalized_reason
+                state.account.cancel()
+                accepted_record = AgentTaskRecord(
+                    request_id=request_id,
+                    phase=AgentTaskPhase.CANCELLED,
+                    created_at_ms=state.record.created_at_ms,
+                    updated_at_ms=self._next_record_time(state.record.updated_at_ms),
+                    task=state.task,
+                    routing_decision=state.record.routing_decision,
+                    budget=state.account.snapshot(),
+                    cancel_reason=state.cancel_reason,
+                    cancellation_request=cancellation_request,
+                    detail=state.cancel_reason,
+                )
+                self._persist_transition_locked(
+                    state=state,
+                    account=state.account,
+                    record=accepted_record,
+                )
+
+        fence = self._invocations.accept_cancellation(cancellation_request)
+        signal_dispositions = self._cancellation_owners.signal_request(
+            request_id=request_id,
+            reason=normalized_reason,
+        )
+        settled = self._invocations.settle_cancellation(request_id)
+        settled_by_id = {record.invocation_id: record for record in settled}
+
+        outcomes: list[InvocationCancellationOutcome] = []
+        terminal_count = 0
+        pending_cancelled_count = 0
+        reserved_uncertain_count = 0
+        signalled_count = 0
+        signalled_owner_ids: set[UUID] = set()
+
+        for owned in fence.owned_invocations:
+            final = settled_by_id[owned.invocation_id]
+            if owned.cancellation_owner_id is None:
+                signal = CancellationSignalDisposition.NOT_REGISTERED
+            elif owned.cancellation_owner_id in signalled_owner_ids:
+                signal = CancellationSignalDisposition.ALREADY_SIGNALLED
+            else:
+                raw_signal = signal_dispositions.get(
+                    owned.cancellation_owner_id,
+                    CancellationSignalDisposition.NOT_REGISTERED,
+                )
+                if raw_signal in {
+                    CancellationSignalDisposition.SIGNALLED,
+                    CancellationSignalDisposition.ALREADY_SIGNALLED,
+                }:
+                    signal = CancellationSignalDisposition.SIGNALLED
+                    signalled_owner_ids.add(owned.cancellation_owner_id)
+                    signalled_count += 1
+                else:
+                    signal = raw_signal
+
+            if owned.terminal:
+                terminal_count += 1
+                adapter = AdapterCancellationDisposition.ALREADY_TERMINAL
+            elif owned.state == InvocationPhase.PENDING.value:
+                pending_cancelled_count += 1
+                adapter = AdapterCancellationDisposition.PROVEN_NOT_ENTERED
+            else:
+                reserved_uncertain_count += 1
+                adapter = AdapterCancellationDisposition.NOT_SUPPORTED
+
+            outcomes.append(
+                InvocationCancellationOutcome(
+                    invocation_id=owned.invocation_id,
+                    prior_state=owned.state,
+                    final_state=final.state.value,
+                    signal_disposition=signal,
+                    adapter_disposition=adapter,
+                    usage_sha256=canonical_fingerprint(final.committed_usage),
+                )
+            )
+
+        if reserved_uncertain_count:
+            disposition = CancellationDisposition.PARTIALLY_UNCERTAIN
+        elif outcomes and terminal_count == len(outcomes):
+            disposition = CancellationDisposition.OBSERVED_TERMINAL
+        else:
+            disposition = CancellationDisposition.APPLIED
+
+        result = TaskCancellationResult(
+            request=cancellation_request,
+            accepted_at_ms=fence.accepted_at_ms,
+            completed_at_ms=max(fence.accepted_at_ms, self._now_ms()),
+            ownership_snapshot_sha256=fence.ownership_snapshot_sha256,
+            outcomes=tuple(outcomes),
+            terminal_count=terminal_count,
+            pending_cancelled_count=pending_cancelled_count,
+            reserved_uncertain_count=reserved_uncertain_count,
+            signalled_count=signalled_count,
+            disposition=disposition,
+            audit_event_id=stable_cancellation_audit_id(
                 request_id=request_id,
-                phase=AgentTaskPhase.CANCELLED,
-                created_at_ms=state.record.created_at_ms,
-                updated_at_ms=self._next_record_time(state.record.updated_at_ms),
-                task=state.task,
-                routing_decision=state.record.routing_decision,
-                budget=state.account.snapshot(),
-                cancel_reason=state.cancel_reason,
-                detail=state.cancel_reason,
+                cancellation_id=cancellation_request.cancellation_id,
+                ownership_snapshot_sha256=fence.ownership_snapshot_sha256,
+            ),
+        )
+
+        with self._lock:
+            self._require_store_healthy_locked()
+            state = self._states[request_id]
+            if state.record.cancellation_result is not None:
+                return state.record
+            completed_record = state.record.model_copy(
+                update={
+                    "updated_at_ms": self._next_record_time(
+                        state.record.updated_at_ms
+                    ),
+                    "cancellation_result": result,
+                    "detail": "durable cancellation propagation completed",
+                }
             )
             self._persist_transition_locked(
                 state=state,
                 account=state.account,
-                record=cancelled_record,
+                record=completed_record,
             )
-            return cancelled_record
+            return completed_record
 
     async def clear_for_test(self) -> None:
         with self._lock:

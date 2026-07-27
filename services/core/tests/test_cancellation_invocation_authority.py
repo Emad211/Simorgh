@@ -71,11 +71,17 @@ def test_fence_captures_deterministic_owned_invocations_and_owner_identity() -> 
 
     fence = store.accept_cancellation(_cancellation(request_id))
 
+    expected = sorted(
+        (first, second),
+        key=lambda item: (item.created_at_ms, str(item.invocation_id)),
+    )
     assert [item.invocation_id for item in fence.owned_invocations] == [
-        first.invocation_id,
-        second.invocation_id,
+        item.invocation_id for item in expected
     ]
-    assert fence.owned_invocations[0].cancellation_owner_id == owner_id
+    owned_by_id = {
+        item.invocation_id: item for item in fence.owned_invocations
+    }
+    assert owned_by_id[first.invocation_id].cancellation_owner_id == owner_id
     assert store.list_owned(request_id=request_id) == (first, second)
 
 

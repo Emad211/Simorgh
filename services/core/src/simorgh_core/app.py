@@ -106,6 +106,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         action_journal_configured = True
         await agent_task_control_plane.configure_store(task_store)
         task_store_configured = True
+        await agent_task_control_plane.configure_invocation_store(
+            invocation_store
+        )
         invocation_store_registry.configure(invocation_store)
         invocation_store_configured = True
         result_store_registry.configure(result_store)

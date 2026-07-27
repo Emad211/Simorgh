@@ -40,6 +40,7 @@ class CancellationSignalDisposition(StrEnum):
     ALREADY_SIGNALLED = "already_signalled"
     NOT_REGISTERED = "not_registered"
     LATE_REGISTRATION_BLOCKED = "late_registration_blocked"
+    SIGNAL_FAILED = "signal_failed"
 
 
 class AdapterCancellationDisposition(StrEnum):

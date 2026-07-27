@@ -165,6 +165,22 @@ def validate_task_store_transition(
         and candidate.record.cancel_reason != existing.record.cancel_reason
     ):
         raise AgentTaskStoreConflictError("durable cancellation reason is immutable")
+    if (
+        existing.record.cancellation_request is not None
+        and candidate.record.cancellation_request
+        != existing.record.cancellation_request
+    ):
+        raise AgentTaskStoreConflictError(
+            "durable cancellation request is immutable"
+        )
+    if (
+        existing.record.cancellation_result is not None
+        and candidate.record.cancellation_result
+        != existing.record.cancellation_result
+    ):
+        raise AgentTaskStoreConflictError(
+            "durable cancellation result is immutable"
+        )
 
     existing_budget = existing.record.budget
     candidate_budget = candidate.record.budget

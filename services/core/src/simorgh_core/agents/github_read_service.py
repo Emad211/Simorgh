@@ -244,6 +244,7 @@ class GovernedGitHubReadService:
                 tool_id=request.tool_id,
                 connector_id=request.connector_id,
                 allowed_data_sources=request.allowed_data_sources,
+                cancellation_owner_id=request.cancellation_owner_id,
                 effect=ToolEffect.READ_ONLY,
                 arguments={
                     _GOVERNED_REQUEST_KEY: request.model_dump(mode="json"),

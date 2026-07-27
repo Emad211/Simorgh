@@ -123,6 +123,7 @@ class SpecialistExecutionRuntime:
                 input_fingerprint=fingerprint,
                 kind=InvocationKind.SPECIALIST,
                 effect=request.effect,
+                cancellation_owner_id=request.cancellation_owner_id,
             )
         except InvocationStoreError as exc:
             raise SpecialistExecutionStoreError(
