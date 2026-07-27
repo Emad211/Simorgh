@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from threading import RLock
@@ -209,7 +210,7 @@ class InvocationCancellationAdapterRegistry:
         self,
         invocation_store: InvocationStore | None = None,
         *,
-        wall_clock_millis: callable | None = None,
+        wall_clock_millis: Callable[[], int] | None = None,
     ) -> None:
         self._lock = RLock()
         self._invocations = invocation_store or InMemoryInvocationStore()
@@ -301,10 +302,7 @@ class InvocationCancellationAdapterRegistry:
     ) -> dict[UUID, InvocationCancellationAcknowledgement]:
         with self._lock:
             entries = tuple(
-                (
-                    owned,
-                    self._entries.get(owned.invocation_id),
-                )
+                (owned, self._entries.get(owned.invocation_id))
                 for owned in fence.owned_invocations
                 if not owned.terminal
             )
