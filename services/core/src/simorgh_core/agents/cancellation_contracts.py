@@ -224,6 +224,7 @@ class TaskCancellationResult(BaseModel):
     )
     terminal_count: int = Field(ge=0)
     pending_cancelled_count: int = Field(ge=0)
+    reserved_cancelled_count: int = Field(default=0, ge=0)
     reserved_uncertain_count: int = Field(ge=0)
     signalled_count: int = Field(ge=0)
     disposition: CancellationDisposition
@@ -241,6 +242,7 @@ class TaskCancellationResult(BaseModel):
         if len(self.outcomes) != (
             self.terminal_count
             + self.pending_cancelled_count
+            + self.reserved_cancelled_count
             + self.reserved_uncertain_count
         ):
             raise ValueError("cancellation outcome counts do not cover ownership snapshot")

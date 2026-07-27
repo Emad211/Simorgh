@@ -82,7 +82,7 @@ def test_fence_captures_deterministic_owned_invocations_and_owner_identity() -> 
         item.invocation_id: item for item in fence.owned_invocations
     }
     assert owned_by_id[first.invocation_id].cancellation_owner_id == owner_id
-    assert store.list_owned(request_id=request_id) == (first, second)
+    assert store.list_owned(request_id=request_id) == tuple(expected)
 
 
 def test_fence_blocks_new_begin_and_existing_reservation() -> None:

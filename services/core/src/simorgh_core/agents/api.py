@@ -10,6 +10,7 @@ from simorgh_core.agents.cancellation_contracts import (
 )
 from simorgh_core.agents.cancellation_runtime import (
     cancellation_owner_registry,
+    invocation_cancellation_adapter_registry,
 )
 from simorgh_core.agents.contracts import TaskEnvelope
 from simorgh_core.agents.control_plane import (
@@ -33,6 +34,10 @@ agent_task_control_plane = AgentTaskControlPlane(
         trace_sink=agent_trace_sink,
     ),
     cancellation_registry=cancellation_owner_registry,
+    adapter_cancellation_registry=(
+        invocation_cancellation_adapter_registry
+    ),
+    trace_sink=agent_trace_sink,
 )
 
 

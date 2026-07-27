@@ -361,6 +361,17 @@ class InvocationStore(Protocol):
         self, request_id: UUID
     ) -> InvocationCancellationFence | None: ...
 
+    def settle_pending_cancellation(
+        self, request_id: UUID
+    ) -> tuple[InvocationRecord, ...]: ...
+
+    def settle_reserved_cancellation(
+        self,
+        request_id: UUID,
+        *,
+        proven_not_entered: frozenset[UUID] = frozenset(),
+    ) -> tuple[InvocationRecord, ...]: ...
+
     def settle_cancellation(
         self, request_id: UUID
     ) -> tuple[InvocationRecord, ...]: ...
@@ -405,10 +416,9 @@ class InMemoryInvocationStore:
         cancellation_owner_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
-        if parent_invocation_id is not None or attempt != 1:
-            raise InvocationStateError(
-                "retry invocation chains are not enabled"
-            )
+        require_parent_shape(
+            parent_invocation_id=parent_invocation_id, attempt=attempt
+        )
         with self._lock:
             self._require_open_locked()
             existing = self._records.get(invocation_id)
@@ -435,6 +445,13 @@ class InMemoryInvocationStore:
                     record=existing,
                 )
 
+            if parent_invocation_id is not None:
+                parent = self._require_record_locked(parent_invocation_id)
+                require_parent_invocation(
+                    parent=parent,
+                    request_id=request_id,
+                    attempt=attempt,
+                )
             if request_id in self._cancellation_fences:
                 raise InvocationCancellationFencedError(
                     "task cancellation fence blocks new invocation admission"
@@ -731,21 +748,59 @@ class InMemoryInvocationStore:
             self._require_open_locked()
             return self._cancellation_fences.get(request_id)
 
-    def settle_cancellation(
+    def settle_pending_cancellation(
         self, request_id: UUID
     ) -> tuple[InvocationRecord, ...]:
         with self._lock:
-            self._require_open_locked()
-            if request_id not in self._cancellation_fences:
-                raise InvocationStateError(
-                    "cannot settle cancellation without a durable fence"
-                )
+            self._require_cancellation_fence_locked(request_id)
             for existing in self.list_owned(request_id=request_id, terminal=False):
+                if existing.state != InvocationPhase.PENDING:
+                    continue
                 self._records[existing.invocation_id] = cancelled_invocation_record(
                     existing,
                     updated_at_ms=self._next_time(existing.updated_at_ms),
                 )
             return self.list_owned(request_id=request_id)
+
+    def settle_reserved_cancellation(
+        self,
+        request_id: UUID,
+        *,
+        proven_not_entered: frozenset[UUID] = frozenset(),
+    ) -> tuple[InvocationRecord, ...]:
+        with self._lock:
+            self._require_cancellation_fence_locked(request_id)
+            reserved = {
+                record.invocation_id: record
+                for record in self.list_owned(request_id=request_id, terminal=False)
+                if record.state == InvocationPhase.RESERVED
+            }
+            if not proven_not_entered.issubset(reserved):
+                raise InvocationConflictError(
+                    "non-entry proof references a non-reserved owned invocation"
+                )
+            for invocation_id, existing in reserved.items():
+                if (
+                    invocation_id in proven_not_entered
+                    and existing.effect != InvocationEffect.MUTATION
+                ):
+                    candidate = proven_not_entered_record(
+                        existing,
+                        updated_at_ms=self._next_time(existing.updated_at_ms),
+                    )
+                else:
+                    candidate = cancelled_invocation_record(
+                        existing,
+                        updated_at_ms=self._next_time(existing.updated_at_ms),
+                    )
+                self._records[invocation_id] = candidate
+            return self.list_owned(request_id=request_id)
+
+    def settle_cancellation(
+        self, request_id: UUID
+    ) -> tuple[InvocationRecord, ...]:
+        self.settle_pending_cancellation(request_id)
+        return self.settle_reserved_cancellation(request_id)
 
     def clear(self) -> None:
         with self._lock:
@@ -756,6 +811,13 @@ class InMemoryInvocationStore:
     def close(self) -> None:
         with self._lock:
             self._closed = True
+
+    def _require_cancellation_fence_locked(self, request_id: UUID) -> None:
+        self._require_open_locked()
+        if request_id not in self._cancellation_fences:
+            raise InvocationStateError(
+                "cannot settle cancellation without a durable fence"
+            )
 
     def _require_record_locked(self, invocation_id: UUID) -> InvocationRecord:
         self._require_open_locked()
@@ -831,6 +893,36 @@ def require_same_invocation_identity(
         )
 
 
+def require_parent_shape(
+    *, parent_invocation_id: UUID | None, attempt: int
+) -> None:
+    if parent_invocation_id is None and attempt != 1:
+        raise InvocationStateError(
+            "root invocation attempt must equal one"
+        )
+    if parent_invocation_id is not None and attempt <= 1:
+        raise InvocationStateError(
+            "child invocation attempt must be greater than one"
+        )
+
+
+def require_parent_invocation(
+    *, parent: InvocationRecord, request_id: UUID, attempt: int
+) -> None:
+    if parent.request_id != request_id:
+        raise InvocationConflictError(
+            "parent invocation belongs to another task"
+        )
+    if not parent.terminal:
+        raise InvocationStateError(
+            "child invocation requires a terminal parent"
+        )
+    if attempt != parent.attempt + 1:
+        raise InvocationConflictError(
+            "child invocation attempt does not follow parent"
+        )
+
+
 def ownership_reference(record: InvocationRecord) -> InvocationOwnershipReference:
     return InvocationOwnershipReference(
         request_id=record.request_id,
@@ -842,6 +934,26 @@ def ownership_reference(record: InvocationRecord) -> InvocationOwnershipReferenc
         cancellation_owner_id=record.cancellation_owner_id,
         created_at_ms=record.created_at_ms,
         terminal=record.terminal,
+    )
+
+
+def proven_not_entered_record(
+    record: InvocationRecord, *, updated_at_ms: int
+) -> InvocationRecord:
+    if record.state != InvocationPhase.RESERVED:
+        raise InvocationStateError(
+            "non-entry proof requires a reserved invocation"
+        )
+    return validated_record_copy(
+        record,
+        state=InvocationPhase.CANCELLED,
+        reserved_usage=_ZERO_USAGE,
+        failure_code="cancelled_proven_not_entered",
+        failure_detail=(
+            "adapter proved external execution was not entered and "
+            "released its reservation"
+        ),
+        updated_at_ms=updated_at_ms,
     )
 
 

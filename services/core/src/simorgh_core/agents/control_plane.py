@@ -21,6 +21,7 @@ from simorgh_core.agents.cancellation_contracts import (
 )
 from simorgh_core.agents.cancellation_runtime import (
     CancellationOwnerRegistry,
+    InvocationCancellationAdapterRegistry,
 )
 from simorgh_core.agents.contracts import TaskBudget, TaskEnvelope, UsageVector
 from simorgh_core.agents.invocations import (
@@ -41,6 +42,12 @@ from simorgh_core.agents.task_store import (
     AgentTaskStoreError,
     InMemoryAgentTaskStore,
     new_task_store_entry,
+)
+from simorgh_core.agents.tracing import (
+    NullTraceSink,
+    TraceEventKind,
+    TraceSink,
+    trace_event,
 )
 
 
@@ -84,6 +91,10 @@ class AgentTaskControlPlane:
         store: AgentTaskStore | None = None,
         invocation_store: InvocationStore | None = None,
         cancellation_registry: CancellationOwnerRegistry | None = None,
+        adapter_cancellation_registry: (
+            InvocationCancellationAdapterRegistry | None
+        ) = None,
+        trace_sink: TraceSink | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
         monotonic_millis: Callable[[], int] | None = None,
     ) -> None:
@@ -94,6 +105,11 @@ class AgentTaskControlPlane:
             cancellation_registry
             or CancellationOwnerRegistry(self._invocations)
         )
+        self._adapter_cancellations = (
+            adapter_cancellation_registry
+            or InvocationCancellationAdapterRegistry(self._invocations)
+        )
+        self._trace_sink = trace_sink or NullTraceSink()
         self._wall_clock_millis = wall_clock_millis or (
             lambda: int(time.time() * 1_000)
         )
@@ -137,6 +153,7 @@ class AgentTaskControlPlane:
         with self._lock:
             self._invocations = store
             self._cancellation_owners.configure_store(store)
+            self._adapter_cancellations.configure_store(store)
 
     async def reset_to_memory_store(self) -> None:
         """Detach runtime durability without modifying prior on-disk contents."""
@@ -157,6 +174,9 @@ class AgentTaskControlPlane:
             replacement_invocations = InMemoryInvocationStore()
             self._invocations = replacement_invocations
             self._cancellation_owners.configure_store(
+                replacement_invocations
+            )
+            self._adapter_cancellations.configure_store(
                 replacement_invocations
             )
 
@@ -332,6 +352,9 @@ class AgentTaskControlPlane:
                         )
                     cancellation_request = existing_request
                 if state.record.cancellation_result is not None:
+                    self._emit_cancellation(
+                        state.record.cancellation_result, replayed=True
+                    )
                     return state.record
             else:
                 now = self._now_ms()
@@ -377,12 +400,29 @@ class AgentTaskControlPlane:
             request_id=request_id,
             reason=normalized_reason,
         )
-        settled = self._invocations.settle_cancellation(request_id)
+        self._invocations.settle_pending_cancellation(request_id)
+        adapter_acknowledgements = (
+            await self._adapter_cancellations.cancel_owned(fence)
+        )
+        proven_not_entered = frozenset(
+            invocation_id
+            for invocation_id, acknowledgement
+            in adapter_acknowledgements.items()
+            if (
+                acknowledgement.disposition
+                == AdapterCancellationDisposition.PROVEN_NOT_ENTERED
+                and acknowledgement.usage_reservation_released
+            )
+        )
+        settled = self._invocations.settle_reserved_cancellation(
+            request_id, proven_not_entered=proven_not_entered
+        )
         settled_by_id = {record.invocation_id: record for record in settled}
 
         outcomes: list[InvocationCancellationOutcome] = []
         terminal_count = 0
         pending_cancelled_count = 0
+        reserved_cancelled_count = 0
         reserved_uncertain_count = 0
         signalled_count = 0
         signalled_owner_ids: set[UUID] = set()
@@ -408,15 +448,29 @@ class AgentTaskControlPlane:
                 else:
                     signal = raw_signal
 
+            acknowledgement = adapter_acknowledgements.get(
+                owned.invocation_id
+            )
             if owned.terminal:
                 terminal_count += 1
                 adapter = AdapterCancellationDisposition.ALREADY_TERMINAL
             elif owned.state == InvocationPhase.PENDING.value:
                 pending_cancelled_count += 1
                 adapter = AdapterCancellationDisposition.PROVEN_NOT_ENTERED
+            elif final.state == InvocationPhase.CANCELLED:
+                reserved_cancelled_count += 1
+                adapter = (
+                    acknowledgement.disposition
+                    if acknowledgement is not None
+                    else AdapterCancellationDisposition.PROVEN_NOT_ENTERED
+                )
             else:
                 reserved_uncertain_count += 1
-                adapter = AdapterCancellationDisposition.NOT_SUPPORTED
+                adapter = (
+                    acknowledgement.disposition
+                    if acknowledgement is not None
+                    else AdapterCancellationDisposition.NOT_SUPPORTED
+                )
 
             outcomes.append(
                 InvocationCancellationOutcome(
@@ -444,6 +498,7 @@ class AgentTaskControlPlane:
             outcomes=tuple(outcomes),
             terminal_count=terminal_count,
             pending_cancelled_count=pending_cancelled_count,
+            reserved_cancelled_count=reserved_cancelled_count,
             reserved_uncertain_count=reserved_uncertain_count,
             signalled_count=signalled_count,
             disposition=disposition,
@@ -473,7 +528,41 @@ class AgentTaskControlPlane:
                 account=state.account,
                 record=completed_record,
             )
+            self._emit_cancellation(result, replayed=False)
             return completed_record
+
+    def _emit_cancellation(
+        self, result: TaskCancellationResult, *, replayed: bool
+    ) -> None:
+        kind = (
+            TraceEventKind.CANCELLATION_REPLAYED
+            if replayed
+            else TraceEventKind.CANCELLATION_SETTLED
+        )
+        event = trace_event(
+            request_id=result.request.request_id,
+            kind=kind,
+            outcome=result.disposition.value,
+            reason=result.request.reason_code,
+            metadata={
+                "cancellation_id": str(result.request.cancellation_id),
+                "ownership_snapshot_sha256": (
+                    result.ownership_snapshot_sha256
+                ),
+                "terminal_count": result.terminal_count,
+                "pending_cancelled_count": (
+                    result.pending_cancelled_count
+                ),
+                "reserved_cancelled_count": (
+                    result.reserved_cancelled_count
+                ),
+                "reserved_uncertain_count": (
+                    result.reserved_uncertain_count
+                ),
+                "signalled_count": result.signalled_count,
+            },
+        ).model_copy(update={"event_id": result.audit_event_id})
+        self._trace_sink.emit(event)
 
     async def clear_for_test(self) -> None:
         with self._lock:

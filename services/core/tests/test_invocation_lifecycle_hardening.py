@@ -9,8 +9,8 @@ from simorgh_core.agents.invocations import (
     InMemoryInvocationStore,
     InvocationEffect,
     InvocationKind,
+    InvocationNotFoundError,
     InvocationPhase,
-    InvocationStateError,
     canonical_fingerprint,
 )
 
@@ -95,16 +95,16 @@ def test_repeated_expiry_after_reserved_mutation_uncertainty_is_idempotent() -> 
     assert first.state == InvocationPhase.UNKNOWN_SIDE_EFFECT
 
 
-def test_retry_metadata_is_rejected_until_retry_boundary_is_implemented() -> None:
+def test_child_invocation_requires_an_existing_terminal_parent() -> None:
     store = InMemoryInvocationStore()
 
-    with pytest.raises(InvocationStateError, match="retry invocation chains"):
+    with pytest.raises(InvocationNotFoundError, match="does not exist"):
         store.begin(
             invocation_id=uuid4(),
             request_id=uuid4(),
             agent_id="github.read",
             agent_version="1.0.0",
-            operation="retry-fixture",
+            operation="child-fixture",
             input_fingerprint=canonical_fingerprint({"fixture": True}),
             parent_invocation_id=uuid4(),
             attempt=2,

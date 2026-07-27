@@ -41,7 +41,10 @@ from simorgh_core.agents.invocations import (
     canonical_fingerprint,
     canonical_json,
     ownership_reference,
+    proven_not_entered_record,
     require_external_completion_reservation,
+    require_parent_invocation,
+    require_parent_shape,
     require_reservation_for_nonzero_terminal_usage,
     require_same_invocation_identity,
     start_kind_for_record,
@@ -75,6 +78,7 @@ _ALLOWED_TRANSITIONS: dict[InvocationPhase, frozenset[InvocationPhase]] = {
             InvocationPhase.RESERVED,
             InvocationPhase.COMPLETED,
             InvocationPhase.FAILED,
+            InvocationPhase.CANCELLED,
             InvocationPhase.UNKNOWN,
             InvocationPhase.UNKNOWN_SIDE_EFFECT,
         }
@@ -186,10 +190,9 @@ class SQLiteInvocationStore:
         cancellation_owner_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
-        if parent_invocation_id is not None or attempt != 1:
-            raise InvocationStateError(
-                "retry invocation chains are not enabled"
-            )
+        require_parent_shape(
+            parent_invocation_id=parent_invocation_id, attempt=attempt
+        )
         with self._lock:
             self._require_healthy_locked()
             existing = self._get_optional_locked(invocation_id)
@@ -216,6 +219,13 @@ class SQLiteInvocationStore:
                     record=existing,
                 )
 
+            if parent_invocation_id is not None:
+                parent = self._require_record_locked(parent_invocation_id)
+                require_parent_invocation(
+                    parent=parent,
+                    request_id=request_id,
+                    attempt=attempt,
+                )
             if self._get_cancellation_fence_locked(request_id) is not None:
                 raise InvocationCancellationFencedError(
                     "task cancellation fence blocks new invocation admission"
@@ -530,21 +540,17 @@ class SQLiteInvocationStore:
             self._require_healthy_locked()
             return self._get_cancellation_fence_locked(request_id)
 
-    def settle_cancellation(
+    def settle_pending_cancellation(
         self, request_id: UUID
     ) -> tuple[InvocationRecord, ...]:
         with self._lock:
-            self._require_healthy_locked()
-            if self._get_cancellation_fence_locked(request_id) is None:
-                raise InvocationStateError(
-                    "cannot settle cancellation without a durable fence"
-                )
+            self._require_cancellation_fence_locked(request_id)
             try:
                 with self._transaction():
                     rows = self._connection.execute(
                         self._select_sql(
                             where_clause=(
-                                "WHERE request_id = ? AND terminal = 0"
+                                "WHERE request_id = ? AND state = 'pending'"
                             )
                         ),
                         (str(request_id),),
@@ -559,9 +565,69 @@ class SQLiteInvocationStore:
                         self._update_row_locked(candidate)
             except sqlite3.DatabaseError as exc:
                 self._raise_database_failure_locked(
-                    "could not settle owned invocation cancellation", exc
+                    "could not settle pending invocation cancellation", exc
                 )
             return self.list_owned(request_id=request_id)
+
+    def settle_reserved_cancellation(
+        self,
+        request_id: UUID,
+        *,
+        proven_not_entered: frozenset[UUID] = frozenset(),
+    ) -> tuple[InvocationRecord, ...]:
+        with self._lock:
+            self._require_cancellation_fence_locked(request_id)
+            try:
+                with self._transaction():
+                    rows = self._connection.execute(
+                        self._select_sql(
+                            where_clause=(
+                                "WHERE request_id = ? AND state = 'reserved'"
+                            )
+                        ),
+                        (str(request_id),),
+                    ).fetchall()
+                    reserved = {
+                        self._decode_row(row).invocation_id: self._decode_row(row)
+                        for row in rows
+                    }
+                    if not proven_not_entered.issubset(reserved):
+                        raise InvocationConflictError(
+                            "non-entry proof references a non-reserved owned invocation"
+                        )
+                    for invocation_id, existing in reserved.items():
+                        if (
+                            invocation_id in proven_not_entered
+                            and existing.effect != InvocationEffect.MUTATION
+                        ):
+                            candidate = proven_not_entered_record(
+                                existing,
+                                updated_at_ms=self._next_time(
+                                    existing.updated_at_ms
+                                ),
+                            )
+                        else:
+                            candidate = cancelled_invocation_record(
+                                existing,
+                                updated_at_ms=self._next_time(
+                                    existing.updated_at_ms
+                                ),
+                            )
+                        validate_invocation_transition(existing, candidate)
+                        self._update_row_locked(candidate)
+            except InvocationConflictError:
+                raise
+            except sqlite3.DatabaseError as exc:
+                self._raise_database_failure_locked(
+                    "could not settle reserved invocation cancellation", exc
+                )
+            return self.list_owned(request_id=request_id)
+
+    def settle_cancellation(
+        self, request_id: UUID
+    ) -> tuple[InvocationRecord, ...]:
+        self.settle_pending_cancellation(request_id)
+        return self.settle_reserved_cancellation(request_id)
 
     def clear(self) -> None:
         with self._lock:
@@ -806,6 +872,13 @@ class SQLiteInvocationStore:
                 str(record.invocation_id),
             ),
         )
+
+    def _require_cancellation_fence_locked(self, request_id: UUID) -> None:
+        self._require_healthy_locked()
+        if self._get_cancellation_fence_locked(request_id) is None:
+            raise InvocationStateError(
+                "cannot settle cancellation without a durable fence"
+            )
 
     def _get_cancellation_fence_locked(
         self, request_id: UUID
