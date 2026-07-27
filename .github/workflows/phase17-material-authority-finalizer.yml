@@ -1,4 +1,4 @@
-name: Phase 1.7 Context Material Authority Finalizer
+name: Phase 1.7 Context Material Authority Finalizer v2
 
 on:
   pull_request:
