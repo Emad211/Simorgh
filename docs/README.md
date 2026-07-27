@@ -19,9 +19,10 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`SPECIALIST_EXECUTION.md`](SPECIALIST_EXECUTION.md) — typed zero-external specialist execution, capability/budget intersection, durable replay, cancellation and current limitations.
 - [`TYPED_RESULTS.md`](TYPED_RESULTS.md) — immutable typed result, artifact/evidence metadata, privacy, retention, canonical replay and Persian rendering authority.
 - [`GOVERNED_GITHUB_READ_TOOLS.md`](GOVERNED_GITHUB_READ_TOOLS.md) — exact GitHub read contracts, reviewed manifest, policy intersection, freshness/cache/taint, durable replay and incident handling.
+- [`CANCELLATION_PROPAGATION.md`](CANCELLATION_PROPAGATION.md) — durable task-to-invocation cancellation, ownership fences, conservative uncertainty, adapter acknowledgements, accounting and incident handling.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged internal zero-external specialist execution; PR #48 merged typed result, artifact and evidence metadata authority. PR #52 is validating governed read-only GitHub tools behind an internal Core boundary. The public API remains routing-only.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged internal zero-external specialist execution; PR #48 merged typed result, artifact and evidence metadata authority; PR #52 merged governed read-only GitHub tools. PR #54 is validating durable cancellation propagation across owned invocations. The public execution API remains routing-only.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -31,7 +32,8 @@ Current roadmap dependencies:
 - issue #38 / PR #39 — durable invocation identity and restart replay, complete;
 - issue #40 / PR #44 — native typed specialist execution, complete;
 - issue #46 / PR #48 — typed result, artifact and evidence authority, complete;
-- issue #51 — governed read-only GitHub tools and typed evidence, next;
+- issue #51 / PR #52 — governed read-only GitHub tools and typed evidence, complete;
+- issue #53 / PR #54 — durable task-to-invocation cancellation propagation, validating;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;
@@ -91,7 +93,8 @@ ADRs live under [`adr/`](adr/). Relevant runtime decisions include:
 - ADR 0015 — durable invocation identity, reservation and exact restart replay;
 - ADR 0016 — native specialist execution authority and zero-external initial boundary;
 - ADR 0017 — typed specialist result, artifact and evidence metadata authority;
-- ADR 0018 — governed read-tool authority and typed GitHub evidence.
+- ADR 0018 — governed read-tool authority and typed GitHub evidence;
+- ADR 0019 — durable task-to-invocation cancellation propagation.
 
 An ADR records why a design was selected, its consequences, rejected alternatives, and follow-up work. Operational documents describe how to use and validate the accepted design.
 
@@ -142,6 +145,7 @@ For specialist-agent changes, distinguish:
 - Core persists immutable final typed results plus bounded artifact/evidence metadata, privacy and retention in a separate SQLite result store.
 - A routing claim interrupted by Core restart becomes `unknown`; it is not automatically routed again.
 - A pending/reserved invocation interrupted by restart becomes `unknown`; an uncertain mutation becomes `unknown_side_effect`.
+- Accepted task cancellation installs a durable invocation admission fence; pending work cancels, while reserved work requires proof of non-entry or settles conservatively.
 - Completed model/tool invocations replay without another provider/tool call or new budget reservation.
 - Completed typed specialist results replay without another specialist call, result rewrite or new usage charge.
 - Crash-recovered committed invocation usage is reconciled into retained parent task budgets without double counting.
@@ -152,7 +156,7 @@ For specialist-agent changes, distinguish:
 - Each physical WebSocket reconnect creates a new clock generation; an old estimate cannot authorize a launch on the new socket.
 - The complete observation registry and traces remain process-local and fail closed when evidence is unavailable.
 - Model/tool usage is reserved before invocation and reconciled afterwards; unresolved durable reservations are conservatively committed.
-- Retry is not enabled by the durable invocation schema; a future retry requires a new identity and explicit budget.
+- Automatic retry remains disabled; an explicit child identity requires a terminal same-task parent, the exact next attempt and a separately authorized budget.
 - Deterministic routing and execution-critical Android infrastructure remain model-free.
 - Planning output is not permission, current-state evidence or proof of side-effect completion.
 

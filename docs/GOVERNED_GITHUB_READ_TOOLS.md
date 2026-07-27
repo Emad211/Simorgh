@@ -1,6 +1,6 @@
 # Governed GitHub read tools
 
-Status: Phase 1.5 implementation in PR #52. The production boundary is read-only and fake/local in ordinary CI.
+Status: Phase 1.5 merged through PR #52. The production boundary remains read-only and fake/local in ordinary CI; live validation is a later staging step.
 
 ## Purpose
 

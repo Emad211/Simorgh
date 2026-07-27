@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48. Phase 1.5 governed GitHub read tools are validating in PR #52. The default API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52. Phase 1.6 durable cancellation propagation is validating in PR #54. The default execution API remains routing-only.
 
 ## Purpose
 
@@ -126,9 +126,15 @@ Content-Type: application/json
 {"reason":"کاربر از طریق Voice گفت لغو"}
 ```
 
-Cancellation is idempotent and survives restart. It marks the task budget cancelled so later work cannot reserve new usage.
+Cancellation is idempotent and survives restart. Phase 1.6 first persists the task cancellation request and cancelled budget, then installs a durable invocation fence, captures the exact ownership snapshot, signals registered cooperative owners, settles pending work and handles reserved work with typed proof or conservative uncertainty.
 
-The current runtime has no long-running specialist executor. Complete task-to-child-invocation cancellation enumeration is Phase 1 Step 1.6.
+A reserved read/proposal becomes `cancelled` only when an adapter proves external execution was not entered and releases the reservation; otherwise it becomes `unknown` with conservative committed usage. Reserved mutation always becomes `unknown_side_effect`. Completed results and committed cost remain immutable. See [`CANCELLATION_PROPAGATION.md`](CANCELLATION_PROPAGATION.md) and ADR 0019.
+
+## Durable cancellation propagation
+
+The task store remains cancellation source of truth and the invocation store owns a derived fence keyed by `request_id`. Invocation `begin` and `reserve` fail closed after the fence. Work that wins the race before the fence is included in the deterministic ownership snapshot and settled.
+
+Process-local owner and adapter registries are optional responsiveness mechanisms only. They are exactly-once, late-registration-blocked and empty after restart. Disabling adapter hooks preserves durable fencing, pending cancellation and conservative reserved uncertainty. Audit events contain IDs, states, counts and hashes; operator reason, task content, prompts, connector bodies, exception messages and credentials are excluded.
 
 ## Task phases
 
@@ -288,7 +294,7 @@ reserved read/proposal → unknown + conservative committed usage
 reserved mutation → unknown_side_effect + conservative committed usage
 ```
 
-No automatic retry is enabled.
+No automatic retry is enabled. Phase 1.6 permits explicit same-task child identity only after a terminal parent and with the exact next attempt number; this ownership relation does not authorize automatic redispatch.
 
 ## Model gateway
 

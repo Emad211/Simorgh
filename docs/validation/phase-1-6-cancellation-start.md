@@ -1,5 +1,7 @@
 # Phase 1.6 cancellation propagation — start record
 
+Status: implementation completed in PR #54 candidate; superseded for acceptance evidence by [`phase-1-6-cancellation-propagation.md`](phase-1-6-cancellation-propagation.md).
+
 ## Authority
 
 - Parent roadmap: #36.
