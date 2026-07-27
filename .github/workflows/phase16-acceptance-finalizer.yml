@@ -75,7 +75,7 @@ jobs:
           pip install -e '.[dev]' >> "$RUNNER_TEMP/install.log" 2>&1
           install_status=$?
           if [[ "$install_status" == "0" ]]; then
-            ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_acceptance.py > "$RUNNER_TEMP/ruff-fix.log" 2>&1
+            ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_acceptance.py services/core/tests/test_invocation_lifecycle_hardening.py > "$RUNNER_TEMP/ruff-fix.log" 2>&1
             ruff_fix_status=$?
             ruff check . > "$RUNNER_TEMP/ruff.log" 2>&1
             ruff_status=$?
