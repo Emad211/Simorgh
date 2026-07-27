@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import time
+from concurrent.futures import Future
 from dataclasses import dataclass
 from threading import RLock
 from typing import Protocol
 from uuid import UUID
 
-from simorgh_core.agents.cancellation_contracts import CancellationSignalDisposition
+from simorgh_core.agents.cancellation_contracts import (
+    AdapterCancellationDisposition,
+    CancellationSignalDisposition,
+    InvocationCancellationAcknowledgement,
+    InvocationCancellationAdapter,
+    InvocationCancellationFence,
+)
 from simorgh_core.agents.invocations import InMemoryInvocationStore, InvocationStore
 
 
@@ -164,11 +173,255 @@ class CancellationOwnerRegistry:
         return CancellationSignalDisposition.SIGNALLED
 
 
+class InvocationCancellationAdapterRegistryError(RuntimeError):
+    """Base class for typed adapter-cancellation registry failures."""
+
+
+class InvocationCancellationAdapterConflictError(
+    InvocationCancellationAdapterRegistryError
+):
+    pass
+
+
+class InvocationCancellationAdapterRegistrationBlockedError(
+    InvocationCancellationAdapterRegistryError
+):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _AdapterEntry:
+    request_id: UUID
+    invocation_id: UUID
+    cancellation_owner_id: UUID | None
+    adapter: InvocationCancellationAdapter
+
+
+class InvocationCancellationAdapterRegistry:
+    """Exactly-once optional adapter cancellation behind durable task fences.
+
+    The registry is deliberately process-local. A restart clears adapter handles and
+    never pretends that an old in-memory capability still exists; durable invocation
+    and task state remain authoritative.
+    """
+
+    def __init__(
+        self,
+        invocation_store: InvocationStore | None = None,
+        *,
+        wall_clock_millis: callable | None = None,
+    ) -> None:
+        self._lock = RLock()
+        self._invocations = invocation_store or InMemoryInvocationStore()
+        self._wall_clock_millis = wall_clock_millis or (
+            lambda: int(time.time() * 1_000)
+        )
+        self._entries: dict[UUID, _AdapterEntry] = {}
+        self._completed: dict[
+            tuple[UUID, UUID], InvocationCancellationAcknowledgement
+        ] = {}
+        self._inflight: dict[
+            tuple[UUID, UUID], Future[InvocationCancellationAcknowledgement]
+        ] = {}
+        self._enabled = True
+
+    @property
+    def enabled(self) -> bool:
+        with self._lock:
+            return self._enabled
+
+    def disable(self) -> None:
+        """Disable external cancellation hooks without disabling durable fences."""
+
+        with self._lock:
+            self._enabled = False
+
+    def enable(self) -> None:
+        with self._lock:
+            self._enabled = True
+
+    def configure_store(self, invocation_store: InvocationStore) -> None:
+        invocation_store.load()
+        with self._lock:
+            if self._entries or self._inflight:
+                raise InvocationCancellationAdapterRegistryError(
+                    "cannot replace invocation authority while adapters are active"
+                )
+            self._invocations = invocation_store
+            self._completed.clear()
+
+    def register(
+        self,
+        *,
+        request_id: UUID,
+        invocation_id: UUID,
+        cancellation_owner_id: UUID | None,
+        adapter: InvocationCancellationAdapter,
+    ) -> None:
+        with self._lock:
+            if self._invocations.get_cancellation_fence(request_id) is not None:
+                raise InvocationCancellationAdapterRegistrationBlockedError(
+                    "durable task cancellation blocks late adapter registration"
+                )
+            existing = self._entries.get(invocation_id)
+            candidate = _AdapterEntry(
+                request_id=request_id,
+                invocation_id=invocation_id,
+                cancellation_owner_id=cancellation_owner_id,
+                adapter=adapter,
+            )
+            if existing is not None:
+                if existing != candidate:
+                    raise InvocationCancellationAdapterConflictError(
+                        "invocation cancellation adapter identity conflicts"
+                    )
+                return
+            self._entries[invocation_id] = candidate
+
+    def unregister(
+        self,
+        *,
+        request_id: UUID,
+        invocation_id: UUID,
+        adapter: InvocationCancellationAdapter,
+    ) -> None:
+        with self._lock:
+            existing = self._entries.get(invocation_id)
+            if existing is None:
+                return
+            if existing.request_id != request_id or existing.adapter is not adapter:
+                raise InvocationCancellationAdapterConflictError(
+                    "adapter removal identity does not match registration"
+                )
+            self._entries.pop(invocation_id, None)
+
+    async def cancel_owned(
+        self,
+        fence: InvocationCancellationFence,
+    ) -> dict[UUID, InvocationCancellationAcknowledgement]:
+        with self._lock:
+            entries = tuple(
+                (
+                    owned,
+                    self._entries.get(owned.invocation_id),
+                )
+                for owned in fence.owned_invocations
+                if not owned.terminal
+            )
+            enabled = self._enabled
+
+        acknowledgements: dict[UUID, InvocationCancellationAcknowledgement] = {}
+        for owned, entry in entries:
+            if entry is None:
+                continue
+            if entry.request_id != fence.request_id:
+                acknowledgements[owned.invocation_id] = self._uncertain_ack(
+                    invocation_id=owned.invocation_id,
+                    cancellation_owner_id=owned.cancellation_owner_id,
+                )
+                continue
+            if not enabled:
+                acknowledgements[owned.invocation_id] = (
+                    InvocationCancellationAcknowledgement(
+                        invocation_id=owned.invocation_id,
+                        cancellation_owner_id=owned.cancellation_owner_id,
+                        disposition=AdapterCancellationDisposition.NOT_SUPPORTED,
+                        acknowledged_at_ms=self._now_ms(),
+                    )
+                )
+                continue
+            acknowledgements[owned.invocation_id] = await self._cancel_once(
+                cancellation_id=fence.cancellation_id,
+                entry=entry,
+            )
+        return acknowledgements
+
+    async def _cancel_once(
+        self,
+        *,
+        cancellation_id: UUID,
+        entry: _AdapterEntry,
+    ) -> InvocationCancellationAcknowledgement:
+        key = (cancellation_id, entry.invocation_id)
+        leader = False
+        with self._lock:
+            completed = self._completed.get(key)
+            if completed is not None:
+                return completed
+            future = self._inflight.get(key)
+            if future is None:
+                future = Future()
+                self._inflight[key] = future
+                leader = True
+
+        if not leader:
+            return await asyncio.wrap_future(future)
+
+        try:
+            try:
+                raw = await entry.adapter.cancel(
+                    invocation_id=entry.invocation_id,
+                    cancellation_owner_id=entry.cancellation_owner_id,
+                )
+                acknowledgement = InvocationCancellationAcknowledgement.model_validate(
+                    raw.model_dump(mode="json")
+                )
+                if (
+                    acknowledgement.invocation_id != entry.invocation_id
+                    or acknowledgement.cancellation_owner_id
+                    != entry.cancellation_owner_id
+                ):
+                    acknowledgement = self._uncertain_ack(
+                        invocation_id=entry.invocation_id,
+                        cancellation_owner_id=entry.cancellation_owner_id,
+                    )
+            except asyncio.CancelledError:
+                acknowledgement = self._uncertain_ack(
+                    invocation_id=entry.invocation_id,
+                    cancellation_owner_id=entry.cancellation_owner_id,
+                )
+                raise
+            except Exception:
+                acknowledgement = self._uncertain_ack(
+                    invocation_id=entry.invocation_id,
+                    cancellation_owner_id=entry.cancellation_owner_id,
+                )
+        finally:
+            if "acknowledgement" not in locals():
+                acknowledgement = self._uncertain_ack(
+                    invocation_id=entry.invocation_id,
+                    cancellation_owner_id=entry.cancellation_owner_id,
+                )
+            with self._lock:
+                self._completed[key] = acknowledgement
+                self._inflight.pop(key, None)
+                if not future.done():
+                    future.set_result(acknowledgement)
+        return acknowledgement
+
+    def _uncertain_ack(
+        self,
+        *,
+        invocation_id: UUID,
+        cancellation_owner_id: UUID | None,
+    ) -> InvocationCancellationAcknowledgement:
+        return InvocationCancellationAcknowledgement(
+            invocation_id=invocation_id,
+            cancellation_owner_id=cancellation_owner_id,
+            disposition=AdapterCancellationDisposition.UNCERTAIN,
+            acknowledged_at_ms=self._now_ms(),
+        )
+
+    def _now_ms(self) -> int:
+        return max(0, int(self._wall_clock_millis()))
+
+
 def _signal_reason(reason_code: str) -> str:
     return f"task cancellation accepted: {reason_code}"
 
 
 cancellation_owner_registry = CancellationOwnerRegistry()
+invocation_cancellation_adapter_registry = InvocationCancellationAdapterRegistry()
 
 
 __all__ = [
@@ -177,5 +430,10 @@ __all__ = [
     "CancellationOwnerRegistryError",
     "CancellationRegistrationBlockedError",
     "CancellationSignalTarget",
+    "InvocationCancellationAdapterConflictError",
+    "InvocationCancellationAdapterRegistrationBlockedError",
+    "InvocationCancellationAdapterRegistry",
+    "InvocationCancellationAdapterRegistryError",
     "cancellation_owner_registry",
+    "invocation_cancellation_adapter_registry",
 ]
