@@ -11,9 +11,16 @@ from pathlib import Path
 from typing import Any, Literal, NoReturn
 from uuid import UUID
 
+from simorgh_core.agents.cancellation_contracts import (
+    InvocationCancellationFence,
+    TaskCancellationRequest,
+    ownership_snapshot_sha256,
+)
 from simorgh_core.agents.contracts import UsageVector
 from simorgh_core.agents.invocations import (
     InMemoryInvocationStore,
+    InvocationCancellationConflictError,
+    InvocationCancellationFencedError,
     InvocationConflictError,
     InvocationEffect,
     InvocationKind,
@@ -30,8 +37,10 @@ from simorgh_core.agents.invocations import (
     InvocationStoreInUseError,
     InvocationStoreSchemaError,
     InvocationStoreUnhealthyError,
+    cancelled_invocation_record,
     canonical_fingerprint,
     canonical_json,
+    ownership_reference,
     require_external_completion_reservation,
     require_reservation_for_nonzero_terminal_usage,
     require_same_invocation_identity,
@@ -174,6 +183,7 @@ class SQLiteInvocationStore:
         tool_id: str | None = None,
         connector_id: str | None = None,
         parent_invocation_id: UUID | None = None,
+        cancellation_owner_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
         if parent_invocation_id is not None or attempt != 1:
@@ -198,6 +208,7 @@ class SQLiteInvocationStore:
                     tool_id=tool_id,
                     connector_id=connector_id,
                     parent_invocation_id=parent_invocation_id,
+                    cancellation_owner_id=cancellation_owner_id,
                     attempt=attempt,
                 )
                 return InvocationStart(
@@ -205,6 +216,10 @@ class SQLiteInvocationStore:
                     record=existing,
                 )
 
+            if self._get_cancellation_fence_locked(request_id) is not None:
+                raise InvocationCancellationFencedError(
+                    "task cancellation fence blocks new invocation admission"
+                )
             now = self._now_ms()
             record = InvocationRecord(
                 invocation_id=invocation_id,
@@ -220,6 +235,7 @@ class SQLiteInvocationStore:
                 tool_id=tool_id,
                 connector_id=connector_id,
                 parent_invocation_id=parent_invocation_id,
+                cancellation_owner_id=cancellation_owner_id,
                 state=InvocationPhase.PENDING,
                 attempt=attempt,
                 created_at_ms=now,
@@ -238,6 +254,10 @@ class SQLiteInvocationStore:
             raise ValueError("invocation reservation usage cannot be zero")
         with self._lock:
             existing = self._require_record_locked(invocation_id)
+            if self._get_cancellation_fence_locked(existing.request_id) is not None:
+                raise InvocationCancellationFencedError(
+                    "task cancellation fence blocks invocation reservation"
+                )
             if existing.state == InvocationPhase.RESERVED:
                 if existing.reserved_usage != usage:
                     raise InvocationConflictError(
@@ -381,30 +401,10 @@ class SQLiteInvocationStore:
     def cancel(self, invocation_id: UUID) -> InvocationRecord:
         with self._lock:
             existing = self._require_record_locked(invocation_id)
-            if existing.terminal:
-                return existing
-            if existing.state == InvocationPhase.PENDING:
-                candidate = validated_record_copy(
-                    existing,
-                    state=InvocationPhase.CANCELLED,
-                    failure_code="cancelled",
-                    failure_detail="invocation cancelled before external reservation",
-                    updated_at_ms=self._next_time(existing.updated_at_ms),
-                )
-            elif existing.state == InvocationPhase.RESERVED:
-                candidate = unknown_record(
-                    existing,
-                    failure_code="cancelled_after_reservation",
-                    failure_detail=(
-                        "invocation cancelled after external-call budget reservation; "
-                        "completion is uncertain"
-                    ),
-                    updated_at_ms=self._next_time(existing.updated_at_ms),
-                )
-            else:
-                raise InvocationStateError(
-                    f"cannot cancel invocation in state {existing.state.value}"
-                )
+            candidate = cancelled_invocation_record(
+                existing,
+                updated_at_ms=self._next_time(existing.updated_at_ms),
+            )
             self._update_locked(existing, candidate)
             return candidate
 
@@ -455,11 +455,122 @@ class SQLiteInvocationStore:
                 )
             return [self._decode_row(row) for row in rows]
 
+    def list_owned(
+        self,
+        *,
+        request_id: UUID,
+        terminal: bool | None = None,
+    ) -> tuple[InvocationRecord, ...]:
+        with self._lock:
+            self._require_healthy_locked()
+            where = "WHERE request_id = ?"
+            values: list[object] = [str(request_id)]
+            if terminal is not None:
+                where += " AND terminal = ?"
+                values.append(int(terminal))
+            rows = self._connection.execute(
+                self._select_sql(where_clause=where), tuple(values)
+            ).fetchall()
+            return tuple(self._decode_row(row) for row in rows)
+
+    def accept_cancellation(
+        self, request: TaskCancellationRequest
+    ) -> InvocationCancellationFence:
+        with self._lock:
+            self._require_healthy_locked()
+            existing = self._get_cancellation_fence_locked(request.request_id)
+            if existing is not None:
+                if existing.request != request:
+                    raise InvocationCancellationConflictError(
+                        "task cancellation was replayed with different content"
+                    )
+                return existing
+            owned_records = self.list_owned(request_id=request.request_id)
+            owned = tuple(ownership_reference(record) for record in owned_records)
+            fence = InvocationCancellationFence(
+                request=request,
+                accepted_at_ms=max(request.requested_at_ms, self._now_ms()),
+                owned_invocations=owned,
+                ownership_snapshot_sha256=ownership_snapshot_sha256(owned),
+            )
+            payload_json = canonical_json(fence)
+            payload_sha256 = hashlib.sha256(payload_json.encode()).hexdigest()
+            try:
+                with self._transaction():
+                    self._connection.execute(
+                        """
+                        INSERT INTO invocation_cancellation_fences (
+                            request_id, cancellation_id, request_sha256,
+                            accepted_at_ms, payload_json, payload_sha256
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(request.request_id),
+                            str(request.cancellation_id),
+                            request.canonical_sha256,
+                            fence.accepted_at_ms,
+                            payload_json,
+                            payload_sha256,
+                        ),
+                    )
+            except sqlite3.IntegrityError as exc:
+                raise InvocationCancellationConflictError(
+                    "cancellation identity conflicts with durable authority"
+                ) from exc
+            except sqlite3.DatabaseError as exc:
+                self._raise_database_failure_locked(
+                    "could not persist cancellation fence", exc
+                )
+            return fence
+
+    def get_cancellation_fence(
+        self, request_id: UUID
+    ) -> InvocationCancellationFence | None:
+        with self._lock:
+            self._require_healthy_locked()
+            return self._get_cancellation_fence_locked(request_id)
+
+    def settle_cancellation(
+        self, request_id: UUID
+    ) -> tuple[InvocationRecord, ...]:
+        with self._lock:
+            self._require_healthy_locked()
+            if self._get_cancellation_fence_locked(request_id) is None:
+                raise InvocationStateError(
+                    "cannot settle cancellation without a durable fence"
+                )
+            try:
+                with self._transaction():
+                    rows = self._connection.execute(
+                        self._select_sql(
+                            where_clause=(
+                                "WHERE request_id = ? AND terminal = 0"
+                            )
+                        ),
+                        (str(request_id),),
+                    ).fetchall()
+                    for row in rows:
+                        existing = self._decode_row(row)
+                        candidate = cancelled_invocation_record(
+                            existing,
+                            updated_at_ms=self._next_time(existing.updated_at_ms),
+                        )
+                        validate_invocation_transition(existing, candidate)
+                        self._update_row_locked(candidate)
+            except sqlite3.DatabaseError as exc:
+                self._raise_database_failure_locked(
+                    "could not settle owned invocation cancellation", exc
+                )
+            return self.list_owned(request_id=request_id)
+
     def clear(self) -> None:
         with self._lock:
             self._require_healthy_locked()
             try:
                 with self._transaction():
+                    self._connection.execute(
+                        "DELETE FROM invocation_cancellation_fences"
+                    )
                     self._connection.execute("DELETE FROM invocation_records")
             except sqlite3.DatabaseError as exc:
                 self._raise_database_failure_locked(
@@ -490,15 +601,23 @@ class SQLiteInvocationStore:
                 now = self._now_ms()
                 for row in rows:
                     existing = self._decode_row(row)
-                    candidate = unknown_record(
-                        existing,
-                        failure_code="process_interrupted",
-                        failure_detail=(
-                            "Core restarted before invocation completion; automatic "
-                            "retry is blocked"
-                        ),
-                        updated_at_ms=max(existing.updated_at_ms, now),
-                    )
+                    if self._get_cancellation_fence_locked(
+                        existing.request_id
+                    ) is not None:
+                        candidate = cancelled_invocation_record(
+                            existing,
+                            updated_at_ms=max(existing.updated_at_ms, now),
+                        )
+                    else:
+                        candidate = unknown_record(
+                            existing,
+                            failure_code="process_interrupted",
+                            failure_detail=(
+                                "Core restarted before invocation completion; "
+                                "automatic retry is blocked"
+                            ),
+                            updated_at_ms=max(existing.updated_at_ms, now),
+                        )
                     self._update_row_locked(candidate)
         except sqlite3.DatabaseError as exc:
             self._raise_database_failure_locked(
@@ -574,6 +693,21 @@ class SQLiteInvocationStore:
                 """
                 CREATE INDEX IF NOT EXISTS invocation_records_state_order
                 ON invocation_records(state, updated_at_ms, invocation_id)
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS invocation_cancellation_fences (
+                    request_id TEXT PRIMARY KEY,
+                    cancellation_id TEXT NOT NULL UNIQUE,
+                    request_sha256 TEXT NOT NULL
+                        CHECK(length(request_sha256) = 64),
+                    accepted_at_ms INTEGER NOT NULL
+                        CHECK(accepted_at_ms >= 0),
+                    payload_json TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL
+                        CHECK(length(payload_sha256) = 64)
+                ) WITHOUT ROWID
                 """
             )
 
@@ -672,6 +806,52 @@ class SQLiteInvocationStore:
                 str(record.invocation_id),
             ),
         )
+
+    def _get_cancellation_fence_locked(
+        self, request_id: UUID
+    ) -> InvocationCancellationFence | None:
+        row = self._connection.execute(
+            """
+            SELECT request_id, cancellation_id, request_sha256,
+                   accepted_at_ms, payload_json, payload_sha256
+            FROM invocation_cancellation_fences
+            WHERE request_id = ?
+            """,
+            (str(request_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        payload_json = row["payload_json"]
+        actual_hash = hashlib.sha256(payload_json.encode()).hexdigest()
+        if actual_hash != row["payload_sha256"]:
+            self._latch_corruption_locked(
+                "cancellation fence payload hash mismatch"
+            )
+        try:
+            fence = InvocationCancellationFence.model_validate(
+                json.loads(payload_json)
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            self._latch_corruption_locked(
+                "cancellation fence payload contract is invalid"
+            )
+        identity = (
+            str(fence.request_id),
+            str(fence.cancellation_id),
+            fence.request.canonical_sha256,
+            fence.accepted_at_ms,
+        )
+        row_identity = (
+            row["request_id"],
+            row["cancellation_id"],
+            row["request_sha256"],
+            row["accepted_at_ms"],
+        )
+        if identity != row_identity:
+            self._latch_corruption_locked(
+                "cancellation fence indexed columns do not match payload"
+            )
+        return fence
 
     def _require_record_locked(self, invocation_id: UUID) -> InvocationRecord:
         self._require_healthy_locked()
@@ -900,6 +1080,7 @@ def validate_invocation_transition(
         existing.tool_id,
         existing.connector_id,
         existing.parent_invocation_id,
+        existing.cancellation_owner_id,
         existing.attempt,
         existing.created_at_ms,
     )
@@ -917,6 +1098,7 @@ def validate_invocation_transition(
         candidate.tool_id,
         candidate.connector_id,
         candidate.parent_invocation_id,
+        candidate.cancellation_owner_id,
         candidate.attempt,
         candidate.created_at_ms,
     )
