@@ -44,11 +44,19 @@ def test_context_schema_failure_aborts_startup() -> None:
     connection.commit()
     connection.close()
 
-    with pytest.raises(
-        ContextStoreSchemaError,
-        match="unsupported context store schema",
-    ), TestClient(app):
-        pass
+    try:
+        with pytest.raises(
+            ContextStoreSchemaError,
+            match="unsupported context store schema",
+        ), TestClient(app):
+            pass
+    finally:
+        if path.exists():
+            path.unlink()
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{path}{suffix}")
+            if sidecar.exists():
+                sidecar.unlink()
 
 
 def test_core_rejects_context_and_result_path_alias(
