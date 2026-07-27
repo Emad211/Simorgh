@@ -45,13 +45,16 @@ class ContextMaterialRegistry:
             compiled[candidate.material_id] = candidate
         self._materials = compiled
         self._canonical_sha256 = canonical_fingerprint(
-            [
-                item.model_dump(mode="json")
-                for item in sorted(
-                    compiled.values(),
-                    key=lambda candidate: str(candidate.material_id),
-                )
-            ]
+            {
+                "schema_version": "1.0",
+                "materials": [
+                    item.model_dump(mode="json")
+                    for item in sorted(
+                        compiled.values(),
+                        key=lambda candidate: str(candidate.material_id),
+                    )
+                ],
+            }
         )
 
     @property
