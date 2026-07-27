@@ -1,0 +1,85 @@
+name: Phase 1.6 Foundation Launcher v1
+
+on:
+  push:
+    branches:
+      - core/cancellation-propagation
+    paths:
+      - .github/workflows/phase16-foundation-launcher.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase16-cancellation-foundation
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Apply embedded foundation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          source = Path(
+              ".github/workflows/phase16-cancellation-foundation.yml"
+          ).read_text(encoding="utf-8")
+          start = "          python - <<'PY'\n"
+          end = "\n          PY\n"
+          if source.count(start) != 1:
+              raise SystemExit("foundation start marker is not unique")
+          remainder = source.split(start, 1)[1]
+          if remainder.count(end) != 1:
+              raise SystemExit("foundation end marker is not unique")
+          embedded = dedent(remainder.split(end, 1)[0])
+          exec(compile(embedded, "phase16-foundation.py", "exec"), {"__name__": "__main__"})
+          PY
+          rm -f .github/workflows/phase16-cancellation-foundation.yml
+          rm -f .github/workflows/phase16-foundation-launcher.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Run complete Core gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check --fix services/core/src/simorgh_core/agents/invocations.py services/core/src/simorgh_core/agents/invocation_store.py services/core/src/simorgh_core/agents/cancellation_contracts.py services/core/tests/test_cancellation_invocation_authority.py
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Publish exact validated foundation
+        shell: bash
+        env:
+          BRANCH: core/cancellation-propagation
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: add durable invocation cancellation fences'
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
