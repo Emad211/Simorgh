@@ -20,6 +20,13 @@ replace_exact(
 )
 
 replace_exact(
+    "services/core/tests/test_cancellation_invocation_authority.py",
+    "    assert store.list_owned(request_id=request_id) == (first, second)\n",
+    "    assert store.list_owned(request_id=request_id) == tuple(expected)\n",
+    label="deterministic ownership ordering assertion",
+)
+
+replace_exact(
     "services/core/tests/test_invocation_lifecycle_hardening.py",
     "    InvocationKind,\n"
     "    InvocationPhase,\n"
