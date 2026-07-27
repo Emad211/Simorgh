@@ -34,7 +34,12 @@ jobs:
           python .github/scripts/phase16_finalize_acceptance.py > "$RUNNER_TEMP/phase16-acceptance-patch.log" 2>&1
           status=$?
           if [[ "$status" == "0" ]]; then
+            python .github/scripts/phase16_fix_acceptance_tests.py >> "$RUNNER_TEMP/phase16-acceptance-patch.log" 2>&1
+            status=$?
+          fi
+          if [[ "$status" == "0" ]]; then
             rm -f .github/scripts/phase16_finalize_acceptance.py
+            rm -f .github/scripts/phase16_fix_acceptance_tests.py
             rm -f .github/workflows/phase16-acceptance-finalizer.yml
             git diff --check >> "$RUNNER_TEMP/phase16-acceptance-patch.log" 2>&1
             status=$?
