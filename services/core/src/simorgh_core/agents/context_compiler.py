@@ -3,20 +3,21 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
 from simorgh_core.agents.context_contracts import (
+    ContextBudgetProjection,
     ContextCompilationRequest,
     ContextCompilerPolicy,
     ContextMaterial,
     ContextOmission,
     ContextOmissionReason,
-    ContextOutputSchemaProjection,
     ContextReplayDisposition,
     ContextSection,
+    ContextSectionDisposition,
     ContextSourceKind,
     ContextToolSchemaProjection,
     ContextTrustClass,
@@ -26,6 +27,7 @@ from simorgh_core.agents.context_contracts import (
     context_bundle_id_for,
     context_material_id_for,
     context_omission_sort_key,
+    context_remaining_usage,
     context_section_from_material,
     context_section_sort_key,
     context_source_manifest_sha256,
@@ -106,6 +108,7 @@ class _Authority:
     task_fingerprint: str
     routing_fingerprint: str
     policy_fingerprint: str
+    budget: ContextBudgetProjection
 
 
 class ContextCompilerService:
@@ -141,6 +144,7 @@ class ContextCompilerService:
         authority = self._require_authority(request=request, now_ms=now_ms)
         materials = self._prepare_materials(
             record=authority.record,
+            task_fingerprint=authority.task_fingerprint,
             request=request,
         )
         sections, omissions = self._admit_materials(
@@ -250,6 +254,10 @@ class ContextCompilerService:
                 task_record=record,
                 compiler_policy=self._policy,
             ),
+            budget=_context_budget_projection(
+                record=record,
+                effective_budget=effective_budget,
+            ),
         )
 
     def _require_tool_schemas(
@@ -288,16 +296,19 @@ class ContextCompilerService:
                 raise ContextCompilerPolicyError(
                     "context tool connector is outside requested capability subset"
                 )
-            if projection.effect == InvocationEffect.MUTATION:
-                if not request.capabilities.typed_mutation_allowed:
-                    raise ContextCompilerPolicyError(
-                        "mutation tool schema requires typed mutation capability"
-                    )
+            if (
+                projection.effect == InvocationEffect.MUTATION
+                and not request.capabilities.typed_mutation_allowed
+            ):
+                raise ContextCompilerPolicyError(
+                    "mutation tool schema requires typed mutation capability"
+                )
 
     def _prepare_materials(
         self,
         *,
         record: AgentTaskRecord,
+        task_fingerprint: str,
         request: ContextCompilationRequest,
     ) -> tuple[ContextMaterial, ...]:
         if any(item.source_kind == ContextSourceKind.USER_TASK for item in request.materials):
@@ -313,7 +324,7 @@ class ContextCompilerService:
         user_source_sha = canonical_fingerprint(
             {
                 "request_id": str(record.request_id),
-                "task_fingerprint": canonical_fingerprint(record.task),
+                "task_fingerprint": task_fingerprint,
             }
         )
         user_material = ContextMaterial(
@@ -474,10 +485,9 @@ class ContextCompilerService:
             current = sections[index]
             if len(current.content) > 1:
                 reduced_length = max(1, len(current.content) // 2)
-                material = _material_from_section(current)
-                sections[index] = context_section_from_material(
-                    material,
-                    content=current.content[:reduced_length],
+                sections[index] = _truncate_section(
+                    current,
+                    current.content[:reduced_length],
                 )
             else:
                 sections.pop(index)
@@ -562,7 +572,7 @@ def _build_bundle(
         "freshness": authority.record.task.freshness.value,
         "deadline_at_ms": authority.record.task.deadline_at_ms,
         "capabilities": request.capabilities.model_dump(mode="json"),
-        "effective_budget": authority.effective_budget.model_dump(mode="json"),
+        "budget": authority.budget.model_dump(mode="json"),
         "limits": policy.limits.model_dump(mode="json"),
         "output_schema": request.output_schema.model_dump(mode="json"),
         "tool_schemas": [item.model_dump(mode="json") for item in request.tool_schemas],
@@ -583,7 +593,7 @@ def _build_bundle(
     identity_payload = context_bundle_canonical_payload(payload)
     total_bytes = canonical_size_bytes(identity_payload)
     estimated_tokens = estimate_context_tokens(canonical_json(identity_payload))
-    bundle = SpecialistContextBundle(
+    bundle_fields = dict(
         context_bundle_id=context_bundle_id_for(
             request_id=request.request_id,
             canonical_sha256=canonical_hash,
@@ -601,7 +611,7 @@ def _build_bundle(
         freshness=authority.record.task.freshness,
         deadline_at_ms=authority.record.task.deadline_at_ms,
         capabilities=request.capabilities,
-        effective_budget=authority.effective_budget,
+        budget=authority.budget,
         limits=policy.limits,
         output_schema=request.output_schema,
         tool_schemas=tuple(sorted(request.tool_schemas, key=lambda item: item.tool_id)),
@@ -629,8 +639,10 @@ def _build_bundle(
         replay=ContextReplayDisposition.FRESH,
     )
     if validate_limits:
-        return SpecialistContextBundle.model_validate(bundle.model_dump(mode="json"))
-    return bundle
+        return SpecialistContextBundle.model_validate(bundle_fields)
+    return SpecialistContextBundle.model_construct(
+        **cast(Any, bundle_fields)
+    )
 
 
 def _material_sort_key(
@@ -665,16 +677,27 @@ def _omission(
     )
 
 
-def _material_from_section(section: ContextSection) -> ContextMaterial:
-    return ContextMaterial(
+def _truncate_section(section: ContextSection, content: str) -> ContextSection:
+    if section.required:
+        raise ContextCompilerLimitError("required context section cannot be truncated")
+    if not content or not section.content.startswith(content):
+        raise ContextCompilerLimitError(
+            "context compaction must preserve a non-empty deterministic prefix"
+        )
+    return ContextSection(
         material_id=section.material_id,
         source_kind=section.source_kind,
         trust=section.trust,
         source_id=section.source_id,
         source_sha256=section.source_sha256,
-        content_sha256=section.content_sha256,
-        content=section.content,
-        required=section.required,
+        content_sha256=context_text_sha256(content),
+        content=content,
+        disposition=ContextSectionDisposition.TRUNCATED,
+        original_characters=section.original_characters,
+        included_characters=len(content),
+        byte_count=len(content.encode("utf-8")),
+        estimated_tokens=estimate_context_tokens(content),
+        required=False,
         priority=section.priority,
         observed_at_ms=section.observed_at_ms,
         fresh_until_ms=section.fresh_until_ms,
@@ -684,6 +707,39 @@ def _material_from_section(section: ContextSection) -> ContextMaterial:
         privacy=section.privacy,
         retention=section.retention,
         citation_reference=section.citation_reference,
+    )
+
+
+def _context_budget_projection(
+    *,
+    record: AgentTaskRecord,
+    effective_budget: TaskBudget,
+) -> ContextBudgetProjection:
+    remaining = context_remaining_usage(
+        limits=effective_budget,
+        committed=record.budget.committed,
+        reserved=record.budget.reserved,
+    )
+    payload = {
+        "schema_version": "1.0",
+        "request_id": str(record.request_id),
+        "effective_limits": effective_budget.model_dump(mode="json"),
+        "committed": record.budget.committed.model_dump(mode="json"),
+        "reserved": record.budget.reserved.model_dump(mode="json"),
+        "remaining": remaining.model_dump(mode="json"),
+        "elapsed_ms": record.budget.elapsed_ms,
+        "remaining_elapsed_ms": max(
+            0,
+            effective_budget.max_elapsed_ms - record.budget.elapsed_ms,
+        ),
+        "cancelled": record.budget.cancelled,
+        "exhausted_dimension": record.budget.exhausted_dimension,
+    }
+    return ContextBudgetProjection.model_validate(
+        {
+            **payload,
+            "canonical_sha256": canonical_fingerprint(payload),
+        }
     )
 
 
@@ -804,10 +860,6 @@ def _retention_rank(value: RetentionDisposition) -> int:
         RetentionDisposition.LONG_LIVED: 3,
         RetentionDisposition.LEGAL_HOLD: 4,
     }[value]
-
-
-def _raise(message: str) -> NoReturn:
-    raise ContextCompilerError(message)
 
 
 __all__ = [

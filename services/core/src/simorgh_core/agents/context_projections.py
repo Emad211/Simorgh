@@ -51,7 +51,9 @@ _GITHUB_OUTPUT_MODELS: dict[GitHubReadOperation, type[BaseModel]] = {
 }
 _GITHUB_DESCRIPTIONS: dict[GitHubReadOperation, str] = {
     GitHubReadOperation.SEARCH: "Search bounded GitHub repository content and metadata.",
-    GitHubReadOperation.FETCH_FILE: "Fetch one bounded UTF-8 GitHub file projection at an explicit ref.",
+    GitHubReadOperation.FETCH_FILE: (
+        "Fetch one bounded UTF-8 GitHub file projection at an explicit ref."
+    ),
     GitHubReadOperation.FETCH_ISSUE: "Fetch one bounded GitHub issue projection.",
     GitHubReadOperation.FETCH_PR: "Fetch one bounded GitHub pull-request projection.",
 }
@@ -84,7 +86,19 @@ def build_github_context_tool_schemas(
         }
         projections.append(
             ContextToolSchemaProjection(
-                **payload,
+                schema_version=CONTEXT_CONTRACT_VERSION,
+                tool_id=definition.tool_id,
+                connector_id=manifest.connector_id,
+                effect=InvocationEffect.READ_ONLY,
+                input_contract=definition.input_contract,
+                output_contract=definition.output_contract,
+                description=_GITHUB_DESCRIPTIONS[operation],
+                input_schema=_GITHUB_INPUT_MODELS[operation].model_json_schema(
+                    mode="validation"
+                ),
+                output_schema=_GITHUB_OUTPUT_MODELS[operation].model_json_schema(
+                    mode="validation"
+                ),
                 canonical_sha256=canonical_fingerprint(payload),
             )
         )
@@ -115,7 +129,12 @@ def build_specialist_plan_context_output_schema(
         "json_schema": SpecialistPlanPayload.model_json_schema(mode="validation"),
     }
     return ContextOutputSchemaProjection(
-        **payload,
+        schema_version=CONTEXT_CONTRACT_VERSION,
+        output_contract=handler.output_contract,
+        result_schema_id=handler.schema_id,
+        result_schema_version=handler.schema_version,
+        family=handler.family,
+        json_schema=SpecialistPlanPayload.model_json_schema(mode="validation"),
         canonical_sha256=canonical_fingerprint(payload),
     )
 

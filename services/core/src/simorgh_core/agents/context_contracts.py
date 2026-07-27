@@ -12,6 +12,7 @@ from simorgh_core.agents.contracts import (
     FreshnessClass,
     TaskBudget,
     TaskKind,
+    UsageVector,
 )
 from simorgh_core.agents.invocations import (
     InvocationEffect,
@@ -329,6 +330,44 @@ class ContextOutputSchemaProjection(BaseModel):
         return self
 
 
+class ContextBudgetProjection(BaseModel):
+    """Machine-verifiable remaining specialist budget at compilation time."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    schema_version: Literal["1.0"] = CONTEXT_CONTRACT_VERSION
+    request_id: UUID
+    effective_limits: TaskBudget
+    committed: UsageVector
+    reserved: UsageVector
+    remaining: UsageVector
+    elapsed_ms: int = Field(ge=0)
+    remaining_elapsed_ms: int = Field(ge=0)
+    cancelled: bool
+    exhausted_dimension: str | None = None
+    canonical_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=_FINGERPRINT_PATTERN,
+    )
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> Self:
+        expected_remaining = context_remaining_usage(
+            limits=self.effective_limits,
+            committed=self.committed,
+            reserved=self.reserved,
+        )
+        if self.remaining != expected_remaining:
+            raise ValueError("context remaining budget does not match usage and limits")
+        expected_elapsed = max(0, self.effective_limits.max_elapsed_ms - self.elapsed_ms)
+        if self.remaining_elapsed_ms != expected_elapsed:
+            raise ValueError("context remaining elapsed budget is invalid")
+        if context_budget_projection_sha256(self) != self.canonical_sha256:
+            raise ValueError("context budget projection hash does not match content")
+        return self
+
+
 class ContextCompilerPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -360,7 +399,6 @@ class ContextCompilationRequest(BaseModel):
         max_length=MAX_CONTEXT_TOOLS,
     )
     output_schema: ContextOutputSchemaProjection
-    compiled_at_ms: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_request(self) -> Self:
@@ -411,7 +449,7 @@ class SpecialistContextBundle(BaseModel):
     freshness: FreshnessClass
     deadline_at_ms: int | None = Field(default=None, ge=0)
     capabilities: SpecialistCapabilitySet
-    effective_budget: TaskBudget
+    budget: ContextBudgetProjection
     limits: ContextCompilerLimits
     output_schema: ContextOutputSchemaProjection
     tool_schemas: tuple[ContextToolSchemaProjection, ...] = Field(
@@ -459,6 +497,10 @@ class SpecialistContextBundle(BaseModel):
             raise ValueError("context bundle tool schemas must be canonically ordered")
         if self.omissions != tuple(sorted(self.omissions, key=context_omission_sort_key)):
             raise ValueError("context bundle omissions must be canonically ordered")
+        if self.budget.request_id != self.request_id:
+            raise ValueError("context bundle budget does not belong to request")
+        if self.budget.cancelled:
+            raise ValueError("cancelled budget cannot authorize a context bundle")
         if self.section_count != len(self.sections):
             raise ValueError("context bundle section count is invalid")
         expected_evidence = sum(
@@ -495,7 +537,10 @@ class SpecialistContextBundle(BaseModel):
             raise ValueError("context bundle retention does not match admitted sections")
         if self.tainted != any(section.tainted for section in self.sections):
             raise ValueError("context bundle taint does not match admitted sections")
-        if context_source_manifest_sha256(self.sections, self.omissions) != self.source_manifest_sha256:
+        if (
+            context_source_manifest_sha256(self.sections, self.omissions)
+            != self.source_manifest_sha256
+        ):
             raise ValueError("context source manifest hash does not match bundle sources")
         if context_bundle_canonical_sha256(self) != self.canonical_sha256:
             raise ValueError("context bundle hash does not match authoritative content")
@@ -517,6 +562,40 @@ class SpecialistContextBundle(BaseModel):
         if self.estimated_tokens > self.limits.max_estimated_tokens:
             raise ValueError("context bundle exceeds estimated-token limit")
         return self
+
+
+def context_remaining_usage(
+    *,
+    limits: TaskBudget,
+    committed: UsageVector,
+    reserved: UsageVector,
+) -> UsageVector:
+    committed_values = committed.model_dump()
+    reserved_values = reserved.model_dump()
+
+    def remaining(dimension: str) -> int:
+        committed_value = int(committed_values[dimension])
+        reserved_value = int(reserved_values[dimension])
+        return max(
+            0,
+            limits.limit_for(dimension) - committed_value - reserved_value,
+        )
+
+    return UsageVector(
+        model_calls=remaining("model_calls"),
+        tool_calls=remaining("tool_calls"),
+        input_tokens=remaining("input_tokens"),
+        output_tokens=remaining("output_tokens"),
+        estimated_cost_microusd=remaining("estimated_cost_microusd"),
+        retries=remaining("retries"),
+        parallel_branches=remaining("parallel_branches"),
+    )
+
+
+def context_budget_projection_sha256(value: ContextBudgetProjection) -> str:
+    return canonical_fingerprint(
+        value.model_dump(mode="json", exclude={"canonical_sha256"})
+    )
 
 
 def context_text_sha256(value: str) -> str:
@@ -640,6 +719,12 @@ def context_bundle_canonical_payload(
         payload = value.model_dump(mode="json")
     else:
         payload = dict(value)
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, dict):
+        for key in ("tool_ids", "connector_ids", "model_tiers"):
+            values = capabilities.get(key)
+            if isinstance(values, list):
+                capabilities[key] = sorted(values)
     for field in (
         "context_bundle_id",
         "canonical_sha256",
@@ -693,6 +778,7 @@ __all__ = [
     "CONTEXT_COMPILER_ID",
     "CONTEXT_COMPILER_VERSION",
     "CONTEXT_CONTRACT_VERSION",
+    "ContextBudgetProjection",
     "ContextCompilationRequest",
     "ContextCompilerLimits",
     "ContextCompilerPolicy",
@@ -708,11 +794,13 @@ __all__ = [
     "ContextToolSchemaProjection",
     "ContextTrustClass",
     "SpecialistContextBundle",
+    "context_budget_projection_sha256",
     "context_bundle_canonical_payload",
     "context_bundle_canonical_sha256",
     "context_bundle_id_for",
     "context_material_id_for",
     "context_output_schema_sha256",
+    "context_remaining_usage",
     "context_section_from_material",
     "context_source_manifest_sha256",
     "context_text_sha256",
