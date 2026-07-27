@@ -1,9 +1,9 @@
 name: Phase 1.7 Context Foundation Finalizer
 
 on:
-  push:
+  pull_request:
     branches:
-      - core/context-compiler
+      - main
     paths:
       - .github/workflows/phase17-foundation-finalizer.yml
 
@@ -16,12 +16,13 @@ concurrency:
 
 jobs:
   validate-publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Apply exact authority hardening
@@ -126,7 +127,7 @@ jobs:
         shell: bash
         env:
           BRANCH: core/context-compiler
-          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
