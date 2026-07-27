@@ -1,9 +1,9 @@
-name: Phase 1.6 Foundation Launcher v2
+name: Phase 1.6 Foundation Launcher v3
 
 on:
-  push:
+  pull_request:
     branches:
-      - core/cancellation-propagation
+      - main
     paths:
       - .github/workflows/phase16-foundation-launcher.yml
 
@@ -16,12 +16,13 @@ concurrency:
 
 jobs:
   launch:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Apply embedded foundation patch
@@ -69,6 +70,7 @@ jobs:
         shell: bash
         env:
           BRANCH: core/cancellation-propagation
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -78,8 +80,8 @@ jobs:
           git commit -m 'core: add durable invocation cancellation fences'
           git fetch origin "$BRANCH"
           remote_head=$(git rev-parse "origin/$BRANCH")
-          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
-            echo "Branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+          if [[ "$remote_head" != "$EXPECTED_HEAD" ]]; then
+            echo "Branch moved during validation: $remote_head != $EXPECTED_HEAD" >&2
             exit 1
           fi
           git push origin "HEAD:refs/heads/$BRANCH"
