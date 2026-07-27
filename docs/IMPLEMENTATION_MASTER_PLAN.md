@@ -45,8 +45,8 @@ Phase 1.1 Durable Task Store             COMPLETE — PR #37
 Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
 Phase 1.3 Specialist Execution           COMPLETE — PR #44
 Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
-Phase 1.5 Governed GitHub Read Tools     VALIDATING — PR #52
-Phase 1.6 Cancellation Propagation       QUEUED
+Phase 1.5 Governed GitHub Read Tools     COMPLETE — PR #52
+Phase 1.6 Cancellation Propagation       VALIDATING — PR #54
 Phase 1.7 Context Compiler               QUEUED
 Phase 1.8 End-to-End Trace               QUEUED
 Phase 1.9 Live Provider Staging          QUEUED
@@ -314,9 +314,9 @@ Separate durable structured results and evidence from user-facing natural-langua
 - no production artifact-byte storage;
 - no live provider, GitHub connector, MCP, mutation executor, Voice, Notification, Memory or new Android effect.
 
-## 1.5 Governed read-only tool execution — VALIDATING
+## 1.5 Governed read-only tool execution — COMPLETE
 
-Implementation is active in PR #52 for issue #51. The product scope remains one read-only GitHub trust boundary; final merge status requires exact-head Core and Android CI plus review audit.
+Merged through PR #52 at `7fef6a5262de1e84be89c9afc30c25053945a4ac`. Issue #51 completed; ADR 0018 accepted. The validated implementation head `98f0cc9004e56e76eb9ed1b683099e921ba52d1c` passed CI run `30223753959` with 340 Core tests and full Android build/JVM/lint/APK gates.
 
 ### Objective
 
@@ -356,7 +356,9 @@ GitHub read-only.
 - no raw connector response persisted as a specialist result;
 - no dynamically discovered tool permission.
 
-## 1.6 Cancellation propagation — QUEUED
+## 1.6 Cancellation propagation — VALIDATING
+
+Implementation is active in PR #54 for issue #53. The current boundary adds durable task-to-invocation ownership, admission fences, conservative reserved-work settlement, optional typed adapter cancellation and privacy-safe audit metadata. Merge still requires exact-head Core/Android CI and review audit.
 
 ### Objective
 

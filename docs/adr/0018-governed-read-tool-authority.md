@@ -1,6 +1,6 @@
 # ADR 0018: Governed read-tool authority and typed GitHub evidence
 
-- Status: Accepted by Phase 1.5 implementation; merge evidence pending PR #52 final gate
+- Status: Accepted; merged through PR #52
 - Date: 2026-07-27
 
 ## Context

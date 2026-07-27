@@ -167,6 +167,7 @@ class BeginFailingInvocationStore(InMemoryInvocationStore):
         tool_id: str | None = None,
         connector_id: str | None = None,
         parent_invocation_id: UUID | None = None,
+        cancellation_owner_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
         del (
@@ -183,6 +184,7 @@ class BeginFailingInvocationStore(InMemoryInvocationStore):
             tool_id,
             connector_id,
             parent_invocation_id,
+            cancellation_owner_id,
             attempt,
         )
         raise InvocationStoreCorruptionError("simulated begin failure")

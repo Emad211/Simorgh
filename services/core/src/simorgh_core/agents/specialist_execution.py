@@ -519,9 +519,8 @@ def build_specialist_execution_request(
             NAMESPACE_URL,
             f"simorgh-context:{task.request_id}:{context_fingerprint}",
         ),
-        cancellation_owner_id=uuid5(
-            NAMESPACE_URL,
-            f"simorgh-cancellation:{task.request_id}:{invocation_id}",
+        cancellation_owner_id=stable_specialist_cancellation_owner_id(
+            request_id=task.request_id, invocation_id=invocation_id
         ),
         agent_id=definition.agent_id,
         agent_version=definition.version,
@@ -537,6 +536,15 @@ def build_specialist_execution_request(
         monotonic_timeout_ms=effective_budget.max_elapsed_ms,
         created_at_ms=now,
         deadline_at_ms=task.deadline_at_ms,
+    )
+
+
+def stable_specialist_cancellation_owner_id(
+    *, request_id: UUID, invocation_id: UUID
+) -> UUID:
+    return uuid5(
+        NAMESPACE_URL,
+        f"simorgh-cancellation:{request_id}:{invocation_id}",
     )
 
 

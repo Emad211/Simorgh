@@ -5,6 +5,13 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from simorgh_core.agents.cancellation_contracts import (
+    CancellationRequesterAuthority,
+)
+from simorgh_core.agents.cancellation_runtime import (
+    cancellation_owner_registry,
+    invocation_cancellation_adapter_registry,
+)
 from simorgh_core.agents.contracts import TaskEnvelope
 from simorgh_core.agents.control_plane import (
     AgentTaskConflictError,
@@ -25,14 +32,27 @@ agent_task_control_plane = AgentTaskControlPlane(
     router=SpecialistRouter(
         registry=default_specialist_registry(),
         trace_sink=agent_trace_sink,
-    )
+    ),
+    cancellation_registry=cancellation_owner_registry,
+    adapter_cancellation_registry=(
+        invocation_cancellation_adapter_registry
+    ),
+    trace_sink=agent_trace_sink,
 )
 
 
 class AgentTaskCancelRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    reason: str = Field(default="operator requested cancellation", max_length=1_000)
+    cancellation_id: UUID | None = None
+    reason_code: str = Field(
+        default="operator_requested",
+        pattern=r"^[a-z][a-z0-9_.-]{0,127}$",
+        max_length=128,
+    )
+    reason: str = Field(
+        default="operator requested cancellation", max_length=1_000
+    )
 
 
 def _store_unavailable(exc: Exception) -> HTTPException:
@@ -80,6 +100,8 @@ async def get_agent_task(
         return await agent_task_control_plane.get(request_id)
     except AgentTaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AgentTaskConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except AgentTaskStoreUnavailableError as exc:
         raise _store_unavailable(exc) from exc
 
@@ -98,8 +120,13 @@ async def cancel_agent_task(
         return await agent_task_control_plane.cancel(
             request_id=request_id,
             reason=payload.reason,
+            cancellation_id=payload.cancellation_id,
+            reason_code=payload.reason_code,
+            requester_authority=CancellationRequesterAuthority.OPERATOR,
         )
     except AgentTaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AgentTaskConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except AgentTaskStoreUnavailableError as exc:
         raise _store_unavailable(exc) from exc

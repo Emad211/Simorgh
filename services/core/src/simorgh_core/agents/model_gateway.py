@@ -151,6 +151,7 @@ class BudgetedModelRequest(BaseModel):
     allowed_tiers: tuple[ModelTier, ...] = Field(min_length=1, max_length=4)
     minimum_tier: ModelTier | None = None
     maximum_output_tokens: int = Field(ge=1, le=1_000_000)
+    cancellation_owner_id: UUID | None = None
     policy_hash: str = Field(
         min_length=64,
         max_length=64,
@@ -238,6 +239,7 @@ class BudgetedModelGateway:
                 effect=InvocationEffect.READ_ONLY,
                 provider_id=spec.provider_id,
                 model_id=spec.model_id,
+                cancellation_owner_id=request.cancellation_owner_id,
             )
         except InvocationStoreError as exc:
             raise ModelGatewayError(

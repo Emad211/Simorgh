@@ -54,6 +54,8 @@ class TraceEventKind(StrEnum):
     SPECIALIST_FAILED = "specialist_failed"
     RESULT_COMMITTED = "result_committed"
     RESULT_REPLAYED = "result_replayed"
+    CANCELLATION_SETTLED = "cancellation_settled"
+    CANCELLATION_REPLAYED = "cancellation_replayed"
     RESULT_FAILED = "result_failed"
     ESCALATION = "escalation"
     TERMINAL = "terminal"

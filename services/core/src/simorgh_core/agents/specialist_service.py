@@ -5,6 +5,11 @@ from threading import RLock
 from typing import Protocol
 from uuid import UUID
 
+from simorgh_core.agents.cancellation_runtime import (
+    CancellationOwnerRegistry,
+    CancellationRegistrationBlockedError,
+    cancellation_owner_registry,
+)
 from simorgh_core.agents.contracts import SideEffectPolicy
 from simorgh_core.agents.invocations import InvocationRecord, InvocationStore
 from simorgh_core.agents.registry import SpecialistRegistry
@@ -12,9 +17,11 @@ from simorgh_core.agents.specialist_control import SpecialistTaskExecutionAdapte
 from simorgh_core.agents.specialist_execution import (
     SpecialistCancellation,
     SpecialistCapabilitySet,
+    SpecialistExecutionCancelledError,
     SpecialistExecutionPolicyError,
     SpecialistExecutionResult,
     SpecialistExecutorRegistry,
+    stable_specialist_cancellation_owner_id,
 )
 from simorgh_core.agents.specialist_runtime import (
     SpecialistExecutionRuntime,
@@ -37,6 +44,7 @@ class SpecialistExecutionControlPlane:
         policy_registry: SpecialistRegistry,
         executor_registry: SpecialistExecutorRegistry,
         invocation_store: InvocationStore,
+        cancellation_registry: CancellationOwnerRegistry | None = None,
         wall_clock_millis: Callable[[], int] | None = None,
         monotonic_millis: Callable[[], int] | None = None,
     ) -> None:
@@ -48,6 +56,9 @@ class SpecialistExecutionControlPlane:
         self._tasks = task_reader
         self._policies = policy_registry
         self._invocations = invocation_store
+        self._cancellation_owners = (
+            cancellation_registry or cancellation_owner_registry
+        )
         self._adapter = SpecialistTaskExecutionAdapter(
             policy_registry=policy_registry,
             runtime=runtime,
@@ -65,7 +76,10 @@ class SpecialistExecutionControlPlane:
     ) -> SpecialistExecutionResult:
         record = await self._tasks.get(request_id)
         capabilities = self._local_capabilities(record)
-        token = SpecialistCancellation()
+        owner_id = stable_specialist_cancellation_owner_id(
+            request_id=request_id, invocation_id=invocation_id
+        )
+        token = SpecialistCancellation(owner_id=owner_id)
         with self._lock:
             if invocation_id in self._active:
                 raise SpecialistInvocationInProgressError(
@@ -73,6 +87,16 @@ class SpecialistExecutionControlPlane:
                 )
             self._active[invocation_id] = token
         try:
+            try:
+                self._cancellation_owners.register(
+                    request_id=request_id,
+                    owner_id=owner_id,
+                    target=token,
+                )
+            except CancellationRegistrationBlockedError as exc:
+                raise SpecialistExecutionCancelledError(
+                    "durable task cancellation blocks specialist entry"
+                ) from exc
             return await self._adapter.execute_record(
                 record=record,
                 invocation_id=invocation_id,
@@ -81,6 +105,11 @@ class SpecialistExecutionControlPlane:
                 cancellation=token,
             )
         finally:
+            self._cancellation_owners.unregister(
+                request_id=request_id,
+                owner_id=owner_id,
+                target=token,
+            )
             with self._lock:
                 self._active.pop(invocation_id, None)
 

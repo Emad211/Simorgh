@@ -88,6 +88,7 @@ class ToolCallRequest(BaseModel):
     tool_id: str = Field(min_length=1, max_length=128)
     connector_id: str = Field(min_length=1, max_length=128)
     allowed_data_sources: frozenset[str] = Field(default_factory=frozenset, max_length=256)
+    cancellation_owner_id: UUID | None = None
     effect: ToolEffect = ToolEffect.READ_ONLY
     arguments: dict[str, Any] = Field(default_factory=dict, max_length=256)
 
@@ -174,6 +175,7 @@ class BudgetedToolGateway:
                 effect=InvocationEffect.READ_ONLY,
                 tool_id=request.tool_id,
                 connector_id=request.connector_id,
+                cancellation_owner_id=request.cancellation_owner_id,
             )
         except InvocationStoreError as exc:
             raise ToolGatewayError("tool invocation identity could not be durably claimed") from exc
