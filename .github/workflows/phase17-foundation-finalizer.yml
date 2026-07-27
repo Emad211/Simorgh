@@ -34,7 +34,12 @@ jobs:
           python .github/scripts/phase17_harden_foundation.py > "$RUNNER_TEMP/patch.log" 2>&1
           status=$?
           if [[ "$status" == "0" ]]; then
+            python .github/scripts/phase17_fix_foundation_types.py >> "$RUNNER_TEMP/patch.log" 2>&1
+            status=$?
+          fi
+          if [[ "$status" == "0" ]]; then
             rm -f .github/scripts/phase17_harden_foundation.py
+            rm -f .github/scripts/phase17_fix_foundation_types.py
             rm -f .github/workflows/phase17-foundation-finalizer.yml
             git diff --check >> "$RUNNER_TEMP/patch.log" 2>&1
             status=$?
