@@ -1,4 +1,4 @@
-name: Phase 1.6 Cancellation Coordinator Gate v2
+name: Phase 1.6 Cancellation Coordinator Gate v3
 
 on:
   pull_request:
@@ -55,6 +55,7 @@ jobs:
                   '"             previous_store.close()\\n',
                   '"            previous_store.close()\\n',
                   "reset anchor indentation",
+                  2,
               ),
               (
                   '"    CancellationOwnerRegistry,\\n"\n'
@@ -63,6 +64,7 @@ jobs:
                   '"    CancellationOwnerRegistry,\\n"\n'
                   '              ")\\n",',
                   "control-plane unused global registry import",
+                  1,
               ),
               (
                   '        input_fingerprint=(kind.value[0] * 64),',
@@ -72,6 +74,7 @@ jobs:
                   '            InvocationKind.SPECIALIST: "c",\\n'
                   '        }[kind] * 64),',
                   "test fingerprint alphabet",
+                  1,
               ),
               (
                   '              expected=1,\n'
@@ -81,13 +84,16 @@ jobs:
                   '          )\n\n'
                   '          app = "services/core/src/simorgh_core/app.py"',
                   "API conflict mapping anchor count",
+                  1,
               ),
           )
-          for old, new, label in fixes:
+          for old, new, label, expected in fixes:
               count = embedded.count(old)
-              if count != 1:
-                  raise SystemExit(f"preflight fix {label} count={count}, expected=1")
-              embedded = embedded.replace(old, new, 1)
+              if count != expected:
+                  raise SystemExit(
+                      f"preflight fix {label} count={count}, expected={expected}"
+                  )
+              embedded = embedded.replace(old, new)
 
           exec(
               compile(embedded, "phase16-coordinator.py", "exec"),
@@ -175,7 +181,7 @@ jobs:
           exit 0
 
       - name: Upload quality diagnostic
-        if: always()
+        if: always() && steps.patch.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: phase16-coordinator-quality-diagnostic
@@ -184,7 +190,7 @@ jobs:
           if-no-files-found: error
 
       - name: Stop on quality failure
-        if: steps.quality.outcome != 'success'
+        if: steps.quality.outcome != 'success' && steps.patch.outcome == 'success'
         shell: bash
         run: exit 1
 
