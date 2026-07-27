@@ -1,4 +1,4 @@
-name: Phase 1.7 Context Integration Finalizer
+name: Phase 1.7 Context Integration Finalizer v2
 
 on:
   pull_request:
