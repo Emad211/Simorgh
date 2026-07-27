@@ -1,171 +1,19 @@
-name: Phase 1.6 Cancellation Coordinator Gate v7
+name: Phase 1.6 Coordinator Registry Probe v8
 
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - main
     paths:
       - .github/workflows/phase16-coordinator-launcher.yml
 
 permissions:
-  contents: write
-
-concurrency:
-  group: phase16-cancellation-coordinator-final
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  validate-publish:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-
-      - name: Apply exact coordinator patch
-        id: patch
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e
-          python - <<'PY' > "$RUNNER_TEMP/phase16-final-patch.log" 2>&1
-          from pathlib import Path
-
-          source = Path(
-              ".github/workflows/phase16-cancellation-coordinator.yml"
-          ).read_text(encoding="utf-8")
-          start = "          python - <<'PY'\n"
-          end = "\n          PY\n"
-          if source.count(start) != 1:
-              raise SystemExit("coordinator source start marker is not unique")
-          remainder = source.split(start, 1)[1]
-          if remainder.count(end) != 1:
-              raise SystemExit("coordinator source end marker is not unique")
-          raw = remainder.split(end, 1)[0]
-          embedded = "\n".join(
-              line[10:] if line.startswith("          ") else line
-              for line in raw.splitlines()
-          )
-
-          old_reset = '"             previous_store.close()\\n'
-          if embedded.count(old_reset) != 2:
-              raise SystemExit("reset anchor preflight cardinality changed")
-          embedded = embedded.replace(
-              old_reset,
-              '"            previous_store.close()\\n',
-          )
-
-          old_fingerprint = '        input_fingerprint=(kind.value[0] * 64),'
-          if embedded.count(old_fingerprint) != 1:
-              raise SystemExit("test fingerprint preflight cardinality changed")
-          embedded = embedded.replace(
-              old_fingerprint,
-              '        input_fingerprint=({\\n'
-              '            InvocationKind.MODEL: "a",\\n'
-              '            InvocationKind.TOOL: "b",\\n'
-              '            InvocationKind.SPECIALIST: "c",\\n'
-              '        }[kind] * 64),',
-          )
-
-          api_start = embedded.index(
-              'api = "services/core/src/simorgh_core/agents/api.py"'
-          )
-          app_start = embedded.index(
-              'app = "services/core/src/simorgh_core/app.py"'
-          )
-          api_segment = embedded[api_start:app_start]
-          if api_segment.count("expected=1") != 1:
-              raise SystemExit("API conflict anchor preflight cardinality changed")
-          api_segment = api_segment.replace("expected=1", "expected=2")
-          embedded = embedded[:api_start] + api_segment + embedded[app_start:]
-
-          old_tool_patch = '''replace_count(
-    tool_gateway,
-    "                connector_id=request.connector_id,\n"
-    "            )\n",
-    "                connector_id=request.connector_id,\n"
-    "                cancellation_owner_id=request.cancellation_owner_id,\n"
-    "            )\n",
-    expected=1,
-)'''
-          new_tool_patch = '''replace_count(
-    tool_gateway,
-    "                effect=InvocationEffect.READ_ONLY,\n"
-    "                tool_id=request.tool_id,\n"
-    "                connector_id=request.connector_id,\n"
-    "            )\n",
-    "                effect=InvocationEffect.READ_ONLY,\n"
-    "                tool_id=request.tool_id,\n"
-    "                connector_id=request.connector_id,\n"
-    "                cancellation_owner_id=request.cancellation_owner_id,\n"
-    "            )\n",
-)'''
-          if embedded.count(old_tool_patch) != 1:
-              raise SystemExit("tool gateway owner patch preflight cardinality changed")
-          embedded = embedded.replace(old_tool_patch, new_tool_patch)
-
-          exec(
-              compile(embedded, "phase16-coordinator.py", "exec"),
-              {"__name__": "__main__"},
-          )
-          print("coordinator_patch_complete=true")
-          PY
-          status=$?
-          if [[ "$status" == "0" ]]; then
-            rm -f .github/workflows/phase16-cancellation-coordinator.yml
-            rm -f .github/workflows/phase16-coordinator-launcher.yml
-            rm -f .github/workflows/phase16-coordinator-runner.yml
-            git diff --check >> "$RUNNER_TEMP/phase16-final-patch.log" 2>&1
-            status=$?
-          fi
-          echo "patch_status=$status" >> "$RUNNER_TEMP/phase16-final-patch.log"
-          exit "$status"
-
-      - name: Upload patch diagnostic
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: phase16-final-patch-diagnostic
-          path: ${{ runner.temp }}/phase16-final-patch.log
-          retention-days: 2
-          if-no-files-found: error
-
-      - name: Stop on patch failure
-        if: steps.patch.outcome != 'success'
-        shell: bash
-        run: exit 1
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Validate complete Core runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -e '.[dev]'
-          ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_control_plane.py
-          ruff check .
-          mypy services/core/src
-          pytest
-
-      - name: Publish exact tested head
-        shell: bash
-        env:
-          BRANCH: core/cancellation-propagation
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'core: propagate durable cancellation through native control plane'
-          git fetch origin "$BRANCH"
-          remote_head=$(git rev-parse "origin/$BRANCH")
-          test "$remote_head" = "$EXPECTED_HEAD"
-          git push origin "HEAD:refs/heads/$BRANCH"
+      - name: Confirm workflow registration
+        run: echo "phase16_coordinator_registry=ready"
