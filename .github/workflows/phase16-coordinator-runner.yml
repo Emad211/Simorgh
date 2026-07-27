@@ -1,4 +1,4 @@
-name: Phase 1.6 Coordinator Runner v5
+name: Phase 1.6 Coordinator Runner v6
 
 on:
   pull_request:
@@ -80,6 +80,31 @@ jobs:
               raise SystemExit("API conflict anchor preflight cardinality changed")
           api_segment = api_segment.replace("expected=1", "expected=2")
           embedded = embedded[:api_start] + api_segment + embedded[app_start:]
+
+          old_tool_patch = '''replace_count(
+    tool_gateway,
+    "                connector_id=request.connector_id,\n"
+    "            )\n",
+    "                connector_id=request.connector_id,\n"
+    "                cancellation_owner_id=request.cancellation_owner_id,\n"
+    "            )\n",
+    expected=1,
+)'''
+          new_tool_patch = '''replace_count(
+    tool_gateway,
+    "                effect=InvocationEffect.READ_ONLY,\n"
+    "                tool_id=request.tool_id,\n"
+    "                connector_id=request.connector_id,\n"
+    "            )\n",
+    "                effect=InvocationEffect.READ_ONLY,\n"
+    "                tool_id=request.tool_id,\n"
+    "                connector_id=request.connector_id,\n"
+    "                cancellation_owner_id=request.cancellation_owner_id,\n"
+    "            )\n",
+)'''
+          if embedded.count(old_tool_patch) != 1:
+              raise SystemExit("tool gateway owner patch preflight cardinality changed")
+          embedded = embedded.replace(old_tool_patch, new_tool_patch)
 
           exec(
               compile(embedded, "phase16-coordinator.py", "exec"),
