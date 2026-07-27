@@ -1,4 +1,4 @@
-name: Phase 1.6 Coordinator Runner v3
+name: Phase 1.6 Coordinator Runner v4
 
 on:
   pull_request:
@@ -70,10 +70,10 @@ jobs:
           )
 
           api_start = embedded.index(
-              '          api = "services/core/src/simorgh_core/agents/api.py"'
+              'api = "services/core/src/simorgh_core/agents/api.py"'
           )
           app_start = embedded.index(
-              '          app = "services/core/src/simorgh_core/app.py"'
+              'app = "services/core/src/simorgh_core/app.py"'
           )
           api_segment = embedded[api_start:app_start]
           expected_anchor = "              expected=1,\n"
