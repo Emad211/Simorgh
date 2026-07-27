@@ -1,0 +1,993 @@
+name: Phase 1.6 Cancellation Coordinator Source
+
+on:
+  push:
+    branches:
+      - core/cancellation-propagation
+    paths:
+      - .github/workflows/phase16-cancellation-coordinator.yml
+
+permissions:
+  contents: write
+
+jobs:
+  source-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply coordinator implementation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_count(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"{path}: anchor count {count}, expected {expected}: {old[:100]!r}"
+                  )
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          contracts = "services/core/src/simorgh_core/agents/cancellation_contracts.py"
+          replace_count(
+              contracts,
+              "    LATE_REGISTRATION_BLOCKED = \"late_registration_blocked\"\n",
+              "    LATE_REGISTRATION_BLOCKED = \"late_registration_blocked\"\n"
+              "    SIGNAL_FAILED = \"signal_failed\"\n",
+          )
+
+          state = "services/core/src/simorgh_core/agents/task_state.py"
+          replace_count(
+              state,
+              "from simorgh_core.agents.budget import BudgetSnapshot\n",
+              "from simorgh_core.agents.budget import BudgetSnapshot\n"
+              "from simorgh_core.agents.cancellation_contracts import (\n"
+              "    TaskCancellationRequest,\n"
+              "    TaskCancellationResult,\n"
+              ")\n",
+          )
+          replace_count(
+              state,
+              "    cancel_reason: str | None = Field(default=None, max_length=1_000)\n"
+              "    detail: str = Field(default=\"\", max_length=2_000)\n",
+              "    cancel_reason: str | None = Field(default=None, max_length=1_000)\n"
+              "    cancellation_request: TaskCancellationRequest | None = None\n"
+              "    cancellation_result: TaskCancellationResult | None = None\n"
+              "    detail: str = Field(default=\"\", max_length=2_000)\n",
+          )
+          replace_count(
+              state,
+              "        if self.phase == AgentTaskPhase.ROUTING:\n",
+              "        if self.cancellation_request is not None:\n"
+              "            if self.cancellation_request.request_id != self.request_id:\n"
+              "                raise ValueError(\n"
+              "                    \"cancellation request does not belong to task record\"\n"
+              "                )\n"
+              "            if self.phase != AgentTaskPhase.CANCELLED:\n"
+              "                raise ValueError(\n"
+              "                    \"typed cancellation metadata requires cancelled task phase\"\n"
+              "                )\n"
+              "        if self.cancellation_result is not None:\n"
+              "            if self.cancellation_request is None:\n"
+              "                raise ValueError(\n"
+              "                    \"cancellation result requires an accepted request\"\n"
+              "                )\n"
+              "            if self.cancellation_result.request != self.cancellation_request:\n"
+              "                raise ValueError(\n"
+              "                    \"cancellation result request does not match task authority\"\n"
+              "                )\n\n"
+              "        if self.phase == AgentTaskPhase.ROUTING:\n",
+          )
+          replace_count(
+              state,
+              "            if self.budget.cancelled:\n"
+              "                raise ValueError(\"non-cancelled task cannot contain a cancelled budget\")\n",
+              "            if self.budget.cancelled:\n"
+              "                raise ValueError(\"non-cancelled task cannot contain a cancelled budget\")\n"
+              "            if (\n"
+              "                self.cancellation_request is not None\n"
+              "                or self.cancellation_result is not None\n"
+              "            ):\n"
+              "                raise ValueError(\n"
+              "                    \"non-cancelled task cannot contain cancellation authority\"\n"
+              "                )\n",
+          )
+
+          task_store = "services/core/src/simorgh_core/agents/task_store.py"
+          replace_count(
+              task_store,
+              "    if (\n"
+              "        existing.record.cancel_reason is not None\n"
+              "        and candidate.record.cancel_reason != existing.record.cancel_reason\n"
+              "    ):\n"
+              "        raise AgentTaskStoreConflictError(\"durable cancellation reason is immutable\")\n\n",
+              "    if (\n"
+              "        existing.record.cancel_reason is not None\n"
+              "        and candidate.record.cancel_reason != existing.record.cancel_reason\n"
+              "    ):\n"
+              "        raise AgentTaskStoreConflictError(\"durable cancellation reason is immutable\")\n"
+              "    if (\n"
+              "        existing.record.cancellation_request is not None\n"
+              "        and candidate.record.cancellation_request\n"
+              "        != existing.record.cancellation_request\n"
+              "    ):\n"
+              "        raise AgentTaskStoreConflictError(\n"
+              "            \"durable cancellation request is immutable\"\n"
+              "        )\n"
+              "    if (\n"
+              "        existing.record.cancellation_result is not None\n"
+              "        and candidate.record.cancellation_result\n"
+              "        != existing.record.cancellation_result\n"
+              "    ):\n"
+              "        raise AgentTaskStoreConflictError(\n"
+              "            \"durable cancellation result is immutable\"\n"
+              "        )\n\n",
+          )
+
+          specialist_execution = (
+              "services/core/src/simorgh_core/agents/specialist_execution.py"
+          )
+          replace_count(
+              specialist_execution,
+              "        cancellation_owner_id=uuid5(\n"
+              "            NAMESPACE_URL,\n"
+              "            f\"simorgh-cancellation:{task.request_id}:{invocation_id}\",\n"
+              "        ),\n",
+              "        cancellation_owner_id=stable_specialist_cancellation_owner_id(\n"
+              "            request_id=task.request_id, invocation_id=invocation_id\n"
+              "        ),\n",
+          )
+          replace_count(
+              specialist_execution,
+              "def _resolve_task_kind(\n",
+              "def stable_specialist_cancellation_owner_id(\n"
+              "    *, request_id: UUID, invocation_id: UUID\n"
+              ") -> UUID:\n"
+              "    return uuid5(\n"
+              "        NAMESPACE_URL,\n"
+              "        f\"simorgh-cancellation:{request_id}:{invocation_id}\",\n"
+              "    )\n\n\n"
+              "def _resolve_task_kind(\n",
+          )
+
+          specialist_runtime = "services/core/src/simorgh_core/agents/specialist_runtime.py"
+          replace_count(
+              specialist_runtime,
+              "                effect=request.effect,\n"
+              "            )\n",
+              "                effect=request.effect,\n"
+              "                cancellation_owner_id=request.cancellation_owner_id,\n"
+              "            )\n",
+              expected=1,
+          )
+
+          specialist_service = "services/core/src/simorgh_core/agents/specialist_service.py"
+          replace_count(
+              specialist_service,
+              "from simorgh_core.agents.contracts import SideEffectPolicy\n",
+              "from simorgh_core.agents.cancellation_runtime import (\n"
+              "    CancellationOwnerRegistry,\n"
+              "    CancellationRegistrationBlockedError,\n"
+              "    cancellation_owner_registry,\n"
+              ")\n"
+              "from simorgh_core.agents.contracts import SideEffectPolicy\n",
+          )
+          replace_count(
+              specialist_service,
+              "    SpecialistExecutionPolicyError,\n"
+              "    SpecialistExecutionResult,\n",
+              "    SpecialistExecutionCancelledError,\n"
+              "    SpecialistExecutionPolicyError,\n"
+              "    SpecialistExecutionResult,\n",
+          )
+          replace_count(
+              specialist_service,
+              "    SpecialistExecutorRegistry,\n"
+              ")\n",
+              "    SpecialistExecutorRegistry,\n"
+              "    stable_specialist_cancellation_owner_id,\n"
+              ")\n",
+          )
+          replace_count(
+              specialist_service,
+              "        invocation_store: InvocationStore,\n"
+              "        wall_clock_millis: Callable[[], int] | None = None,\n",
+              "        invocation_store: InvocationStore,\n"
+              "        cancellation_registry: CancellationOwnerRegistry | None = None,\n"
+              "        wall_clock_millis: Callable[[], int] | None = None,\n",
+          )
+          replace_count(
+              specialist_service,
+              "        self._invocations = invocation_store\n"
+              "        self._adapter = SpecialistTaskExecutionAdapter(\n",
+              "        self._invocations = invocation_store\n"
+              "        self._cancellation_owners = (\n"
+              "            cancellation_registry or cancellation_owner_registry\n"
+              "        )\n"
+              "        self._adapter = SpecialistTaskExecutionAdapter(\n",
+          )
+          replace_count(
+              specialist_service,
+              "        token = SpecialistCancellation()\n"
+              "        with self._lock:\n"
+              "            if invocation_id in self._active:\n"
+              "                raise SpecialistInvocationInProgressError(\n"
+              "                    f\"specialist invocation {invocation_id} is already active\"\n"
+              "                )\n"
+              "            self._active[invocation_id] = token\n"
+              "        try:\n"
+              "            return await self._adapter.execute_record(\n",
+              "        owner_id = stable_specialist_cancellation_owner_id(\n"
+              "            request_id=request_id, invocation_id=invocation_id\n"
+              "        )\n"
+              "        token = SpecialistCancellation(owner_id=owner_id)\n"
+              "        with self._lock:\n"
+              "            if invocation_id in self._active:\n"
+              "                raise SpecialistInvocationInProgressError(\n"
+              "                    f\"specialist invocation {invocation_id} is already active\"\n"
+              "                )\n"
+              "            self._active[invocation_id] = token\n"
+              "        try:\n"
+              "            try:\n"
+              "                self._cancellation_owners.register(\n"
+              "                    request_id=request_id,\n"
+              "                    owner_id=owner_id,\n"
+              "                    target=token,\n"
+              "                )\n"
+              "            except CancellationRegistrationBlockedError as exc:\n"
+              "                raise SpecialistExecutionCancelledError(\n"
+              "                    \"durable task cancellation blocks specialist entry\"\n"
+              "                ) from exc\n"
+              "            return await self._adapter.execute_record(\n",
+          )
+          replace_count(
+              specialist_service,
+              "        finally:\n"
+              "            with self._lock:\n"
+              "                self._active.pop(invocation_id, None)\n",
+              "        finally:\n"
+              "            self._cancellation_owners.unregister(\n"
+              "                request_id=request_id,\n"
+              "                owner_id=owner_id,\n"
+              "                target=token,\n"
+              "            )\n"
+              "            with self._lock:\n"
+              "                self._active.pop(invocation_id, None)\n",
+          )
+
+          tool_gateway = "services/core/src/simorgh_core/agents/tool_gateway.py"
+          replace_count(
+              tool_gateway,
+              "    allowed_data_sources: frozenset[str] = Field(default_factory=frozenset, max_length=256)\n"
+              "    effect: ToolEffect = ToolEffect.READ_ONLY\n",
+              "    allowed_data_sources: frozenset[str] = Field(default_factory=frozenset, max_length=256)\n"
+              "    cancellation_owner_id: UUID | None = None\n"
+              "    effect: ToolEffect = ToolEffect.READ_ONLY\n",
+          )
+          replace_count(
+              tool_gateway,
+              "                connector_id=request.connector_id,\n"
+              "            )\n",
+              "                connector_id=request.connector_id,\n"
+              "                cancellation_owner_id=request.cancellation_owner_id,\n"
+              "            )\n",
+              expected=1,
+          )
+
+          github_service = "services/core/src/simorgh_core/agents/github_read_service.py"
+          replace_count(
+              github_service,
+              "                allowed_data_sources=task.allowed_data_sources,\n"
+              "                effect=ToolEffect.READ_ONLY,\n",
+              "                allowed_data_sources=task.allowed_data_sources,\n"
+              "                cancellation_owner_id=request.cancellation_owner_id,\n"
+              "                effect=ToolEffect.READ_ONLY,\n",
+          )
+
+          model_gateway = "services/core/src/simorgh_core/agents/model_gateway.py"
+          replace_count(
+              model_gateway,
+              "    policy_hash: str = Field(\n",
+              "    cancellation_owner_id: UUID | None = None\n"
+              "    policy_hash: str = Field(\n",
+          )
+          replace_count(
+              model_gateway,
+              "                model_id=spec.model_id,\n"
+              "            )\n",
+              "                model_id=spec.model_id,\n"
+              "                cancellation_owner_id=request.cancellation_owner_id,\n"
+              "            )\n",
+              expected=1,
+          )
+
+          control = "services/core/src/simorgh_core/agents/control_plane.py"
+          replace_count(
+              control,
+              "from uuid import UUID\n",
+              "from uuid import UUID\n\n"
+              "from simorgh_core.agents.cancellation_contracts import (\n"
+              "    AdapterCancellationDisposition,\n"
+              "    CancellationDisposition,\n"
+              "    CancellationRequesterAuthority,\n"
+              "    CancellationSignalDisposition,\n"
+              "    InvocationCancellationOutcome,\n"
+              "    TaskCancellationRequest,\n"
+              "    TaskCancellationResult,\n"
+              "    stable_cancellation_audit_id,\n"
+              "    stable_cancellation_id,\n"
+              ")\n"
+              "from simorgh_core.agents.cancellation_runtime import (\n"
+              "    CancellationOwnerRegistry,\n"
+              "    cancellation_owner_registry,\n"
+              ")\n",
+          )
+          replace_count(
+              control,
+              "from simorgh_core.agents.invocations import canonical_fingerprint\n",
+              "from simorgh_core.agents.invocations import (\n"
+              "    InMemoryInvocationStore,\n"
+              "    InvocationPhase,\n"
+              "    InvocationStore,\n"
+              "    canonical_fingerprint,\n"
+              ")\n",
+          )
+          replace_count(
+              control,
+              "        store: AgentTaskStore | None = None,\n"
+              "        wall_clock_millis: Callable[[], int] | None = None,\n",
+              "        store: AgentTaskStore | None = None,\n"
+              "        invocation_store: InvocationStore | None = None,\n"
+              "        cancellation_registry: CancellationOwnerRegistry | None = None,\n"
+              "        wall_clock_millis: Callable[[], int] | None = None,\n",
+          )
+          replace_count(
+              control,
+              "        self._store = store or InMemoryAgentTaskStore()\n"
+              "        self._wall_clock_millis = wall_clock_millis or (\n",
+              "        self._store = store or InMemoryAgentTaskStore()\n"
+              "        self._invocations = invocation_store or InMemoryInvocationStore()\n"
+              "        self._cancellation_owners = (\n"
+              "            cancellation_registry\n"
+              "            or CancellationOwnerRegistry(self._invocations)\n"
+              "        )\n"
+              "        self._wall_clock_millis = wall_clock_millis or (\n",
+          )
+          replace_count(
+              control,
+              "    async def reset_to_memory_store(self) -> None:\n",
+              "    async def configure_invocation_store(\n"
+              "        self, store: InvocationStore\n"
+              "    ) -> None:\n"
+              "        store.load()\n"
+              "        with self._lock:\n"
+              "            self._invocations = store\n"
+              "            self._cancellation_owners.configure_store(store)\n\n"
+              "    async def reset_to_memory_store(self) -> None:\n",
+          )
+          replace_count(
+              control,
+              "             previous_store.close()\n\n"
+              "    async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:\n",
+              "             previous_store.close()\n"
+              "            replacement_invocations = InMemoryInvocationStore()\n"
+              "            self._invocations = replacement_invocations\n"
+              "            self._cancellation_owners.configure_store(\n"
+              "                replacement_invocations\n"
+              "            )\n\n"
+              "    async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:\n",
+          )
+          start = control
+          old_cancel = '''    async def cancel(
+        self,
+        *,
+        request_id: UUID,
+        reason: str,
+    ) -> AgentTaskRecord:
+        normalized_reason = reason.strip() or "operator requested cancellation"
+        with self._lock:
+            self._require_store_healthy_locked()
+            state = self._states.get(request_id)
+            if state is None:
+                raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
+            if state.record.phase in {
+                AgentTaskPhase.CANCELLED,
+                AgentTaskPhase.EXPIRED,
+            }:
+                return state.record
+
+            state.cancelled = True
+            state.cancel_reason = normalized_reason[:1_000]
+            state.account.cancel()
+            cancelled_record = AgentTaskRecord(
+                request_id=request_id,
+                phase=AgentTaskPhase.CANCELLED,
+                created_at_ms=state.record.created_at_ms,
+                updated_at_ms=self._next_record_time(state.record.updated_at_ms),
+                task=state.task,
+                routing_decision=state.record.routing_decision,
+                budget=state.account.snapshot(),
+                cancel_reason=state.cancel_reason,
+                detail=state.cancel_reason,
+            )
+            self._persist_transition_locked(
+                state=state,
+                account=state.account,
+                record=cancelled_record,
+            )
+            return cancelled_record
+'''
+          new_cancel = '''    async def cancel(
+        self,
+        *,
+        request_id: UUID,
+        reason: str,
+        cancellation_id: UUID | None = None,
+        reason_code: str = "operator_requested",
+        requester_authority: CancellationRequesterAuthority = (
+            CancellationRequesterAuthority.OPERATOR
+        ),
+    ) -> AgentTaskRecord:
+        normalized_reason = " ".join(reason.strip().split())[:1_000]
+        if not normalized_reason:
+            normalized_reason = "operator requested cancellation"
+        with self._lock:
+            self._require_store_healthy_locked()
+            state = self._states.get(request_id)
+            if state is None:
+                raise AgentTaskNotFoundError(f"agent task {request_id} was not found")
+            if state.record.phase == AgentTaskPhase.EXPIRED:
+                return state.record
+
+            existing_request = state.record.cancellation_request
+            if existing_request is not None:
+                candidate_id = cancellation_id or existing_request.cancellation_id
+                candidate = existing_request.model_copy(
+                    update={
+                        "cancellation_id": candidate_id,
+                        "reason_code": reason_code,
+                        "operator_reason": normalized_reason,
+                        "requester_authority": requester_authority,
+                    }
+                )
+                if candidate != existing_request:
+                    raise AgentTaskConflictError(
+                        "cancellation identity was replayed with different content"
+                    )
+                cancellation_request = existing_request
+                if state.record.cancellation_result is not None:
+                    return state.record
+            else:
+                now = self._now_ms()
+                resolved_id = cancellation_id or stable_cancellation_id(
+                    request_id=request_id,
+                    reason_code=reason_code,
+                    operator_reason=normalized_reason,
+                    requester_authority=requester_authority,
+                )
+                cancellation_request = TaskCancellationRequest(
+                    request_id=request_id,
+                    cancellation_id=resolved_id,
+                    requested_at_ms=now,
+                    reason_code=reason_code,
+                    operator_reason=normalized_reason,
+                    requester_authority=requester_authority,
+                    observed_task_phase=state.record.phase.value,
+                    observed_task_version=state.record.updated_at_ms,
+                )
+                state.cancelled = True
+                state.cancel_reason = normalized_reason
+                state.account.cancel()
+                accepted_record = AgentTaskRecord(
+                    request_id=request_id,
+                    phase=AgentTaskPhase.CANCELLED,
+                    created_at_ms=state.record.created_at_ms,
+                    updated_at_ms=self._next_record_time(
+                        state.record.updated_at_ms
+                    ),
+                    task=state.task,
+                    routing_decision=state.record.routing_decision,
+                    budget=state.account.snapshot(),
+                    cancel_reason=state.cancel_reason,
+                    cancellation_request=cancellation_request,
+                    detail=state.cancel_reason,
+                )
+                self._persist_transition_locked(
+                    state=state,
+                    account=state.account,
+                    record=accepted_record,
+                )
+
+        fence = self._invocations.accept_cancellation(cancellation_request)
+        signal_dispositions = self._cancellation_owners.signal_request(
+            request_id=request_id,
+            reason=normalized_reason,
+        )
+        settled = self._invocations.settle_cancellation(request_id)
+        settled_by_id = {record.invocation_id: record for record in settled}
+        outcomes: list[InvocationCancellationOutcome] = []
+        terminal_count = 0
+        pending_cancelled_count = 0
+        reserved_uncertain_count = 0
+        signalled_count = 0
+        for owned in fence.owned_invocations:
+            final = settled_by_id[owned.invocation_id]
+            signal = (
+                signal_dispositions.get(
+                    owned.cancellation_owner_id,
+                    CancellationSignalDisposition.NOT_REGISTERED,
+                )
+                if owned.cancellation_owner_id is not None
+                else CancellationSignalDisposition.NOT_REGISTERED
+            )
+            if signal == CancellationSignalDisposition.ALREADY_SIGNALLED:
+                signal = CancellationSignalDisposition.SIGNALLED
+            if signal == CancellationSignalDisposition.SIGNALLED:
+                signalled_count += 1
+            if owned.terminal:
+                terminal_count += 1
+                adapter = AdapterCancellationDisposition.ALREADY_TERMINAL
+            elif owned.state == InvocationPhase.PENDING.value:
+                pending_cancelled_count += 1
+                adapter = AdapterCancellationDisposition.PROVEN_NOT_ENTERED
+            else:
+                reserved_uncertain_count += 1
+                adapter = AdapterCancellationDisposition.NOT_SUPPORTED
+            outcomes.append(
+                InvocationCancellationOutcome(
+                    invocation_id=owned.invocation_id,
+                    prior_state=owned.state,
+                    final_state=final.state.value,
+                    signal_disposition=signal,
+                    adapter_disposition=adapter,
+                    usage_sha256=canonical_fingerprint(final.committed_usage),
+                )
+            )
+        if reserved_uncertain_count:
+            disposition = CancellationDisposition.PARTIALLY_UNCERTAIN
+        elif outcomes and terminal_count == len(outcomes):
+            disposition = CancellationDisposition.OBSERVED_TERMINAL
+        else:
+            disposition = CancellationDisposition.APPLIED
+        result = TaskCancellationResult(
+            request=cancellation_request,
+            accepted_at_ms=fence.accepted_at_ms,
+            completed_at_ms=max(fence.accepted_at_ms, self._now_ms()),
+            ownership_snapshot_sha256=fence.ownership_snapshot_sha256,
+            outcomes=tuple(outcomes),
+            terminal_count=terminal_count,
+            pending_cancelled_count=pending_cancelled_count,
+            reserved_uncertain_count=reserved_uncertain_count,
+            signalled_count=signalled_count,
+            disposition=disposition,
+            audit_event_id=stable_cancellation_audit_id(
+                request_id=request_id,
+                cancellation_id=cancellation_request.cancellation_id,
+                ownership_snapshot_sha256=fence.ownership_snapshot_sha256,
+            ),
+        )
+        with self._lock:
+            self._require_store_healthy_locked()
+            state = self._states[request_id]
+            if state.record.cancellation_result is not None:
+                return state.record
+            completed_record = state.record.model_copy(
+                update={
+                    "updated_at_ms": self._next_record_time(
+                        state.record.updated_at_ms
+                    ),
+                    "cancellation_result": result,
+                    "detail": "durable cancellation propagation completed",
+                }
+            )
+            self._persist_transition_locked(
+                state=state,
+                account=state.account,
+                record=completed_record,
+            )
+            return completed_record
+'''
+          replace_count(start, old_cancel, new_cancel)
+
+          api = "services/core/src/simorgh_core/agents/api.py"
+          replace_count(
+              api,
+              "from uuid import UUID\n",
+              "from uuid import UUID\n\n"
+              "from simorgh_core.agents.cancellation_contracts import (\n"
+              "    CancellationRequesterAuthority,\n"
+              ")\n"
+              "from simorgh_core.agents.cancellation_runtime import (\n"
+              "    cancellation_owner_registry,\n"
+              ")\n",
+          )
+          replace_count(
+              api,
+              "    )\n)\n\n\nclass AgentTaskCancelRequest",
+              "    ),\n"
+              "    cancellation_registry=cancellation_owner_registry,\n"
+              ")\n\n\nclass AgentTaskCancelRequest",
+          )
+          replace_count(
+              api,
+              "    reason: str = Field(default=\"operator requested cancellation\", max_length=1_000)\n",
+              "    cancellation_id: UUID | None = None\n"
+              "    reason_code: str = Field(\n"
+              "        default=\"operator_requested\",\n"
+              "        pattern=r\"^[a-z][a-z0-9_.-]{0,127}$\",\n"
+              "        max_length=128,\n"
+              "    )\n"
+              "    reason: str = Field(\n"
+              "        default=\"operator requested cancellation\", max_length=1_000\n"
+              "    )\n",
+          )
+          replace_count(
+              api,
+              "            request_id=request_id,\n"
+              "            reason=payload.reason,\n",
+              "            request_id=request_id,\n"
+              "            reason=payload.reason,\n"
+              "            cancellation_id=payload.cancellation_id,\n"
+              "            reason_code=payload.reason_code,\n"
+              "            requester_authority=CancellationRequesterAuthority.OPERATOR,\n",
+          )
+          replace_count(
+              api,
+              "    except AgentTaskNotFoundError as exc:\n"
+              "        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc\n"
+              "    except AgentTaskStoreUnavailableError as exc:\n"
+              "        raise _store_unavailable(exc) from exc\n",
+              "    except AgentTaskNotFoundError as exc:\n"
+              "        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc\n"
+              "    except AgentTaskConflictError as exc:\n"
+              "        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc\n"
+              "    except AgentTaskStoreUnavailableError as exc:\n"
+              "        raise _store_unavailable(exc) from exc\n",
+              expected=1,
+          )
+
+          app = "services/core/src/simorgh_core/app.py"
+          replace_count(
+              app,
+              "        await agent_task_control_plane.configure_store(task_store)\n"
+              "        task_store_configured = True\n"
+              "        invocation_store_registry.configure(invocation_store)\n",
+              "        await agent_task_control_plane.configure_store(task_store)\n"
+              "        task_store_configured = True\n"
+              "        await agent_task_control_plane.configure_invocation_store(\n"
+              "            invocation_store\n"
+              "        )\n"
+              "        invocation_store_registry.configure(invocation_store)\n",
+          )
+
+          tests = Path("services/core/tests/test_cancellation_control_plane.py")
+          tests.write_text(
+              '''from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from uuid import UUID, uuid4
+
+import pytest
+
+from simorgh_core.agents.cancellation_contracts import (
+    CancellationRequesterAuthority,
+    CancellationSignalDisposition,
+)
+from simorgh_core.agents.cancellation_runtime import (
+    CancellationOwnerRegistry,
+    CancellationRegistrationBlockedError,
+)
+from simorgh_core.agents.contracts import (
+    ExecutionMode,
+    InvocationState,
+    RiskClass,
+    TaskBudget,
+    TaskEnvelope,
+    TaskKind,
+    UsageVector,
+)
+from simorgh_core.agents.control_plane import (
+    AgentTaskConflictError,
+    AgentTaskControlPlane,
+)
+from simorgh_core.agents.defaults import default_specialist_registry
+from simorgh_core.agents.invocation_store import SQLiteInvocationStore
+from simorgh_core.agents.invocations import (
+    InMemoryInvocationStore,
+    InvocationCancellationFencedError,
+    InvocationEffect,
+    InvocationKind,
+)
+from simorgh_core.agents.router import SpecialistRouter
+from simorgh_core.agents.task_state import AgentTaskPhase
+from simorgh_core.agents.task_store import (
+    InMemoryAgentTaskStore,
+    SQLiteAgentTaskStore,
+)
+
+
+class SignalTarget:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.reasons: list[str] = []
+
+    def cancel(self, reason: str) -> None:
+        self.calls += 1
+        self.reasons.append(reason)
+
+
+def _task(*, request_id: UUID | None = None, marker: str = "") -> TaskEnvelope:
+    return TaskEnvelope(
+        request_id=request_id or uuid4(),
+        received_at_ms=1_000,
+        deadline_at_ms=61_000,
+        locale="fa-IR",
+        input_text=f"ریپازیتوری GitHub را بررسی کن {marker}",
+        requested_outcome="گزارش ساختاریافته",
+        explicit_task_kind=TaskKind.REPOSITORY_RESEARCH,
+        risk_class=RiskClass.READ_ONLY,
+        execution_mode=ExecutionMode.READ_ONLY,
+        allowed_data_sources=frozenset({"github"}),
+        budget=TaskBudget(
+            max_model_calls=1,
+            max_tool_calls=4,
+            max_input_tokens=4_000,
+            max_output_tokens=1_000,
+            max_estimated_cost_microusd=10_000,
+            max_elapsed_ms=30_000,
+            max_retries=0,
+            max_parallel_branches=1,
+        ),
+    )
+
+
+def _control_plane(
+    *,
+    task_store=None,
+    invocation_store=None,
+    registry=None,
+) -> AgentTaskControlPlane:
+    invocations = invocation_store or InMemoryInvocationStore(
+        wall_clock_millis=lambda: 2_500
+    )
+    owners = registry or CancellationOwnerRegistry(invocations)
+    return AgentTaskControlPlane(
+        router=SpecialistRouter(registry=default_specialist_registry()),
+        store=task_store or InMemoryAgentTaskStore(),
+        invocation_store=invocations,
+        cancellation_registry=owners,
+        wall_clock_millis=lambda: 2_000,
+        monotonic_millis=lambda: 100,
+    )
+
+
+def _begin_owned(
+    store,
+    *,
+    request_id: UUID,
+    kind: InvocationKind,
+    effect: InvocationEffect,
+    owner_id: UUID | None = None,
+):
+    kwargs = {}
+    usage = UsageVector()
+    if kind == InvocationKind.MODEL:
+        kwargs = {"provider_id": "fake", "model_id": "fake-model"}
+    elif kind == InvocationKind.TOOL:
+        kwargs = {"tool_id": "github.fetch-file", "connector_id": "github"}
+    record = store.begin(
+        invocation_id=uuid4(),
+        request_id=request_id,
+        agent_id="github.read",
+        agent_version="1.0.0",
+        operation=f"test:{kind.value}",
+        input_fingerprint=(kind.value[0] * 64),
+        kind=kind,
+        effect=effect,
+        cancellation_owner_id=owner_id,
+        **kwargs,
+    ).record
+    if kind == InvocationKind.MODEL:
+        usage = UsageVector(model_calls=1, input_tokens=10, output_tokens=10)
+    elif kind == InvocationKind.TOOL:
+        usage = UsageVector(tool_calls=1)
+    return record, usage
+
+
+def test_native_cancellation_propagates_across_all_invocation_kinds() -> None:
+    task_store = InMemoryAgentTaskStore()
+    invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 2_500)
+    owners = CancellationOwnerRegistry(invocation_store)
+    control = _control_plane(
+        task_store=task_store,
+        invocation_store=invocation_store,
+        registry=owners,
+    )
+    task = _task(marker="PRIVATE_TASK_MARKER_7f1")
+    routed = asyncio.run(control.submit(task))
+    owner_id = uuid4()
+    target = SignalTarget()
+    specialist, _ = _begin_owned(
+        invocation_store,
+        request_id=task.request_id,
+        kind=InvocationKind.SPECIALIST,
+        effect=InvocationEffect.READ_ONLY,
+        owner_id=owner_id,
+    )
+    model, model_usage = _begin_owned(
+        invocation_store,
+        request_id=task.request_id,
+        kind=InvocationKind.MODEL,
+        effect=InvocationEffect.READ_ONLY,
+    )
+    tool, tool_usage = _begin_owned(
+        invocation_store,
+        request_id=task.request_id,
+        kind=InvocationKind.TOOL,
+        effect=InvocationEffect.READ_ONLY,
+    )
+    invocation_store.reserve(invocation_id=model.invocation_id, usage=model_usage)
+    invocation_store.reserve(invocation_id=tool.invocation_id, usage=tool_usage)
+    owners.register(request_id=task.request_id, owner_id=owner_id, target=target)
+
+    cancelled = asyncio.run(
+        control.cancel(
+            request_id=task.request_id,
+            reason="کاربر لغو کرد",
+            requester_authority=CancellationRequesterAuthority.OPERATOR,
+        )
+    )
+
+    assert routed.phase == AgentTaskPhase.ROUTED
+    assert cancelled.phase == AgentTaskPhase.CANCELLED
+    assert cancelled.cancellation_request is not None
+    assert cancelled.cancellation_result is not None
+    assert cancelled.cancellation_result.pending_cancelled_count == 1
+    assert cancelled.cancellation_result.reserved_uncertain_count == 2
+    assert cancelled.cancellation_result.signalled_count == 1
+    assert target.calls == 1
+    assert invocation_store.get(specialist.invocation_id).state == InvocationState.CANCELLED
+    assert invocation_store.get(model.invocation_id).state == InvocationState.UNKNOWN
+    assert invocation_store.get(tool.invocation_id).state == InvocationState.UNKNOWN
+    assert invocation_store.get(model.invocation_id).committed_usage == model_usage
+    assert invocation_store.get(tool.invocation_id).committed_usage == tool_usage
+    assert "PRIVATE_TASK_MARKER_7f1" not in cancelled.cancellation_result.model_dump_json()
+
+
+def test_identical_cancellation_is_exact_replay_and_changed_identity_conflicts() -> None:
+    invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 2_500)
+    control = _control_plane(invocation_store=invocation_store)
+    task = _task()
+    asyncio.run(control.submit(task))
+    cancellation_id = uuid4()
+
+    first = asyncio.run(
+        control.cancel(
+            request_id=task.request_id,
+            reason="لغو ثابت",
+            cancellation_id=cancellation_id,
+        )
+    )
+    replay = asyncio.run(
+        control.cancel(
+            request_id=task.request_id,
+            reason="لغو ثابت",
+            cancellation_id=cancellation_id,
+        )
+    )
+
+    assert replay == first
+    with pytest.raises(AgentTaskConflictError, match="different content"):
+        asyncio.run(
+            control.cancel(
+                request_id=task.request_id,
+                reason="محتوای تغییرکرده",
+                cancellation_id=cancellation_id,
+            )
+        )
+
+
+def test_late_owner_registration_is_signalled_before_execution() -> None:
+    invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 2_500)
+    owners = CancellationOwnerRegistry(invocation_store)
+    control = _control_plane(invocation_store=invocation_store, registry=owners)
+    task = _task()
+    asyncio.run(control.submit(task))
+    asyncio.run(control.cancel(request_id=task.request_id, reason="لغو"))
+    target = SignalTarget()
+
+    with pytest.raises(CancellationRegistrationBlockedError, match="late owner"):
+        owners.register(
+            request_id=task.request_id,
+            owner_id=uuid4(),
+            target=target,
+        )
+
+    assert target.calls == 1
+
+
+def test_duplicate_owner_signal_is_attempted_at_most_once() -> None:
+    invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 2_500)
+    owners = CancellationOwnerRegistry(invocation_store)
+    request_id = uuid4()
+    owner_id = uuid4()
+    target = SignalTarget()
+    owners.register(request_id=request_id, owner_id=owner_id, target=target)
+
+    first = owners.signal_request(request_id=request_id, reason="لغو")
+    second = owners.signal_request(request_id=request_id, reason="لغو دوباره")
+
+    assert first[owner_id] == CancellationSignalDisposition.SIGNALLED
+    assert second[owner_id] == CancellationSignalDisposition.ALREADY_SIGNALLED
+    assert target.calls == 1
+
+
+def test_cancelled_task_and_fence_survive_sqlite_reopen(tmp_path: Path) -> None:
+    task_path = tmp_path / "tasks.sqlite3"
+    invocation_path = tmp_path / "invocations.sqlite3"
+    task_store = SQLiteAgentTaskStore(task_path)
+    invocation_store = SQLiteInvocationStore(
+        invocation_path, wall_clock_millis=lambda: 2_500
+    )
+    owners = CancellationOwnerRegistry(invocation_store)
+    control = _control_plane(
+        task_store=task_store,
+        invocation_store=invocation_store,
+        registry=owners,
+    )
+    task = _task()
+    asyncio.run(control.submit(task))
+    asyncio.run(control.cancel(request_id=task.request_id, reason="لغو پایدار"))
+    task_store.close()
+    invocation_store.close()
+
+    reopened_tasks = SQLiteAgentTaskStore(task_path)
+    reopened_invocations = SQLiteInvocationStore(
+        invocation_path, wall_clock_millis=lambda: 3_000
+    )
+    recovered = _control_plane(
+        task_store=reopened_tasks,
+        invocation_store=reopened_invocations,
+        registry=CancellationOwnerRegistry(reopened_invocations),
+    )
+    record = asyncio.run(recovered.get(task.request_id))
+
+    assert record.phase == AgentTaskPhase.CANCELLED
+    assert record.cancellation_result is not None
+    assert reopened_invocations.get_cancellation_fence(task.request_id) is not None
+    with pytest.raises(InvocationCancellationFencedError):
+        _begin_owned(
+            reopened_invocations,
+            request_id=task.request_id,
+            kind=InvocationKind.SPECIALIST,
+            effect=InvocationEffect.READ_ONLY,
+        )
+    reopened_tasks.close()
+    reopened_invocations.close()
+''',
+              encoding="utf-8",
+          )
+          PY
+          rm -f .github/workflows/phase16-cancellation-coordinator.yml
+          rm -f .github/workflows/phase16-coordinator-launcher.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Validate complete coordinator
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check --fix services/core/src/simorgh_core/agents services/core/tests/test_cancellation_control_plane.py
+          ruff check .
+          mypy services/core/src
+          pytest
+
+      - name: Publish validated coordinator
+        run: echo source-only
