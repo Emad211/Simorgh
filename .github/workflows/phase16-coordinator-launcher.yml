@@ -1,4 +1,4 @@
-name: Phase 1.6 Cancellation Coordinator Gate v1
+name: Phase 1.6 Cancellation Coordinator Gate v2
 
 on:
   pull_request:
