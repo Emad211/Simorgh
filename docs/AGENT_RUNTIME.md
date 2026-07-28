@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52. Phase 1.6 durable cancellation propagation is validating in PR #54. The default execution API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52; durable cancellation propagation merged in PR #54. Phase 1.7 deterministic Context Compiler is validating in PR #56. The default execution API remains routing-only.
 
 ## Purpose
 
@@ -24,6 +24,8 @@ SpecialistRouter
            ↓
 RoutingDecision
     ↓
+deterministic taint-aware Context Compiler
+    ↓
 internal typed specialist execution
     ↓
 durable specialist invocation result or honest terminal uncertainty
@@ -35,7 +37,7 @@ The current `POST /v1/agent-tasks` endpoint performs durable routing only. It do
 
 ## Native durable authorities
 
-Four independent operational stores exist:
+Five independent operational stores exist:
 
 ```text
 AgentTaskStore
@@ -46,6 +48,9 @@ InvocationStore
 
 ResultStore
   immutable final typed result, artifact/evidence metadata, privacy, retention and replay
+
+ContextStore
+  immutable compiled specialist context, exact schemas, taint, omissions and replay
 
 AndroidActionJournal
   device command delivery, ACK, result and Android side-effect uncertainty
@@ -342,6 +347,12 @@ Exact completed read-tool calls replay after restart without invoking the connec
 Phase 1.5 adds a Core request compiler and reviewed GitHub manifest for exactly `github.search`, `github.fetch-file`, `github.fetch-issue` and `github.fetch-pr`. Current/execution-bound tasks require live fresh evidence; cached tasks remain policy-bounded. Typed projections are hash/byte bound and always tainted. Private, stale, oversized, binary-content or traversal-widening responses fail closed. Deterministic post-call rejection is a sanitized failed invocation with committed usage; transport uncertainty remains unknown.
 
 Tool arguments and raw connector responses are not copied to traces. Provider/tool exception messages are not persisted. See [`GOVERNED_GITHUB_READ_TOOLS.md`](GOVERNED_GITHUB_READ_TOOLS.md) and ADR 0018.
+
+## Context Compiler
+
+PR #56 adds a zero-external compiler between routing and specialist execution. It intersects the durable task/routing record, exact specialist policy, capability subset, remaining budget, reviewed tool schemas, registered output schema and approved task-bound materials into one immutable `SpecialistContextBundle`. User and external evidence remain tainted data; policy and schemas remain top-level typed authority.
+
+Compilation is deterministic across material and tool-schema permutations, records typed omissions/truncations, applies distinct project/decision/evidence limits, rejects concrete credential-shaped material without echo and replays from a retention-aware SQLite authority. Cancellation/deadline fences are checked before assembly, before claim and after claim. Compilation consumes no model/tool/connector/specialist call and creates no usage reservation. The schema-only repository-report family enables `github.read` context validation but does not implement the Phase 1.10 report executor or presentation. See [`CONTEXT_COMPILER.md`](CONTEXT_COMPILER.md) and ADR 0020.
 
 ## Specialist execution runtime
 

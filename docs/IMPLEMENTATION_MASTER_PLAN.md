@@ -46,8 +46,8 @@ Phase 1.2 Durable Invocation Store       COMPLETE — PR #39
 Phase 1.3 Specialist Execution           COMPLETE — PR #44
 Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
 Phase 1.5 Governed GitHub Read Tools     COMPLETE — PR #52
-Phase 1.6 Cancellation Propagation       VALIDATING — PR #54
-Phase 1.7 Context Compiler               QUEUED
+Phase 1.6 Cancellation Propagation       COMPLETE — PR #54
+Phase 1.7 Context Compiler               VALIDATING — PR #56
 Phase 1.8 End-to-End Trace               QUEUED
 Phase 1.9 Live Provider Staging          QUEUED
 Phase 1.10 Complete GitHub Workflow      QUEUED
@@ -356,9 +356,9 @@ GitHub read-only.
 - no raw connector response persisted as a specialist result;
 - no dynamically discovered tool permission.
 
-## 1.6 Cancellation propagation — VALIDATING
+## 1.6 Cancellation propagation — COMPLETE
 
-Implementation is active in PR #54 for issue #53. The current boundary adds durable task-to-invocation ownership, admission fences, conservative reserved-work settlement, optional typed adapter cancellation and privacy-safe audit metadata. Merge still requires exact-head Core/Android CI and review audit.
+Merged through PR #54 at `8fd7cb31275d037cb50a4da0ad86c7871f1be13f`. Issue #53 completed; ADR 0019 accepted. The validated implementation head `930c8bb679e415efbf2f8b412074b9875e8ca3b7` passed CI run `30280106847` with 360 Core tests and full Android build/JVM/lint/APK gates.
 
 ### Objective
 
@@ -383,7 +383,9 @@ A task cancellation must stop every future reservation and signal every owned ca
 - cancellation cannot erase committed cost;
 - completed results remain immutable.
 
-## 1.7 Context compiler and compaction — QUEUED
+## 1.7 Context compiler and compaction — VALIDATING
+
+Implementation is active in PR #56 for issue #55. The boundary now provides deterministic taint-aware compilation, exact tool/output-schema intersection, typed omission and truncation reports, distinct project/decision/evidence limits, schema-only repository-report authority, restart-safe replay, bounded terminal retention and cancellation fences before assembly, claim and handoff. Compilation performs zero model, tool, connector or specialist calls.
 
 ### Objective
 

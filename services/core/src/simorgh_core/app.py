@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from simorgh_core import __version__
 from simorgh_core.agents.api import agent_task_control_plane
 from simorgh_core.agents.api import router as agent_task_router
+from simorgh_core.agents.context_retention import RetentionAwareSQLiteContextStore
+from simorgh_core.agents.context_store import context_store_registry
 from simorgh_core.agents.invocation_store import (
     SQLiteInvocationStore,
     invocation_store_registry,
@@ -40,6 +42,7 @@ def _require_distinct_store_paths(settings: Settings) -> None:
         "agent_tasks": settings.simorgh_agent_task_store_path,
         "invocations": settings.simorgh_invocation_store_path,
         "results": settings.simorgh_result_store_path,
+        "contexts": settings.simorgh_context_store_path,
     }
     normalized: dict[str, Path] = {}
     for name, raw_path in configured.items():
@@ -62,7 +65,8 @@ def _require_distinct_store_paths(settings: Settings) -> None:
                 ) from None
             if same_authority:
                 raise RuntimeError(
-                    "Core durable task, invocation, result, and Android action store paths "
+                    "Core durable task, invocation, result, context, and Android action "
+                    "store paths "
                     f"must be distinct ({left_name}, {right_name})"
                 )
 
@@ -74,10 +78,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     task_store: SQLiteAgentTaskStore | None = None
     invocation_store: SQLiteInvocationStore | None = None
     result_store: SQLiteResultStore | None = None
+    context_store: RetentionAwareSQLiteContextStore | None = None
     action_journal_configured = False
     task_store_configured = False
     invocation_store_configured = False
     result_store_configured = False
+    context_store_configured = False
     try:
         _require_distinct_store_paths(settings)
         # Invocation identity is recovered before any dependent result authority is loaded.
@@ -85,6 +91,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             settings.simorgh_invocation_store_path,
         )
         result_store = SQLiteResultStore(settings.simorgh_result_store_path)
+        context_store = RetentionAwareSQLiteContextStore(
+            settings.simorgh_context_store_path,
+            invocation_store=invocation_store,
+            max_terminal_records=(
+                settings.simorgh_context_store_max_terminal_records
+            ),
+        )
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
             max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
@@ -113,7 +126,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         invocation_store_configured = True
         result_store_registry.configure(result_store)
         result_store_configured = True
+        context_store_registry.configure(context_store)
+        context_store_configured = True
     except BaseException:
+        if context_store_configured:
+            context_store_registry.reset_to_memory()
+        elif context_store is not None:
+            context_store.close()
         if result_store_configured:
             result_store_registry.reset_to_memory()
         elif result_store is not None:
@@ -136,15 +155,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            result_store_registry.reset_to_memory()
+            context_store_registry.reset_to_memory()
         finally:
             try:
-                invocation_store_registry.reset_to_memory()
+                result_store_registry.reset_to_memory()
             finally:
                 try:
-                    await agent_task_control_plane.reset_to_memory_store()
+                    invocation_store_registry.reset_to_memory()
                 finally:
-                    await action_broker.reset_to_memory_journal()
+                    try:
+                        await agent_task_control_plane.reset_to_memory_store()
+                    finally:
+                        await action_broker.reset_to_memory_journal()
 
 
 app = FastAPI(
