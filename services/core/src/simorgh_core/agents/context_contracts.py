@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -41,6 +42,17 @@ _RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"
 _AGENT_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
 _POLICY_VERSION_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
 _SCHEMA_VERSION_PATTERN = r"^[0-9]+\.[0-9]+$"
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"(?im)^\s*authorization\s*:\s*(?:bearer|basic)\s+\S{12,}\s*$"),
+    re.compile(
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+        r"client[_-]?secret|password)\b\s*[:=]\s*[\"']?"
+        r"[A-Za-z0-9_./+=-]{16,}"
+    ),
+)
 
 
 class ContextContractError(RuntimeError):
@@ -73,6 +85,8 @@ class ContextOmissionReason(StrEnum):
     RETENTION_CEILING = "retention_ceiling"
     SECTION_LIMIT = "section_limit"
     EVIDENCE_LIMIT = "evidence_limit"
+    PROJECT_LIMIT = "project_limit"
+    DECISION_LIMIT = "decision_limit"
     TEXT_LIMIT = "text_limit"
     BYTE_LIMIT = "byte_limit"
     TOKEN_LIMIT = "token_limit"
@@ -90,6 +104,8 @@ class ContextCompilerLimits(BaseModel):
     max_estimated_tokens: int = Field(default=32_000, ge=1, le=1_000_000)
     max_sections: int = Field(default=48, ge=1, le=MAX_CONTEXT_SECTIONS)
     max_evidence_items: int = Field(default=24, ge=0, le=MAX_CONTEXT_SECTIONS)
+    max_project_items: int = Field(default=8, ge=0, le=MAX_CONTEXT_SECTIONS)
+    max_decision_items: int = Field(default=16, ge=0, le=MAX_CONTEXT_SECTIONS)
     max_text_characters: int = Field(default=24_000, ge=1, le=250_000)
     max_tools: int = Field(default=16, ge=0, le=MAX_CONTEXT_TOOLS)
     max_tool_schema_bytes: int = Field(default=96_000, ge=0, le=500_000)
@@ -143,6 +159,7 @@ class ContextMaterial(BaseModel):
         normalized = value.strip()
         if not normalized or "\n" in normalized or "\r" in normalized:
             raise ValueError("context citation must be one bounded non-empty line")
+        _require_safe_text(normalized)
         return normalized
 
     @model_validator(mode="after")
@@ -223,6 +240,7 @@ class ContextSection(BaseModel):
         normalized = value.strip()
         if not normalized or "\n" in normalized or "\r" in normalized:
             raise ValueError("context citation must be one bounded non-empty line")
+        _require_safe_text(normalized)
         return normalized
 
     @model_validator(mode="after")
@@ -511,6 +529,18 @@ class SpecialistContextBundle(BaseModel):
         )
         if self.evidence_count != expected_evidence:
             raise ValueError("context bundle evidence count is invalid")
+        project_count = sum(
+            section.source_kind == ContextSourceKind.PROJECT_GOAL
+            for section in self.sections
+        )
+        if project_count > self.limits.max_project_items:
+            raise ValueError("context bundle exceeds project item limit")
+        decision_count = sum(
+            section.source_kind == ContextSourceKind.DECISION
+            for section in self.sections
+        )
+        if decision_count > self.limits.max_decision_items:
+            raise ValueError("context bundle exceeds decision item limit")
         if self.tool_count != len(self.tool_schemas):
             raise ValueError("context bundle tool count is invalid")
         if self.omission_count != len(self.omissions):
@@ -730,6 +760,15 @@ def context_bundle_canonical_payload(
             values = capabilities.get(key)
             if isinstance(values, list):
                 capabilities[key] = sorted(values)
+    tool_schemas = payload.get("tool_schemas")
+    if isinstance(tool_schemas, list):
+        payload["tool_schemas"] = sorted(
+            tool_schemas,
+            key=lambda item: (
+                str(item.get("tool_id", "")),
+                str(item.get("connector_id") or ""),
+            ),
+        )
     for field in (
         "context_bundle_id",
         "canonical_sha256",
@@ -777,6 +816,8 @@ def _require_safe_text(value: str) -> None:
     for character in value:
         if ord(character) < 32 and character not in {"\n", "\r", "\t"}:
             raise ValueError("context text contains a disallowed control character")
+    if any(pattern.search(value) is not None for pattern in _SECRET_PATTERNS):
+        raise ValueError("context text contains secret-like credential material")
 
 
 __all__ = [
