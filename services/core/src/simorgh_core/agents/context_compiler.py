@@ -34,9 +34,7 @@ from simorgh_core.agents.context_contracts import (
     context_text_sha256,
     estimate_context_tokens,
 )
-from simorgh_core.agents.context_projections import (
-    build_specialist_plan_context_output_schema,
-)
+from simorgh_core.agents.context_projections import build_context_output_schema
 from simorgh_core.agents.context_sources import ContextMaterialRegistry
 from simorgh_core.agents.context_store import ContextClaimKind, ContextStore
 from simorgh_core.agents.contracts import (
@@ -241,7 +239,7 @@ class ContextCompilerService:
         request.capabilities.require_subset_of(maximum)
         _require_effect_capability(record=record, definition=definition, request=request)
         self._require_tool_schemas(request=request, definition=definition)
-        expected_output = build_specialist_plan_context_output_schema(
+        expected_output = build_context_output_schema(
             registry=self._results,
             output_contract=definition.output_contract,
         )
@@ -394,6 +392,8 @@ class ContextCompilerService:
         sections: list[ContextSection] = []
         omissions: list[ContextOmission] = []
         evidence_count = 0
+        project_count = 0
+        decision_count = 0
         ordered = sorted(materials, key=_material_sort_key)
         for material in ordered:
             reason = self._material_rejection_reason(
@@ -425,7 +425,31 @@ class ContextCompilerService:
                     _omission(material, ContextOmissionReason.SECTION_LIMIT),
                 )
                 continue
-            if material.source_kind == ContextSourceKind.EVIDENCE:
+            if material.source_kind == ContextSourceKind.PROJECT_GOAL:
+                if project_count >= self._policy.limits.max_project_items:
+                    if material.required:
+                        raise ContextCompilerLimitError(
+                            "required project context exceeds project item limit"
+                        )
+                    _append_report_once(
+                        omissions,
+                        _omission(material, ContextOmissionReason.PROJECT_LIMIT),
+                    )
+                    continue
+                project_count += 1
+            elif material.source_kind == ContextSourceKind.DECISION:
+                if decision_count >= self._policy.limits.max_decision_items:
+                    if material.required:
+                        raise ContextCompilerLimitError(
+                            "required decision context exceeds decision item limit"
+                        )
+                    _append_report_once(
+                        omissions,
+                        _omission(material, ContextOmissionReason.DECISION_LIMIT),
+                    )
+                    continue
+                decision_count += 1
+            elif material.source_kind == ContextSourceKind.EVIDENCE:
                 if evidence_count >= self._policy.limits.max_evidence_items:
                     if material.required:
                         raise ContextCompilerLimitError(
@@ -657,6 +681,12 @@ def _build_bundle(
             raise ContextCompilerPolicyError("implicit task kind is ambiguous")
         task_kind = next(iter(authority.definition.task_kinds))
     source_manifest = context_source_manifest_sha256(sections, omissions)
+    canonical_tool_schemas = tuple(
+        sorted(
+            request.tool_schemas,
+            key=lambda item: (item.tool_id, item.connector_id or ""),
+        )
+    )
     payload: dict[str, object] = {
         "schema_version": "1.0",
         "compiler_id": policy.compiler_id,
@@ -676,7 +706,9 @@ def _build_bundle(
         "budget": authority.budget.model_dump(mode="json"),
         "limits": policy.limits.model_dump(mode="json"),
         "output_schema": request.output_schema.model_dump(mode="json"),
-        "tool_schemas": [item.model_dump(mode="json") for item in request.tool_schemas],
+        "tool_schemas": [
+            item.model_dump(mode="json") for item in canonical_tool_schemas
+        ],
         "sections": [item.model_dump(mode="json") for item in sections],
         "omissions": [item.model_dump(mode="json") for item in omissions],
         "source_manifest_sha256": source_manifest,
@@ -715,7 +747,7 @@ def _build_bundle(
         budget=authority.budget,
         limits=policy.limits,
         output_schema=request.output_schema,
-        tool_schemas=tuple(sorted(request.tool_schemas, key=lambda item: item.tool_id)),
+        tool_schemas=canonical_tool_schemas,
         sections=sections,
         omissions=omissions,
         source_manifest_sha256=source_manifest,
@@ -732,7 +764,7 @@ def _build_bundle(
         evidence_count=sum(
             section.source_kind == ContextSourceKind.EVIDENCE for section in sections
         ),
-        tool_count=len(request.tool_schemas),
+        tool_count=len(canonical_tool_schemas),
         omission_count=len(omissions),
         total_bytes=total_bytes,
         estimated_tokens=estimated_tokens,
