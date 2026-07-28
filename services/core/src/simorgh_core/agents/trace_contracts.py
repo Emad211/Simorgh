@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Self, TypeAlias
+from typing import Annotated, Any, Literal, Self
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -207,7 +207,7 @@ class TraceBudgetDetails(BaseModel):
     @field_validator("exhausted_dimension")
     @classmethod
     def validate_dimension(cls, value: str | None) -> str | None:
-        return _safe_identifier(value)
+        return _safe_optional_identifier(value)
 
     @model_validator(mode="after")
     def validate_exhaustion(self) -> Self:
@@ -245,10 +245,15 @@ class TraceInvocationDetails(BaseModel):
         max_length=128,
     )
 
-    @field_validator("operation_id", "failure_code")
+    @field_validator("operation_id")
     @classmethod
-    def validate_identifiers(cls, value: str | None) -> str | None:
-        return _safe_identifier(value)
+    def validate_operation_id(cls, value: str) -> str:
+        return _safe_required_identifier(value)
+
+    @field_validator("failure_code")
+    @classmethod
+    def validate_failure_code(cls, value: str | None) -> str | None:
+        return _safe_optional_identifier(value)
 
     @model_validator(mode="after")
     def validate_terminal_shape(self) -> Self:
@@ -297,7 +302,7 @@ class TraceResultDetails(BaseModel):
     @field_validator("result_schema_id")
     @classmethod
     def validate_schema_id(cls, value: str) -> str:
-        return _safe_identifier(value) or value
+        return _safe_required_identifier(value)
 
 
 class TraceCancellationDetails(BaseModel):
@@ -324,7 +329,7 @@ class TraceTerminalDetails(BaseModel):
     @field_validator("reason_code")
     @classmethod
     def validate_reason_code(cls, value: str) -> str:
-        return _safe_identifier(value) or value
+        return _safe_required_identifier(value)
 
     @model_validator(mode="after")
     def validate_terminal_disposition(self) -> Self:
@@ -347,7 +352,7 @@ class TraceGapDetails(BaseModel):
     missing_source_id: UUID | None = None
 
 
-TraceEventDetails: TypeAlias = Annotated[
+type TraceEventDetails = Annotated[
     TraceTaskDetails
     | TraceRoutingDetails
     | TraceBudgetDetails
@@ -419,7 +424,10 @@ class TraceEventCandidate(BaseModel):
             raise ValueError("trace event cannot cause itself")
         if self.replay_of_event_id == self.event_id:
             raise ValueError("trace event cannot replay itself")
-        if self.parent_invocation_id == self.invocation_id:
+        if (
+            self.invocation_id is not None
+            and self.parent_invocation_id == self.invocation_id
+        ):
             raise ValueError("trace invocation cannot parent itself")
         if self.replay == DurableTraceReplayDisposition.REPLAYED:
             if self.replay_of_event_id is None:
@@ -428,8 +436,7 @@ class TraceEventCandidate(BaseModel):
                 raise ValueError("replayed trace event cannot report new usage")
         elif self.replay_of_event_id is not None:
             raise ValueError("fresh trace event cannot reference replay origin")
-        expected_hash = trace_event_canonical_sha256(self)
-        if self.canonical_sha256 != expected_hash:
+        if self.canonical_sha256 != trace_event_canonical_sha256(self):
             raise ValueError("trace event hash does not match authoritative content")
         return self
 
@@ -503,7 +510,7 @@ class TraceEnvelope(BaseModel):
             raise ValueError("trace gaps require incomplete-gap disposition")
         if not self.gap_count and self.disposition == TraceDisposition.INCOMPLETE_GAP:
             raise ValueError("incomplete-gap disposition requires a gap")
-        if trace_envelope_canonical_sha256(self) != self.canonical_sha256:
+        if self.canonical_sha256 != trace_envelope_canonical_sha256(self):
             raise ValueError("trace envelope hash does not match authoritative summary")
         return self
 
@@ -512,7 +519,10 @@ class TraceView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     envelope: TraceEnvelope
-    events: tuple[TraceEventRecord, ...] = Field(min_length=1, max_length=MAX_TRACE_EVENTS)
+    events: tuple[TraceEventRecord, ...] = Field(
+        min_length=1,
+        max_length=MAX_TRACE_EVENTS,
+    )
 
     @model_validator(mode="after")
     def validate_view(self) -> Self:
@@ -553,10 +563,11 @@ def trace_event_id_for(
 def trace_event_canonical_payload(
     value: TraceEventCandidate | TraceEventRecord | dict[str, Any],
 ) -> dict[str, Any]:
-    if isinstance(value, BaseModel):
-        payload = value.model_dump(mode="json")
-    else:
-        payload = dict(value)
+    payload = (
+        value.model_dump(mode="json")
+        if isinstance(value, BaseModel)
+        else dict(value)
+    )
     for field in (
         "event_id",
         "canonical_sha256",
@@ -576,24 +587,27 @@ def trace_event_canonical_sha256(
 
 def trace_event_manifest_sha256(events: tuple[TraceEventRecord, ...]) -> str:
     return canonical_fingerprint(
-        [
-            {
-                "sequence": event.sequence,
-                "event_id": str(event.event_id),
-                "canonical_sha256": event.canonical_sha256,
-            }
-            for event in events
-        ]
+        {
+            "events": [
+                {
+                    "sequence": event.sequence,
+                    "event_id": str(event.event_id),
+                    "canonical_sha256": event.canonical_sha256,
+                }
+                for event in events
+            ]
+        }
     )
 
 
 def trace_envelope_canonical_payload(
     value: TraceEnvelope | dict[str, Any],
 ) -> dict[str, Any]:
-    if isinstance(value, BaseModel):
-        payload = value.model_dump(mode="json")
-    else:
-        payload = dict(value)
+    payload = (
+        value.model_dump(mode="json")
+        if isinstance(value, BaseModel)
+        else dict(value)
+    )
     for field in (
         "canonical_sha256",
         "first_observed_at_ms",
@@ -639,53 +653,58 @@ def new_trace_event_candidate(
         event_kind=event_kind,
         replay=replay,
     )
-    payload: dict[str, Any] = {
-        "schema_version": TRACE_CONTRACT_VERSION,
-        "trace_id": trace_id,
-        "request_id": request_id,
-        "event_kind": event_kind,
-        "stage": stage,
-        "source_authority_kind": source_authority_kind,
-        "source_authority_id": source_authority_id,
-        "source_authority_sha256": source_authority_sha256,
-        "parent_event_id": parent_event_id,
-        "causation_event_id": causation_event_id,
-        "replay_of_event_id": replay_of_event_id,
-        "invocation_id": invocation_id,
-        "parent_invocation_id": parent_invocation_id,
-        "context_bundle_id": context_bundle_id,
-        "result_id": result_id,
-        "replay": replay,
-        "cache": cache,
-        "usage": usage or UsageVector(),
-        "occurred_at_ms": occurred_at_ms,
-        "privacy": privacy,
-        "retention": retention,
-        "details": details,
-    }
+    provisional = TraceEventCandidate.model_construct(
+        schema_version=TRACE_CONTRACT_VERSION,
+        trace_id=trace_id,
+        event_id=event_id,
+        canonical_sha256="0" * 64,
+        request_id=request_id,
+        event_kind=event_kind,
+        stage=stage,
+        source_authority_kind=source_authority_kind,
+        source_authority_id=source_authority_id,
+        source_authority_sha256=source_authority_sha256,
+        parent_event_id=parent_event_id,
+        causation_event_id=causation_event_id,
+        replay_of_event_id=replay_of_event_id,
+        invocation_id=invocation_id,
+        parent_invocation_id=parent_invocation_id,
+        context_bundle_id=context_bundle_id,
+        result_id=result_id,
+        replay=replay,
+        cache=cache,
+        usage=usage or UsageVector(),
+        occurred_at_ms=occurred_at_ms,
+        privacy=privacy,
+        retention=retention,
+        details=details,
+    )
     return TraceEventCandidate.model_validate(
         {
-            **payload,
-            "event_id": event_id,
-            "canonical_sha256": trace_event_canonical_sha256(payload),
+            **provisional.model_dump(mode="json"),
+            "canonical_sha256": trace_event_canonical_sha256(provisional),
         }
     )
 
 
-def _safe_identifier(value: str | None) -> str | None:
-    if value is None:
-        return None
+def _safe_required_identifier(value: str) -> str:
     if any(pattern.search(value) is not None for pattern in _SECRET_PATTERNS):
         raise ValueError("trace identifier contains secret-like credential material")
     return value
 
 
+def _safe_optional_identifier(value: str | None) -> str | None:
+    return None if value is None else _safe_required_identifier(value)
+
+
 def _validate_event_family(event: TraceEventCandidate) -> None:
-    details = event.details
-    family = details.family
+    family = event.details.family
     allowed_kinds: dict[str, frozenset[DurableTraceEventKind]] = {
         "task": frozenset(
-            {DurableTraceEventKind.TASK_CLAIMED, DurableTraceEventKind.TASK_TERMINAL}
+            {
+                DurableTraceEventKind.TASK_CLAIMED,
+                DurableTraceEventKind.TASK_TERMINAL,
+            }
         ),
         "routing": frozenset({DurableTraceEventKind.ROUTING_DECIDED}),
         "budget": frozenset(
@@ -727,22 +746,23 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
     if event.event_kind not in allowed_kinds[family]:
         raise ValueError("trace event kind does not match typed detail family")
 
-    expected_stage = {
-        "task": TraceStage.TASK,
-        "routing": TraceStage.ROUTING,
-        "budget": TraceStage.BUDGET,
-        "context": TraceStage.CONTEXT,
-        "result": TraceStage.RESULT,
-        "cancellation": TraceStage.CANCELLATION,
-        "terminal": TraceStage.TERMINAL,
-        "gap": TraceStage.TERMINAL,
-    }.get(family)
-    if isinstance(details, TraceInvocationDetails):
+    if isinstance(event.details, TraceInvocationDetails):
         expected_stage = {
             InvocationKind.MODEL: TraceStage.MODEL,
             InvocationKind.TOOL: TraceStage.TOOL,
             InvocationKind.SPECIALIST: TraceStage.SPECIALIST,
-        }[details.invocation_kind]
+        }[event.details.invocation_kind]
+    else:
+        expected_stage = {
+            "task": TraceStage.TASK,
+            "routing": TraceStage.ROUTING,
+            "budget": TraceStage.BUDGET,
+            "context": TraceStage.CONTEXT,
+            "result": TraceStage.RESULT,
+            "cancellation": TraceStage.CANCELLATION,
+            "terminal": TraceStage.TERMINAL,
+            "gap": TraceStage.TERMINAL,
+        }[family]
     if event.stage != expected_stage:
         raise ValueError("trace stage does not match typed detail family")
 
@@ -765,7 +785,7 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
     elif event.source_authority_kind != expected_source:
         raise ValueError("trace source authority does not match typed detail family")
 
-    if isinstance(details, TraceInvocationDetails):
+    if isinstance(event.details, TraceInvocationDetails):
         if event.invocation_id != event.source_authority_id:
             raise ValueError("invocation trace source must equal invocation identity")
     elif event.invocation_id is not None and family not in {
@@ -776,20 +796,20 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
     }:
         raise ValueError("trace family cannot carry invocation identity")
 
-    if isinstance(details, TraceContextDetails):
-        if event.context_bundle_id != details.context_bundle_id:
+    if isinstance(event.details, TraceContextDetails):
+        if event.context_bundle_id != event.details.context_bundle_id:
             raise ValueError("context detail identity does not match trace event")
-        if event.source_authority_id != details.context_bundle_id:
+        if event.source_authority_id != event.details.context_bundle_id:
             raise ValueError("context trace source must equal context identity")
     elif event.context_bundle_id is not None and family not in {"result", "terminal"}:
         raise ValueError("trace family cannot carry context identity")
 
-    if isinstance(details, TraceResultDetails):
-        if event.result_id != details.result_id:
+    if isinstance(event.details, TraceResultDetails):
+        if event.result_id != event.details.result_id:
             raise ValueError("result detail identity does not match trace event")
-        if event.source_authority_id != details.result_id:
+        if event.source_authority_id != event.details.result_id:
             raise ValueError("result trace source must equal result identity")
-    elif event.result_id is not None and family not in {"terminal"}:
+    elif event.result_id is not None and family != "terminal":
         raise ValueError("trace family cannot carry result identity")
 
 
