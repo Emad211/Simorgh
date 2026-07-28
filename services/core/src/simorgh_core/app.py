@@ -11,10 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from simorgh_core import __version__
 from simorgh_core.agents.api import agent_task_control_plane
 from simorgh_core.agents.api import router as agent_task_router
-from simorgh_core.agents.context_store import (
-    SQLiteContextStore,
-    context_store_registry,
-)
+from simorgh_core.agents.context_retention import RetentionAwareSQLiteContextStore
+from simorgh_core.agents.context_store import context_store_registry
 from simorgh_core.agents.invocation_store import (
     SQLiteInvocationStore,
     invocation_store_registry,
@@ -80,7 +78,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     task_store: SQLiteAgentTaskStore | None = None
     invocation_store: SQLiteInvocationStore | None = None
     result_store: SQLiteResultStore | None = None
-    context_store: SQLiteContextStore | None = None
+    context_store: RetentionAwareSQLiteContextStore | None = None
     action_journal_configured = False
     task_store_configured = False
     invocation_store_configured = False
@@ -93,7 +91,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             settings.simorgh_invocation_store_path,
         )
         result_store = SQLiteResultStore(settings.simorgh_result_store_path)
-        context_store = SQLiteContextStore(settings.simorgh_context_store_path)
+        context_store = RetentionAwareSQLiteContextStore(
+            settings.simorgh_context_store_path,
+            invocation_store=invocation_store,
+            max_terminal_records=(
+                settings.simorgh_context_store_max_terminal_records
+            ),
+        )
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
             max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
