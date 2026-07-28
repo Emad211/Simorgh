@@ -41,6 +41,9 @@ src = ["services/core/src", "services/core/tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+"services/core/src/simorgh_core/agents/trace_contracts.py" = ["RUF022"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
