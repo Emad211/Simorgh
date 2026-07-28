@@ -296,14 +296,17 @@ def _require_stage_causality(
     if candidate.event_kind == DurableTraceEventKind.INVOCATION_STARTED:
         if not isinstance(candidate.details, TraceInvocationDetails):
             raise TraceCausalityError("invocation start requires invocation details")
-        if candidate.details.invocation_kind == InvocationKind.SPECIALIST:
-            if parent.event_kind not in {
+        if (
+            candidate.details.invocation_kind == InvocationKind.SPECIALIST
+            and parent.event_kind
+            not in {
                 DurableTraceEventKind.CONTEXT_COMPILED,
                 DurableTraceEventKind.CONTEXT_REPLAYED,
-            }:
-                raise TraceCausalityError(
-                    "specialist invocation must follow context authority"
-                )
+            }
+        ):
+            raise TraceCausalityError(
+                "specialist invocation must follow context authority"
+            )
         return
     if candidate.event_kind == DurableTraceEventKind.INVOCATION_TERMINAL:
         _require_parent_kind(parent, DurableTraceEventKind.INVOCATION_STARTED)
