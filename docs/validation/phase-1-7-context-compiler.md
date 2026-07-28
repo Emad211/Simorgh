@@ -75,12 +75,13 @@ Ordinary CI uses deterministic local stores, fake typed GitHub projections and r
 
 - Pre-assembly candidate `497a3ffe58dad9f9ec52993036b63aa928624924` added the focused cancellation-fence recheck and removed its temporary publisher.
 - Exact product/documentation head `027abed40ba81bdd00c6e358851024aa4b542a60` passed standard CI run `30357777145` with Ruff, strict MyPy, **403 Core tests** and full Android build/JVM/lint/debug-APK gates.
-- Deadline-race candidate `639dc854b0275091282975b18e7cc13c2aef7eb8` refreshes deadline authority immediately before durable claim and adds a focused no-commit regression.
-- The final exact-head standard CI and review audit are recorded in the PR body before merge.
+- Deadline-race candidate `639dc854b0275091282975b18e7cc13c2aef7eb8` refreshed deadline authority immediately before durable claim and added a focused no-commit regression.
+- Final exact PR head `e64ce94cf87614902c41c0785c04fad63c55e299` passed standard CI run `30358352299` with Ruff, strict MyPy, **404 Core tests** and full Android build/JVM/lint/debug-APK gates.
+- Final review audit found zero inline review threads, zero submitted/pending reviews and zero PR comments.
 
 ## Final gate
 
-Before merge, the final exact PR head must independently pass the standard repository CI with:
+The final exact PR head independently passed the standard repository CI with:
 
 - Core installation, Ruff, strict MyPy and all tests;
 - Android build, JVM tests, lint and debug APK upload;
@@ -89,4 +90,4 @@ Before merge, the final exact PR head must independently pass the standard repos
 
 Runs stopped before job creation with `action_required` or `cancelled` are not accepted as validation evidence.
 
-The PR body must record the final exact head, workflow run, Core test count and review audit before merge. After merge, the master-plan closeout records the merge SHA and activates Phase 1.8.
+After merge, the master-plan closeout records the merge SHA and activates Phase 1.8.
