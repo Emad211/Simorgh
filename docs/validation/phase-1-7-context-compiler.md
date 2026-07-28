@@ -25,7 +25,7 @@ Phase 1.7 now provides:
 - canonical SHA-256 and UUID5 identity excluding non-authoritative wall-clock/replay fields;
 - immutable in-memory and SQLite WAL replay, conflict detection, schema/hash/index integrity, process locking and fail-closed health behavior;
 - bounded terminal-history retention that protects contexts referenced by non-terminal specialist invocations;
-- cancellation/deadline/fence checks before input authority, after admission before canonical assembly, before durable claim and before handoff;
+- cancellation/deadline/fence checks before input authority, after admission before canonical assembly, immediately before durable claim with a refreshed clock, and before handoff;
 - privacy-safe `context_compiled`, `context_replayed` and `context_failed` trace metadata;
 - independent Core lifespan configuration through `SIMORGH_CONTEXT_STORE_PATH` and `SIMORGH_CONTEXT_STORE_MAX_TERMINAL_RECORDS`;
 - `.simorgh/` runtime databases and lock files excluded from version control.
@@ -59,7 +59,8 @@ Automated tests cover:
 - required overflow fail-closed and optional UTF-8-safe truncation reporting;
 - stale required rejection, optional stale omission and unknown-freshness rules;
 - strictest privacy/retention and taint preservation through replay;
-- cancellation before load, after admission before canonical assembly, before commit and before handoff;
+- cancellation before load, after admission before canonical assembly, after assembly before claim, before commit and before handoff;
+- deadline expiry after canonical assembly being re-evaluated with the current clock before claim, leaving no context row;
 - no usage reservation, model/tool/connector/specialist call or automatic retry;
 - in-memory/SQLite replay parity, restart replay, conflict, corruption, unsupported schema, process lock and path separation;
 - non-terminal retention protection and bounded terminal pruning;
@@ -72,10 +73,9 @@ Ordinary CI uses deterministic local stores, fake typed GitHub projections and r
 
 ## Candidate evidence
 
-- Pre-assembly product candidate: `497a3ffe58dad9f9ec52993036b63aa928624924`.
-- Its preceding exact product head `7c9e5b60ef84464e12e15c91355920d587bad802` passed CI run `30357147500` with Ruff, strict MyPy, **402 Core tests** and full Android build/JVM/lint/debug-APK gates.
-- `497a3ffe58dad9f9ec52993036b63aa928624924` added the focused pre-assembly cancellation-fence recheck and removed its temporary publisher.
-- Central documentation was synchronized at candidate `3e79fc202b279a083e113f4e84613d215154a889` with no runtime behavior change.
+- Pre-assembly candidate `497a3ffe58dad9f9ec52993036b63aa928624924` added the focused cancellation-fence recheck and removed its temporary publisher.
+- Exact product/documentation head `027abed40ba81bdd00c6e358851024aa4b542a60` passed standard CI run `30357777145` with Ruff, strict MyPy, **403 Core tests** and full Android build/JVM/lint/debug-APK gates.
+- Deadline-race candidate `639dc854b0275091282975b18e7cc13c2aef7eb8` refreshes deadline authority immediately before durable claim and adds a focused no-commit regression.
 - The final exact-head standard CI and review audit are recorded in the PR body before merge.
 
 ## Final gate
@@ -88,5 +88,3 @@ Before merge, the final exact PR head must independently pass the standard repos
 - no unresolved review thread or pending change request.
 
 The PR body must record the final exact head, workflow run, Core test count and review audit before merge. After merge, the master-plan closeout records the merge SHA and activates Phase 1.8.
-
-- A focused deadline-race regression proves expiry after canonical assembly is re-evaluated with the current clock before durable claim; no context row is committed when the deadline wins.
