@@ -18,12 +18,14 @@ Phase 1.7 now provides:
 - typed GitHub evidence conversion preserving source hash, freshness, cache, privacy, citation and taint metadata;
 - reviewed projections for `github.search`, `github.fetch-file`, `github.fetch-issue` and `github.fetch-pr`;
 - schema-only `simorgh.repository-report.v1` authority for Context Compiler use without adding the Phase 1.10 executor, terminalizer or presentation surface;
-- deterministic source ordering, UTF-8-safe compaction, typed omissions and explicit truncation reasons;
+- deterministic source and tool-schema ordering, UTF-8-safe compaction, typed omissions and explicit truncation reasons;
+- distinct project/goal, decision and evidence limits with priority-based deterministic admission;
 - conservative freshness, privacy and retention composition;
+- high-confidence concrete credential-shaped material rejection without value echo;
 - canonical SHA-256 and UUID5 identity excluding non-authoritative wall-clock/replay fields;
 - immutable in-memory and SQLite WAL replay, conflict detection, schema/hash/index integrity, process locking and fail-closed health behavior;
 - bounded terminal-history retention that protects contexts referenced by non-terminal specialist invocations;
-- cancellation/deadline/fence checks before input authority, after admission, before canonical assembly, before durable claim and before handoff;
+- cancellation/deadline/fence checks before input authority, after admission before canonical assembly, before durable claim and before handoff;
 - privacy-safe `context_compiled`, `context_replayed` and `context_failed` trace metadata;
 - independent Core lifespan configuration through `SIMORGH_CONTEXT_STORE_PATH` and `SIMORGH_CONTEXT_STORE_MAX_TERMINAL_RECORDS`;
 - `.simorgh/` runtime databases and lock files excluded from version control.
@@ -50,14 +52,14 @@ Automated tests cover:
 - fake system/role/tool instructions remaining inert tainted data;
 - credential-shaped and control-character rejection without value echo;
 - tool/connector/capability/output-schema widening rejection;
-- source and tool-schema permutation determinism;
+- source and complete bundle tool-schema permutation determinism;
 - policy, budget, source, schema and freshness identity changes;
 - exact item/byte/token/text/tool limits;
 - project, decision and evidence priority/omission behavior;
 - required overflow fail-closed and optional UTF-8-safe truncation reporting;
 - stale required rejection, optional stale omission and unknown-freshness rules;
 - strictest privacy/retention and taint preservation through replay;
-- cancellation before load, after admission, before canonical assembly, before commit and before handoff;
+- cancellation before load, after admission before canonical assembly, before commit and before handoff;
 - no usage reservation, model/tool/connector/specialist call or automatic retry;
 - in-memory/SQLite replay parity, restart replay, conflict, corruption, unsupported schema, process lock and path separation;
 - non-terminal retention protection and bounded terminal pruning;
@@ -72,8 +74,9 @@ Ordinary CI uses deterministic local stores, fake typed GitHub projections and r
 
 - Pre-assembly product candidate: `497a3ffe58dad9f9ec52993036b63aa928624924`.
 - Its preceding exact product head `7c9e5b60ef84464e12e15c91355920d587bad802` passed CI run `30357147500` with Ruff, strict MyPy, **402 Core tests** and full Android build/JVM/lint/debug-APK gates.
-- `497a3ffe58dad9f9ec52993036b63aa928624924` added one focused cancellation-race recheck and test and removed the temporary publisher before entering the product diff.
-- Final review candidate after validation documentation and redundant publisher removal: `584992cbc2fa2d1527d7c2fc18a969e05dadd240`.
+- `497a3ffe58dad9f9ec52993036b63aa928624924` added the focused pre-assembly cancellation-fence recheck and removed its temporary publisher.
+- Central documentation was synchronized at candidate `3e79fc202b279a083e113f4e84613d215154a889` with no runtime behavior change.
+- The final exact-head standard CI and review audit are recorded in the PR body before merge.
 
 ## Final gate
 
@@ -84,4 +87,4 @@ Before merge, the final exact PR head must independently pass the standard repos
 - no temporary publisher workflow, trigger or tracked `.simorgh` runtime file;
 - no unresolved review thread or pending change request.
 
-The PR body and this record must be updated with the final exact head, workflow run, Core test count and review audit before merge.
+The PR body must record the final exact head, workflow run, Core test count and review audit before merge. After merge, the master-plan closeout records the merge SHA and activates Phase 1.8.
