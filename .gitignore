@@ -33,6 +33,7 @@ local.properties
 Thumbs.db
 
 # Runtime data
+.simorgh/
 .data/
 logs/
 artifacts/
