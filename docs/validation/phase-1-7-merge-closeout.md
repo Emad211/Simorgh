@@ -11,6 +11,6 @@
 - Ordinary CI made zero live model/provider/connector/MCP calls.
 - No temporary publisher workflow or tracked `.simorgh` runtime state entered `main`.
 
-This closeout changes documentation only; it adds no runtime code, configuration, dependency, API, permission or Android behavior.
+This closeout changes documentation only; it adds no runtime code, configuration, dependency, API, permission, product behavior or Android behavior.
 
 The next isolated trust boundary is issue #59, Phase 1.8 durable privacy-safe correlated trace. Voice PR #35 and later product surfaces remain parked.
