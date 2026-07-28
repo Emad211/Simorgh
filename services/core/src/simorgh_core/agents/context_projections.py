@@ -30,6 +30,7 @@ from simorgh_core.agents.result_authority import (
     SPECIALIST_PLAN_RESULT_SCHEMA_ID,
     SPECIALIST_PLAN_RESULT_SCHEMA_VERSION,
     ResultSchemaRegistry,
+    UnknownResultSchemaError,
 )
 from simorgh_core.agents.specialist_results import (
     REPOSITORY_REPORT_OUTPUT_CONTRACT,
@@ -168,10 +169,17 @@ def build_specialist_plan_context_output_schema(
 ) -> ContextOutputSchemaProjection:
     """Backward-compatible entry point for exact context output projection."""
 
-    return build_context_output_schema(
-        registry=registry,
-        output_contract=output_contract,
-    )
+    try:
+        return build_context_output_schema(
+            registry=registry,
+            output_contract=output_contract,
+        )
+    except UnknownResultSchemaError:
+        if output_contract == SPECIALIST_PLAN_OUTPUT_CONTRACT:
+            raise
+        raise ContextProjectionError(
+            "typed-plan registry cannot project an unregistered context output family"
+        ) from None
 
 
 __all__ = [
