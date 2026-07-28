@@ -268,7 +268,7 @@ def test_context_trace_cross_checks_hash_classification_and_taint() -> None:
             context_sha256=bundle.canonical_sha256,
             section_count=len(bundle.sections),
             byte_count=bundle.total_bytes,
-            estimated_tokens=bundle.estimated_unit_count,
+            estimated_tokens=bundle.estimated_tokens,
             omission_count=len(bundle.omissions),
             evidence_count=bundle.evidence_count,
         ),
@@ -397,5 +397,8 @@ def test_result_trace_cross_checks_invocation_hash_and_classification() -> None:
                 }
             )
         )
-    with pytest.raises(TraceCorrelationError, match="result invocation"):
+    with pytest.raises(
+        TraceCorrelationError,
+        match="invocation authority",
+    ):
         validator.validate(candidate.model_copy(update={"invocation_id": uuid4()}))
