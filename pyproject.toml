@@ -43,6 +43,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
 "services/core/src/simorgh_core/agents/trace_contracts.py" = ["RUF022"]
+"services/core/src/simorgh_core/agents/trace_store.py" = ["SIM102"]
 
 [tool.mypy]
 python_version = "3.12"
