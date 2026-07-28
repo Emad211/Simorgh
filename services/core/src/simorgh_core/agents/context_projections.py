@@ -116,11 +116,15 @@ def build_context_output_schema(
 ) -> ContextOutputSchemaProjection:
     """Project one exact registered result schema into a context bundle."""
 
+    schema_id: str
+    schema_version: str
+    family: str
+    payload_model: type[BaseModel]
     if output_contract == SPECIALIST_PLAN_OUTPUT_CONTRACT:
         schema_id = SPECIALIST_PLAN_RESULT_SCHEMA_ID
         schema_version = SPECIALIST_PLAN_RESULT_SCHEMA_VERSION
         family = "specialist_plan"
-        payload_model: type[BaseModel] = SpecialistPlanPayload
+        payload_model = SpecialistPlanPayload
     elif output_contract == REPOSITORY_REPORT_OUTPUT_CONTRACT:
         schema_id = REPOSITORY_REPORT_RESULT_SCHEMA_ID
         schema_version = REPOSITORY_REPORT_RESULT_SCHEMA_VERSION
