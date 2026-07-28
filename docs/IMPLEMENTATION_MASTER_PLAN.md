@@ -47,8 +47,8 @@ Phase 1.3 Specialist Execution           COMPLETE — PR #44
 Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
 Phase 1.5 Governed GitHub Read Tools     COMPLETE — PR #52
 Phase 1.6 Cancellation Propagation       COMPLETE — PR #54
-Phase 1.7 Context Compiler               VALIDATING — PR #56
-Phase 1.8 End-to-End Trace               QUEUED
+Phase 1.7 Context Compiler               COMPLETE — PR #56
+Phase 1.8 End-to-End Trace               ACTIVE — issue #59
 Phase 1.9 Live Provider Staging          QUEUED
 Phase 1.10 Complete GitHub Workflow      QUEUED
 Phase 2+                                 BLOCKED by Phase 1
@@ -383,9 +383,9 @@ A task cancellation must stop every future reservation and signal every owned ca
 - cancellation cannot erase committed cost;
 - completed results remain immutable.
 
-## 1.7 Context compiler and compaction — VALIDATING
+## 1.7 Context compiler and compaction — COMPLETE
 
-Implementation is active in PR #56 for issue #55. The boundary now provides deterministic taint-aware compilation, exact tool/output-schema intersection, typed omission and truncation reports, distinct project/decision/evidence limits, schema-only repository-report authority, restart-safe replay, bounded terminal retention and cancellation fences before assembly, claim and handoff. Compilation performs zero model, tool, connector or specialist calls.
+Merged through PR #56 at `dab5333140da2d9cf9b982a57ede1a2d08397cf1`. Issue #55 completed; ADR 0020 accepted. Exact validated head `855eddcc5a91d90912761fb0f5012cd3e45de9c4` passed standard CI run `30358547806` with 404 Core tests and full Android build/JVM/lint/debug-APK gates.
 
 ### Objective
 
@@ -403,3 +403,19 @@ approved tool schemas
 remaining budget
 required output schema
 ```
+
+## 1.8 End-to-end correlated trace — ACTIVE
+
+Tracking issue: #59.
+
+### Objective
+
+Persist one privacy-safe, restart-safe and sequence-ordered trace correlated across routing, context, invocation, governed tool, typed result, cancellation and replay identities without storing private bodies or credentials.
+
+### Current boundary
+
+The existing `TraceEvent` kinds and process-local sinks are inputs to this step, not its final durable authority. Phase 1.8 must add stable trace identity, transactional sequence ordering, idempotent append/conflict semantics, SQLite WAL durability, completeness/gap projections, bounded whole-trace retention and exact Core-lifespan configuration.
+
+### Explicit non-goals
+
+No network exporter, external observability service, live-provider staging, complete GitHub report workflow, public trace API, mutation, Voice, Notification, Memory, Work Graph, MCP or new Android behavior.

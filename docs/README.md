@@ -23,7 +23,7 @@ The implementation order is authoritative. A later product surface must not bypa
 - [`CONTEXT_COMPILER.md`](CONTEXT_COMPILER.md) — deterministic taint-aware specialist context, exact schemas, typed limits, durable replay, bounded retention and race handling.
 - [`PERSONAL_COLLEAGUE_ARCHITECTURE.md`](PERSONAL_COLLEAGUE_ARCHITECTURE.md) — target Voice, Notification, MCP, Personal Work Graph and developer/research/SEO/marketing/sales crew architecture.
 
-The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged internal zero-external specialist execution; PR #48 merged typed result, artifact and evidence metadata authority; PR #52 merged governed read-only GitHub tools; PR #54 merged durable cancellation propagation. PR #56 is validating the deterministic Context Compiler. The public execution API remains routing-only.
+The current agent-task API selects one primary owner and persists task/routing state. PR #39 supplies durable invocation authority; PR #44 merged internal zero-external specialist execution; PR #48 merged typed result, artifact and evidence metadata authority; PR #52 merged governed read-only GitHub tools; PR #54 merged durable cancellation propagation. PR #56 merged the deterministic Context Compiler. Issue #59 is the active Phase 1.8 correlated-trace boundary. The public execution API remains routing-only.
 
 Common explicit and deterministic Persian routes use zero model calls. Ambiguous routing can use at most one explicitly configured, budgeted classifier invocation.
 
@@ -35,7 +35,8 @@ Current roadmap dependencies:
 - issue #46 / PR #48 — typed result, artifact and evidence authority, complete;
 - issue #51 / PR #52 — governed read-only GitHub tools and typed evidence, complete;
 - issue #53 / PR #54 — durable task-to-invocation cancellation propagation, complete;
-- issue #55 / PR #56 — deterministic taint-aware Context Compiler, validating;
+- issue #55 / PR #56 — deterministic taint-aware Context Compiler, complete;
+- issue #59 — durable privacy-safe correlated end-to-end trace, active;
 - issue #31 / PR #35 — Persian Voice remains parked until issue #36 prerequisites are complete;
 - issue #32 — privacy-safe notification intelligence;
 - issue #33 — governed MCP client registry;

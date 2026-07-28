@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52; durable cancellation propagation merged in PR #54. Phase 1.7 deterministic Context Compiler is validating in PR #56. The default execution API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52; durable cancellation propagation merged in PR #54. Phase 1.7 deterministic Context Compiler merged in PR #56. Phase 1.8 durable correlated trace is active in issue #59. The default execution API remains routing-only.
 
 ## Purpose
 
