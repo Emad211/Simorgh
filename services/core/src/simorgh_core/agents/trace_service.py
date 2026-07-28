@@ -8,6 +8,7 @@ from simorgh_core.agents.context_store import (
     ContextStore,
     ContextStoreError,
 )
+from simorgh_core.agents.contracts import UsageVector
 from simorgh_core.agents.invocations import (
     InvocationPhase,
     InvocationStore,
@@ -31,7 +32,6 @@ from simorgh_core.agents.trace_authority import (
 )
 from simorgh_core.agents.trace_store import TraceStore
 from simorgh_core.agents.tracing import (
-    CacheDisposition,
     TraceEvent,
     TraceEventKind,
     TraceSink,
@@ -175,7 +175,12 @@ class TraceEventProjector:
             ),
             section_count=_optional_int(metadata, "section_count"),
             item_count=_optional_int(metadata, "item_count"),
-            byte_count=_first_int(metadata, "byte_count", "total_bytes", "response_bytes"),
+            byte_count=_first_int(
+                metadata,
+                "byte_count",
+                "total_bytes",
+                "response_bytes",
+            ),
             estimated_tokens=_first_int(
                 metadata,
                 "estimated_tokens",
@@ -259,7 +264,10 @@ class NativeTraceCorrelationValidator:
             decision = task_entry.record.routing_decision
             if decision is None:
                 raise TraceCorrelationError("routing trace has no durable decision")
-            if candidate.operation_id is not None and candidate.operation_id != decision.decision_id:
+            if (
+                candidate.operation_id is not None
+                and candidate.operation_id != decision.decision_id
+            ):
                 raise TraceCorrelationError("routing trace decision identity conflicts")
             if candidate.agent_id != decision.selected_agent_id:
                 raise TraceCorrelationError("routing trace agent identity conflicts")
@@ -267,7 +275,10 @@ class NativeTraceCorrelationValidator:
                 raise TraceCorrelationError("routing trace agent version conflicts")
             if candidate.routing_method != decision.method:
                 raise TraceCorrelationError("routing trace method conflicts")
-            if candidate.rule_id is not None and candidate.rule_id not in decision.matched_rule_ids:
+            if (
+                candidate.rule_id is not None
+                and candidate.rule_id not in decision.matched_rule_ids
+            ):
                 raise TraceCorrelationError("routing trace rule identity conflicts")
 
         if candidate.phase in {
@@ -301,11 +312,13 @@ class NativeTraceCorrelationValidator:
                 raise TraceCorrelationError("cancellation trace identity conflicts")
             result = task_entry.record.cancellation_result
             expected_hash = candidate.metadata.ownership_snapshot_sha256
-            if expected_hash is not None:
-                if result is None or result.ownership_snapshot_sha256 != expected_hash:
-                    raise TraceCorrelationError(
-                        "cancellation ownership snapshot conflicts"
-                    )
+            if expected_hash is not None and (
+                result is None
+                or result.ownership_snapshot_sha256 != expected_hash
+            ):
+                raise TraceCorrelationError(
+                    "cancellation ownership snapshot conflicts"
+                )
 
     def _validate_invocation(self, candidate: TraceEventCandidate) -> None:
         if candidate.invocation_id is None:
@@ -328,15 +341,24 @@ class NativeTraceCorrelationValidator:
             and candidate.agent_version != invocation.agent_version
         ):
             raise TraceCorrelationError("trace invocation agent version conflicts")
-        if candidate.provider_id is not None and candidate.provider_id != invocation.provider_id:
+        if (
+            candidate.provider_id is not None
+            and candidate.provider_id != invocation.provider_id
+        ):
             raise TraceCorrelationError("trace provider identity conflicts")
         if candidate.model_id is not None and candidate.model_id != invocation.model_id:
             raise TraceCorrelationError("trace model identity conflicts")
         if candidate.tool_id is not None and candidate.tool_id != invocation.tool_id:
             raise TraceCorrelationError("trace tool identity conflicts")
-        if candidate.connector_id is not None and candidate.connector_id != invocation.connector_id:
+        if (
+            candidate.connector_id is not None
+            and candidate.connector_id != invocation.connector_id
+        ):
             raise TraceCorrelationError("trace connector identity conflicts")
-        if candidate.metadata.effect is not None and candidate.metadata.effect != invocation.effect.value:
+        if (
+            candidate.metadata.effect is not None
+            and candidate.metadata.effect != invocation.effect.value
+        ):
             raise TraceCorrelationError("trace invocation effect conflicts")
 
         if candidate.kind in _COMPLETED_INVOCATION_KINDS:
@@ -356,12 +378,10 @@ class NativeTraceCorrelationValidator:
             if not invocation.terminal or invocation.state == InvocationPhase.COMPLETED:
                 raise TraceCorrelationError("failure trace contradicts invocation state")
             if (
-                candidate.usage_delta != invocation.committed_usage
-                and candidate.usage_delta.model_dump() != {}
+                candidate.usage_delta != UsageVector()
+                and candidate.usage_delta != invocation.committed_usage
             ):
-                zero = candidate.usage_delta.__class__()
-                if candidate.usage_delta != zero:
-                    raise TraceCorrelationError("failure trace usage conflicts")
+                raise TraceCorrelationError("failure trace usage conflicts")
 
     def _validate_context(self, candidate: TraceEventCandidate) -> None:
         assert candidate.context_bundle_id is not None
@@ -376,16 +396,25 @@ class NativeTraceCorrelationValidator:
             and context.specialist_invocation_id != candidate.invocation_id
         ):
             raise TraceCorrelationError("trace context invocation conflicts")
-        if candidate.agent_id is not None and context.agent_id != candidate.agent_id:
+        if (
+            candidate.agent_id is not None
+            and context.agent_id != candidate.agent_id
+        ):
             raise TraceCorrelationError("trace context agent identity conflicts")
-        if candidate.agent_version is not None and context.agent_version != candidate.agent_version:
+        if (
+            candidate.agent_version is not None
+            and context.agent_version != candidate.agent_version
+        ):
             raise TraceCorrelationError("trace context agent version conflicts")
         if (
             candidate.metadata.context_sha256 is not None
             and context.canonical_sha256 != candidate.metadata.context_sha256
         ):
             raise TraceCorrelationError("trace context hash conflicts")
-        if candidate.privacy != context.privacy or candidate.retention != context.retention:
+        if (
+            candidate.privacy != context.privacy
+            or candidate.retention != context.retention
+        ):
             raise TraceCorrelationError("trace context classification conflicts")
         if candidate.tainted != context.tainted:
             raise TraceCorrelationError("trace context taint conflicts")
@@ -398,9 +427,15 @@ class NativeTraceCorrelationValidator:
             raise TraceCorrelationError("trace result authority is unavailable") from None
         if result.request_id != candidate.request_id:
             raise TraceCorrelationError("trace result belongs to another request")
-        if candidate.invocation_id is not None and result.invocation_id != candidate.invocation_id:
+        if (
+            candidate.invocation_id is not None
+            and result.invocation_id != candidate.invocation_id
+        ):
             raise TraceCorrelationError("trace result invocation conflicts")
-        if candidate.agent_id is not None and result.producer_agent_id != candidate.agent_id:
+        if (
+            candidate.agent_id is not None
+            and result.producer_agent_id != candidate.agent_id
+        ):
             raise TraceCorrelationError("trace result producer conflicts")
         if (
             candidate.agent_version is not None
@@ -412,7 +447,10 @@ class NativeTraceCorrelationValidator:
             and result.canonical_sha256 != candidate.metadata.result_sha256
         ):
             raise TraceCorrelationError("trace result hash conflicts")
-        if candidate.privacy != result.privacy or candidate.retention != result.retention:
+        if (
+            candidate.privacy != result.privacy
+            or candidate.retention != result.retention
+        ):
             raise TraceCorrelationError("trace result classification conflicts")
 
 
