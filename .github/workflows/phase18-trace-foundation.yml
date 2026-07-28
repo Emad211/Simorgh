@@ -1,0 +1,81 @@
+name: Phase 1.8 Trace Foundation Publisher
+
+on:
+  push:
+    branches:
+      - core/durable-correlated-trace
+    paths:
+      - .github/workflows/phase18-trace-foundation.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase18-trace-foundation-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Materialize audited trace foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/phase18/chunk-* > "$RUNNER_TEMP/trace-foundation.tar.xz.b64"
+          base64 --decode "$RUNNER_TEMP/trace-foundation.tar.xz.b64" > "$RUNNER_TEMP/trace-foundation.tar.xz"
+          tar -xJf "$RUNNER_TEMP/trace-foundation.tar.xz"
+          rm -rf .github/phase18
+          rm -f .github/workflows/phase18-trace-foundation.yml
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Run complete Core foundation gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check --fix \
+            services/core/src/simorgh_core/agents/trace_authority.py \
+            services/core/src/simorgh_core/agents/trace_store.py \
+            services/core/tests/test_trace_authority.py \
+            services/core/tests/test_trace_store.py
+          ruff check .
+          mypy services/core/src
+          pytest
+          git diff --check
+
+      - name: Commit validated trace foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: establish durable correlated trace authority'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/durable-correlated-trace
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "branch moved during trace foundation validation" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
