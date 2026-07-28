@@ -87,4 +87,6 @@ Before merge, the final exact PR head must independently pass the standard repos
 - no temporary publisher workflow, trigger or tracked `.simorgh` runtime file;
 - no unresolved review thread or pending change request.
 
+Runs stopped before job creation with `action_required` or `cancelled` are not accepted as validation evidence.
+
 The PR body must record the final exact head, workflow run, Core test count and review audit before merge. After merge, the master-plan closeout records the merge SHA and activates Phase 1.8.
