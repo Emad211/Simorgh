@@ -737,3 +737,31 @@ def test_same_specialist_invocation_cannot_claim_changed_context() -> None:
         service.compile(
             _request(task=task, invocation_id=invocation_id, materials=(changed,))
         )
+
+def test_cancellation_after_admission_never_enters_canonical_assembly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task()
+    service, _, _, invocations, contexts = _runtime(task=task)
+    original_admit = service._admit_materials
+    original_build = service._compact_and_build
+    assembly_entered = False
+
+    def admit_then_cancel(*args, **kwargs):
+        admitted = original_admit(*args, **kwargs)
+        invocations.accept_cancellation(_cancellation(task))
+        return admitted
+
+    def track_assembly(*args, **kwargs):
+        nonlocal assembly_entered
+        assembly_entered = True
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_admit_materials", admit_then_cancel)
+    monkeypatch.setattr(service, "_compact_and_build", track_assembly)
+
+    with pytest.raises(ContextCompilerCancelledError, match="won the race"):
+        service.compile(_request(task=task, invocation_id=uuid4()))
+
+    assert not assembly_entered
+    assert contexts.load() == []

@@ -56,3 +56,5 @@ The compiler does not execute a model, tool, connector, specialist or Android ac
 ## Explicit non-goals
 
 No live provider/connector call, tool execution, mutation, final Persian GitHub report, complete trace overhaul, Voice, Notification, Scheduling, Channels, Delegation, MCP, Memory, Work Graph or new Android behavior.
+
+- Final race hardening rechecks cancellation/deadline authority after material admission and before canonical assembly; the focused test proves assembly and durable claim are never entered when the fence wins.
