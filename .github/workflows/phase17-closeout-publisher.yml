@@ -1,0 +1,142 @@
+name: Phase 1.7 Merge Closeout Publisher
+
+on:
+  push:
+    branches:
+      - docs/phase17-closeout
+    paths:
+      - .github/workflows/phase17-closeout-publisher.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase17-merge-closeout-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Record Phase 1.7 merge closeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, *, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: anchor count={count}, expected=1")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          plan = "docs/IMPLEMENTATION_MASTER_PLAN.md"
+          replace_once(
+              plan,
+              "Phase 1.7 Context Compiler               VALIDATING — PR #56\n"
+              "Phase 1.8 End-to-End Trace               QUEUED\n",
+              "Phase 1.7 Context Compiler               COMPLETE — PR #56\n"
+              "Phase 1.8 End-to-End Trace               ACTIVE — issue #59\n",
+              label="master plan current position",
+          )
+          replace_once(
+              plan,
+              "## 1.7 Context compiler and compaction — VALIDATING\n\n"
+              "Implementation is active in PR #56 for issue #55. The boundary now provides deterministic taint-aware compilation, exact tool/output-schema intersection, typed omission and truncation reports, distinct project/decision/evidence limits, schema-only repository-report authority, restart-safe replay, bounded terminal retention and cancellation fences before assembly, claim and handoff. Compilation performs zero model, tool, connector or specialist calls.\n",
+              "## 1.7 Context compiler and compaction — COMPLETE\n\n"
+              "Merged through PR #56 at `dab5333140da2d9cf9b982a57ede1a2d08397cf1`. Issue #55 completed; ADR 0020 accepted. Exact validated head `855eddcc5a91d90912761fb0f5012cd3e45de9c4` passed standard CI run `30358547806` with 404 Core tests and full Android build/JVM/lint/debug-APK gates.\n",
+              label="master plan Phase 1.7 closeout",
+          )
+          plan_path = Path(plan)
+          plan_text = plan_path.read_text(encoding="utf-8")
+          if "## 1.8 End-to-end correlated trace — ACTIVE" not in plan_text:
+              plan_path.write_text(
+                  plan_text.rstrip()
+                  + "\n\n## 1.8 End-to-end correlated trace — ACTIVE\n\n"
+                  + "Tracking issue: #59.\n\n"
+                  + "### Objective\n\n"
+                  + "Persist one privacy-safe, restart-safe and sequence-ordered trace correlated across routing, context, invocation, governed tool, typed result, cancellation and replay identities without storing private bodies or credentials.\n\n"
+                  + "### Current boundary\n\n"
+                  + "The existing `TraceEvent` kinds and process-local sinks are inputs to this step, not its final durable authority. Phase 1.8 must add stable trace identity, transactional sequence ordering, idempotent append/conflict semantics, SQLite WAL durability, completeness/gap projections, bounded whole-trace retention and exact Core-lifespan configuration.\n\n"
+                  + "### Explicit non-goals\n\n"
+                  + "No network exporter, external observability service, live-provider staging, complete GitHub report workflow, public trace API, mutation, Voice, Notification, Memory, Work Graph, MCP or new Android behavior.\n",
+                  encoding="utf-8",
+              )
+
+          readme = "docs/README.md"
+          replace_once(
+              readme,
+              "PR #56 is validating the deterministic Context Compiler. The public execution API remains routing-only.\n",
+              "PR #56 merged the deterministic Context Compiler. Issue #59 is the active Phase 1.8 correlated-trace boundary. The public execution API remains routing-only.\n",
+              label="README runtime status",
+          )
+          replace_once(
+              readme,
+              "- issue #55 / PR #56 — deterministic taint-aware Context Compiler, validating;\n",
+              "- issue #55 / PR #56 — deterministic taint-aware Context Compiler, complete;\n"
+              "- issue #59 — durable privacy-safe correlated end-to-end trace, active;\n",
+              label="README roadmap status",
+          )
+
+          runtime = "docs/AGENT_RUNTIME.md"
+          replace_once(
+              runtime,
+              "Phase 1.7 deterministic Context Compiler is validating in PR #56. The default execution API remains routing-only.\n",
+              "Phase 1.7 deterministic Context Compiler merged in PR #56. Phase 1.8 durable correlated trace is active in issue #59. The default execution API remains routing-only.\n",
+              label="runtime status",
+          )
+
+          closeout = Path("docs/validation/phase-1-7-merge-closeout.md")
+          closeout.write_text(
+              "# Phase 1.7 Context Compiler — merge closeout\n\n"
+              "- Tracking issue: #55 — closed as completed.\n"
+              "- Pull request: #56 — merged.\n"
+              "- Exact validated head: `855eddcc5a91d90912761fb0f5012cd3e45de9c4`.\n"
+              "- Standard CI run: `30358547806`.\n"
+              "- Core: Ruff, strict MyPy and 404 tests passed.\n"
+              "- Android: build, JVM tests, lint, diagnostics and debug APK passed.\n"
+              "- Review audit: no unresolved thread or pending review.\n"
+              "- Merge commit: `dab5333140da2d9cf9b982a57ede1a2d08397cf1`.\n"
+              "- Ordinary CI made zero live model/provider/connector/MCP calls.\n"
+              "- No temporary publisher workflow or tracked `.simorgh` runtime state entered `main`.\n\n"
+              "This closeout changes documentation only; it adds no runtime code, configuration, dependency, API, permission or Android behavior.\n\n"
+              "The next isolated trust boundary is issue #59, Phase 1.8 durable privacy-safe correlated trace. Voice PR #35 and later product surfaces remain parked.\n",
+              encoding="utf-8",
+          )
+
+          Path(".github/workflows/phase17-closeout-publisher.yml").unlink()
+          PY
+          git diff --check
+
+      - name: Commit closeout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: close Phase 1.7 and activate correlated trace'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: docs/phase17-closeout
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "branch moved during closeout publication" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
