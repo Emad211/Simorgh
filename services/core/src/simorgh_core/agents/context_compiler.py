@@ -413,14 +413,17 @@ class ContextCompilerService:
                     raise ContextCompilerPolicyError(
                         "required context material exceeds compiler policy"
                     )
-                omissions.append(_omission(material, reason))
+                _append_report_once(omissions, _omission(material, reason))
                 continue
             if len(sections) >= self._policy.limits.max_sections:
                 if material.required:
                     raise ContextCompilerLimitError(
                         "required context material exceeds section limit"
                     )
-                omissions.append(_omission(material, ContextOmissionReason.SECTION_LIMIT))
+                _append_report_once(
+                    omissions,
+                    _omission(material, ContextOmissionReason.SECTION_LIMIT),
+                )
                 continue
             if material.source_kind == ContextSourceKind.EVIDENCE:
                 if evidence_count >= self._policy.limits.max_evidence_items:
@@ -428,8 +431,9 @@ class ContextCompilerService:
                         raise ContextCompilerLimitError(
                             "required evidence exceeds evidence item limit"
                         )
-                    omissions.append(
-                        _omission(material, ContextOmissionReason.EVIDENCE_LIMIT)
+                    _append_report_once(
+                        omissions,
+                        _omission(material, ContextOmissionReason.EVIDENCE_LIMIT),
                     )
                     continue
                 evidence_count += 1
@@ -442,6 +446,10 @@ class ContextCompilerService:
                     : self._policy.limits.max_text_characters
                 ]
                 sections.append(context_section_from_material(material, content=included))
+                _append_report_once(
+                    omissions,
+                    _omission(material, ContextOmissionReason.TEXT_LIMIT),
+                )
                 continue
             sections.append(context_section_from_material(material))
         if len(omissions) > self._policy.limits.max_omissions:
@@ -512,34 +520,34 @@ class ContextCompilerService:
                 )
             index = optional_indices[-1]
             current = sections[index]
+            reason = (
+                ContextOmissionReason.BYTE_LIMIT
+                if over_bytes
+                else ContextOmissionReason.TOKEN_LIMIT
+            )
+            report = ContextOmission(
+                material_id=current.material_id,
+                request_id=current.request_id,
+                source_kind=current.source_kind,
+                source_id=current.source_id,
+                source_sha256=current.source_sha256,
+                reason=reason,
+            )
             if len(current.content) > 1:
                 reduced_length = max(1, len(current.content) // 2)
                 sections[index] = _truncate_section(
                     current,
                     current.content[:reduced_length],
                 )
+                _append_report_once(omissions, report)
             else:
                 sections.pop(index)
-                reason = (
-                    ContextOmissionReason.BYTE_LIMIT
-                    if over_bytes
-                    else ContextOmissionReason.TOKEN_LIMIT
+                _append_report_once(omissions, report)
+            omissions = sorted(omissions, key=context_omission_sort_key)
+            if len(omissions) > self._policy.limits.max_omissions:
+                raise ContextCompilerLimitError(
+                    "context compaction omission report exceeds limit"
                 )
-                omissions.append(
-                    ContextOmission(
-                        material_id=current.material_id,
-                        request_id=current.request_id,
-                        source_kind=current.source_kind,
-                        source_id=current.source_id,
-                        source_sha256=current.source_sha256,
-                        reason=reason,
-                    )
-                )
-                omissions = sorted(omissions, key=context_omission_sort_key)
-                if len(omissions) > self._policy.limits.max_omissions:
-                    raise ContextCompilerLimitError(
-                        "context compaction omission report exceeds limit"
-                    )
         raise ContextCompilerLimitError("context compaction did not converge")
 
     def _require_still_active(self, request_id: UUID, *, now_ms: int) -> None:
@@ -769,6 +777,34 @@ def _omission(
         source_sha256=material.source_sha256,
         reason=reason,
     )
+
+
+def _append_report_once(
+    reports: list[ContextOmission],
+    report: ContextOmission,
+) -> None:
+    identity = (
+        report.material_id,
+        report.request_id,
+        report.source_kind,
+        report.source_id,
+        report.source_sha256,
+        report.reason,
+    )
+    if any(
+        (
+            current.material_id,
+            current.request_id,
+            current.source_kind,
+            current.source_id,
+            current.source_sha256,
+            current.reason,
+        )
+        == identity
+        for current in reports
+    ):
+        return
+    reports.append(report)
 
 
 def _truncate_section(section: ContextSection, content: str) -> ContextSection:
