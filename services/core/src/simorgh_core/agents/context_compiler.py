@@ -182,7 +182,10 @@ class ContextCompilerService:
             omissions=omissions,
             compiled_at_ms=now_ms,
         )
-        self._require_still_active(request.request_id, now_ms=now_ms)
+        self._require_still_active(
+            request.request_id,
+            now_ms=self._now_ms(),
+        )
         claim = self._contexts.claim(bundle)
         self._require_still_active(request.request_id, now_ms=self._now_ms())
         return ContextCompilationResult(

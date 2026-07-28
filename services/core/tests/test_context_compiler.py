@@ -765,3 +765,36 @@ def test_cancellation_after_admission_never_enters_canonical_assembly(
 
     assert not assembly_entered
     assert contexts.load() == []
+
+def test_deadline_expiry_after_assembly_never_claims_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = _task().model_copy(update={"deadline_at_ms": 3_000})
+    service, _, _, _, contexts = _runtime(task=task)
+    current_ms = _NOW_MS
+    original_build = service._compact_and_build
+
+    def build_then_expire(*args, **kwargs):
+        nonlocal current_ms
+        bundle = original_build(*args, **kwargs)
+        current_ms = 3_000
+        return bundle
+
+    monkeypatch.setattr(
+        service,
+        "_wall_clock_millis",
+        lambda: current_ms,
+    )
+    monkeypatch.setattr(
+        service,
+        "_compact_and_build",
+        build_then_expire,
+    )
+
+    with pytest.raises(
+        ContextCompilerCancelledError,
+        match="deadline expired before context handoff",
+    ):
+        service.compile(_request(task=task, invocation_id=uuid4()))
+
+    assert contexts.load() == []

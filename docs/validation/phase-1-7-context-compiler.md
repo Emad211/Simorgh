@@ -88,3 +88,5 @@ Before merge, the final exact PR head must independently pass the standard repos
 - no unresolved review thread or pending change request.
 
 The PR body must record the final exact head, workflow run, Core test count and review audit before merge. After merge, the master-plan closeout records the merge SHA and activates Phase 1.8.
+
+- A focused deadline-race regression proves expiry after canonical assembly is re-evaluated with the current clock before durable claim; no context row is committed when the deadline wins.
