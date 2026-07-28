@@ -71,8 +71,9 @@ Ordinary CI uses deterministic local stores, fake typed GitHub projections and r
 ## Candidate evidence
 
 - Pre-assembly product candidate: `497a3ffe58dad9f9ec52993036b63aa928624924`.
-- Its preceding exact product head `7c9e5b60ef84464e12e15c91355920d587bad802` passed CI run `30357147500` with Ruff, strict MyPy, 402 Core tests and full Android build/JVM/lint/debug-APK gates.
-- The pre-assembly candidate adds one focused cancellation-race recheck and test, and removes its temporary publisher workflow before entering the PR diff.
+- Its preceding exact product head `7c9e5b60ef84464e12e15c91355920d587bad802` passed CI run `30357147500` with Ruff, strict MyPy, **402 Core tests** and full Android build/JVM/lint/debug-APK gates.
+- `497a3ffe58dad9f9ec52993036b63aa928624924` added one focused cancellation-race recheck and test and removed the temporary publisher before entering the product diff.
+- Final review candidate after validation documentation and redundant publisher removal: `584992cbc2fa2d1527d7c2fc18a969e05dadd240`.
 
 ## Final gate
 
