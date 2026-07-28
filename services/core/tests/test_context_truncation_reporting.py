@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import pytest
+
 from simorgh_core.agents.budget import BudgetSnapshot
 from simorgh_core.agents.context_compiler import ContextCompilerService
 from simorgh_core.agents.context_contracts import (
@@ -115,30 +117,47 @@ def _capabilities() -> SpecialistCapabilitySet:
     )
 
 
-def _material(*, request_id: UUID, source_id: str, content: str) -> ContextMaterial:
+def _material(
+    *,
+    request_id: UUID,
+    source_id: str,
+    content: str,
+    source_kind: ContextSourceKind = ContextSourceKind.EVIDENCE,
+    priority: int = 100,
+) -> ContextMaterial:
     source_sha256 = canonical_fingerprint(
-        {"source_kind": ContextSourceKind.EVIDENCE.value, "source_id": source_id}
+        {"source_kind": source_kind.value, "source_id": source_id}
+    )
+    trusted = source_kind in {
+        ContextSourceKind.PROJECT_GOAL,
+        ContextSourceKind.DECISION,
+        ContextSourceKind.RESULT_REFERENCE,
+    }
+    trust = (
+        ContextTrustClass.TRUSTED_PROJECT_FACT
+        if trusted
+        else ContextTrustClass.UNTRUSTED_EXTERNAL_EVIDENCE
     )
     return ContextMaterial(
         material_id=context_material_id_for(
             request_id=request_id,
-            source_kind=ContextSourceKind.EVIDENCE,
+            source_kind=source_kind,
             source_id=source_id,
             source_sha256=source_sha256,
         ),
         request_id=request_id,
-        source_kind=ContextSourceKind.EVIDENCE,
-        trust=ContextTrustClass.UNTRUSTED_EXTERNAL_EVIDENCE,
+        source_kind=source_kind,
+        trust=trust,
         source_id=source_id,
         source_sha256=source_sha256,
         content_sha256=context_text_sha256(content),
         content=content,
-        priority=100,
+        priority=priority,
         observed_at_ms=1_500,
         fresh_until_ms=20_000,
         cache_disposition=EvidenceCacheDisposition.LIVE,
         content_addressed=False,
-        tainted=True,
+        tainted=not trusted,
         privacy=PrivacyClassification.INTERNAL,
         retention=RetentionDisposition.SESSION,
         citation_reference=f"fixture:{source_id}",
@@ -149,7 +168,7 @@ def _request(
     *,
     task: TaskEnvelope,
     invocation_id: UUID,
-    material: ContextMaterial,
+    materials: tuple[ContextMaterial, ...],
 ) -> ContextCompilationRequest:
     tool_schemas = build_github_context_tool_schemas(
         manifest=default_github_read_manifest(),
@@ -161,7 +180,7 @@ def _request(
         agent_id="development.planner",
         agent_version="1.0.0",
         capabilities=_capabilities(),
-        materials=(material,),
+        materials=materials,
         tool_schemas=tool_schemas,
         output_schema=build_specialist_plan_context_output_schema(
             registry=default_result_schema_registry(),
@@ -173,7 +192,7 @@ def _request(
 def _service(
     *,
     task: TaskEnvelope,
-    material: ContextMaterial,
+    materials: tuple[ContextMaterial, ...],
     policy: ContextCompilerPolicy,
 ) -> ContextCompilerService:
     task_store = InMemoryAgentTaskStore()
@@ -190,7 +209,7 @@ def _service(
         specialist_registry=default_specialist_registry(),
         result_schema_registry=default_result_schema_registry(),
         context_store=InMemoryContextStore(),
-        material_registry=ContextMaterialRegistry((material,)),
+        material_registry=ContextMaterialRegistry(materials),
         reviewed_tool_schemas={item.tool_id: item for item in tool_schemas},
         policy=policy,
         wall_clock_millis=lambda: _NOW_MS,
@@ -206,14 +225,14 @@ def test_text_limit_truncation_records_source_and_reason() -> None:
     )
     service = _service(
         task=task,
-        material=material,
+        materials=(material,),
         policy=ContextCompilerPolicy(
             limits=ContextCompilerLimits(max_text_characters=160)
         ),
     )
 
     result = service.compile(
-        _request(task=task, invocation_id=uuid4(), material=material)
+        _request(task=task, invocation_id=uuid4(), materials=(material,))
     )
     section = next(
         item for item in result.bundle.sections if item.material_id == material.material_id
@@ -240,7 +259,7 @@ def test_total_byte_compaction_records_reason_without_duplicate_reports() -> Non
     )
     service = _service(
         task=task,
-        material=material,
+        materials=(material,),
         policy=ContextCompilerPolicy(
             limits=ContextCompilerLimits(
                 max_total_bytes=40_000,
@@ -251,7 +270,7 @@ def test_total_byte_compaction_records_reason_without_duplicate_reports() -> Non
     )
 
     result = service.compile(
-        _request(task=task, invocation_id=uuid4(), material=material)
+        _request(task=task, invocation_id=uuid4(), materials=(material,))
     )
     reports = [
         item
@@ -266,3 +285,60 @@ def test_total_byte_compaction_records_reason_without_duplicate_reports() -> Non
     )
     assert section.disposition == ContextSectionDisposition.TRUNCATED
     assert section.included_characters < len(material.content)
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "limit_name", "reason"),
+    (
+        (
+            ContextSourceKind.PROJECT_GOAL,
+            "max_project_items",
+            ContextOmissionReason.PROJECT_LIMIT,
+        ),
+        (
+            ContextSourceKind.DECISION,
+            "max_decision_items",
+            ContextOmissionReason.DECISION_LIMIT,
+        ),
+    ),
+)
+def test_project_and_decision_item_limits_are_explicitly_reported(
+    source_kind: ContextSourceKind,
+    limit_name: str,
+    reason: ContextOmissionReason,
+) -> None:
+    task = _task()
+    primary = _material(
+        request_id=task.request_id,
+        source_id=f"{source_kind.value}.primary",
+        content="authoritative primary fact",
+        source_kind=source_kind,
+        priority=200,
+    )
+    secondary = _material(
+        request_id=task.request_id,
+        source_id=f"{source_kind.value}.secondary",
+        content="lower-priority secondary fact",
+        source_kind=source_kind,
+        priority=100,
+    )
+    materials = (secondary, primary)
+    limits = ContextCompilerLimits.model_validate({limit_name: 1})
+    service = _service(
+        task=task,
+        materials=materials,
+        policy=ContextCompilerPolicy(limits=limits),
+    )
+
+    result = service.compile(
+        _request(task=task, invocation_id=uuid4(), materials=materials)
+    )
+
+    included_ids = {section.material_id for section in result.bundle.sections}
+    assert primary.material_id in included_ids
+    assert secondary.material_id not in included_ids
+    assert [
+        omission.reason
+        for omission in result.bundle.omissions
+        if omission.material_id == secondary.material_id
+    ] == [reason]
