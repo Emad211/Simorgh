@@ -1,0 +1,104 @@
+name: Phase 1.7 Isolated Acceptance Runner
+
+on:
+  push:
+    branches:
+      - core/context-compiler
+    paths:
+      - .github/phase17-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase17-context-compiler-runner
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Apply reviewed acceptance patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          source = Path(
+              '.github/workflows/phase17-acceptance-finalizer.yml'
+          ).read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n"
+          if source.count(start_marker) != 1:
+              raise SystemExit('acceptance Python start marker is not unique')
+          remainder = source.split(start_marker, 1)[1]
+          if remainder.count(end_marker) != 1:
+              raise SystemExit('acceptance Python end marker is not unique')
+          embedded = dedent(remainder.split(end_marker, 1)[0])
+          exec(
+              compile(embedded, 'phase17-acceptance-embedded.py', 'exec'),
+              {'__name__': '__main__'},
+          )
+          PY
+          rm -f .simorgh/contexts.sqlite3 .simorgh/contexts.sqlite3.lock
+          rm -f .github/phase17-trigger
+          rm -f .github/workflows/phase17-acceptance-finalizer.yml
+          rm -f .github/workflows/phase17-runner.yml
+          git diff --check
+
+      - name: Run complete acceptance gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check --fix services/core/src/simorgh_core/agents/specialist_results.py
+          ruff check --fix services/core/src/simorgh_core/agents/result_authority.py
+          ruff check --fix services/core/src/simorgh_core/agents/context_projections.py
+          ruff check --fix services/core/src/simorgh_core/agents/context_compiler.py
+          ruff check --fix services/core/tests/test_context_github_read_acceptance.py
+          ruff check .
+          mypy services/core/src
+          pytest
+          git diff --check
+          if git ls-files '.simorgh/*' | grep -q .; then
+            echo 'runtime database files remain tracked' >&2
+            exit 1
+          fi
+
+      - name: Commit validated product candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'core: complete context compiler acceptance boundary'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/context-compiler
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
