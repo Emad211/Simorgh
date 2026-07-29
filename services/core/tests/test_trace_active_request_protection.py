@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from simorgh_core.agents.contracts import (
     ExecutionMode,
@@ -29,7 +29,7 @@ def _routed_entry(*, execution_mode: ExecutionMode) -> AgentTaskStoreEntryV1:
 
 
 def _invocation(
-    request_id,
+    request_id: UUID,
     *,
     state: InvocationState,
 ) -> InvocationRecord:
