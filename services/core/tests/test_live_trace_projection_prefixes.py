@@ -98,10 +98,24 @@ def _capture_projection(
             gap_event_count=0,
         )
 
+    def project_children(**kwargs: object) -> TraceReconciliationReport:
+        del kwargs
+        return TraceReconciliationReport(
+            request_count=1,
+            projected_event_count=0,
+            replayed_event_count=0,
+            gap_event_count=0,
+        )
+
     monkeypatch.setattr(
         projection_module,
         "reconcile_retained_trace_authority",
         reconcile,
+    )
+    monkeypatch.setattr(
+        projection_module,
+        "project_correlated_child_invocations",
+        project_children,
     )
     projector = StoreBackedRequestTraceProjector(
         task_store=_TaskStore(request_id),  # type: ignore[arg-type]
