@@ -6,8 +6,15 @@ from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID
 
+from simorgh_core.agents.context_contracts import SpecialistContextBundle
 from simorgh_core.agents.context_store import ContextStore
-from simorgh_core.agents.invocations import InvocationStore
+from simorgh_core.agents.invocations import (
+    InvocationKind,
+    InvocationRecord,
+    InvocationState,
+    InvocationStore,
+)
+from simorgh_core.agents.result_authority import AuthoritativeSpecialistResult
 from simorgh_core.agents.result_store import ResultStore
 from simorgh_core.agents.task_store import AgentTaskStore
 from simorgh_core.agents.trace_reconciliation import (
@@ -39,7 +46,7 @@ class NullRequestTraceProjector:
 
 
 class StoreBackedRequestTraceProjector:
-    """Project exactly one request from native durable stores, with zero execution."""
+    """Project one live request without converting transient incompleteness to gaps."""
 
     def __init__(
         self,
@@ -78,12 +85,21 @@ class StoreBackedRequestTraceProjector:
                 for result in self._result_store.load()
                 if result.request_id == request_id
             )
-            return reconcile_retained_trace_authority(
-                store=self._trace_store,
-                task_entries=((task_entry,) if task_entry is not None else ()),
+            (
+                live_invocations,
+                live_contexts,
+                live_results,
+            ) = _live_projection_authorities(
                 invocation_records=invocation_records,
                 context_bundles=context_bundles,
                 result_records=result_records,
+            )
+            return reconcile_retained_trace_authority(
+                store=self._trace_store,
+                task_entries=((task_entry,) if task_entry is not None else ()),
+                invocation_records=live_invocations,
+                context_bundles=live_contexts,
+                result_records=live_results,
                 base_ingested_at_ms=max(0, int(self._wall_clock_millis())),
             )
         except RequestTraceProjectionError:
@@ -111,6 +127,97 @@ class RequestTraceProjectorRegistry:
 
     def reset_to_null(self) -> None:
         self.configure(NullRequestTraceProjector())
+
+
+def _live_projection_authorities(
+    *,
+    invocation_records: tuple[InvocationRecord, ...],
+    context_bundles: tuple[SpecialistContextBundle, ...],
+    result_records: tuple[AuthoritativeSpecialistResult, ...],
+) -> tuple[
+    tuple[InvocationRecord, ...],
+    tuple[SpecialistContextBundle, ...],
+    tuple[AuthoritativeSpecialistResult, ...],
+]:
+    """Return only source sets that form a complete live causal prefix.
+
+    Native stores remain authoritative for every intermediate state. A live projection
+    waits rather than emitting immutable missing-context/result/parent gaps while a
+    producer is still committing the next authority. Startup reconciliation continues
+    to receive the complete retained stores and records genuine durable gaps.
+    """
+
+    contexts_by_invocation: dict[UUID, SpecialistContextBundle] = {}
+    for bundle in context_bundles:
+        existing = contexts_by_invocation.get(bundle.specialist_invocation_id)
+        if existing is not None and existing != bundle:
+            raise RequestTraceProjectionError(
+                "conflicting live contexts exist for one specialist invocation"
+            )
+        contexts_by_invocation[bundle.specialist_invocation_id] = bundle
+
+    results_by_invocation: dict[UUID, AuthoritativeSpecialistResult] = {}
+    for result in result_records:
+        existing = results_by_invocation.get(result.invocation_id)
+        if existing is not None and existing != result:
+            raise RequestTraceProjectionError(
+                "conflicting live results exist for one specialist invocation"
+            )
+        results_by_invocation[result.invocation_id] = result
+
+    specialists = sorted(
+        (
+            record
+            for record in invocation_records
+            if record.kind == InvocationKind.SPECIALIST
+        ),
+        key=lambda record: (
+            record.attempt,
+            record.created_at_ms,
+            str(record.invocation_id),
+        ),
+    )
+    selected: dict[UUID, InvocationRecord] = {}
+    pending = list(specialists)
+    while pending:
+        progressed = False
+        for record in tuple(pending):
+            parent_id = record.parent_invocation_id
+            if parent_id is not None:
+                parent = selected.get(parent_id)
+                if parent is None or not parent.terminal:
+                    continue
+            if record.invocation_id not in contexts_by_invocation:
+                continue
+            if (
+                record.terminal
+                and record.state == InvocationState.COMPLETED
+                and record.invocation_id not in results_by_invocation
+            ):
+                continue
+            selected[record.invocation_id] = record
+            pending.remove(record)
+            progressed = True
+        if not progressed:
+            break
+
+    selected_ids = frozenset(selected)
+    live_invocations = tuple(
+        record
+        for record in invocation_records
+        if record.kind != InvocationKind.SPECIALIST
+        or record.invocation_id in selected_ids
+    )
+    live_contexts = tuple(
+        contexts_by_invocation[invocation_id]
+        for invocation_id in sorted(selected_ids, key=str)
+    )
+    live_results = tuple(
+        results_by_invocation[invocation_id]
+        for invocation_id in sorted(selected_ids, key=str)
+        if invocation_id in results_by_invocation
+    )
+    return live_invocations, live_contexts, live_results
 
 
 request_trace_projector_registry = RequestTraceProjectorRegistry()
