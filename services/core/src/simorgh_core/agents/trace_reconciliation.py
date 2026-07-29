@@ -21,6 +21,10 @@ from simorgh_core.agents.result_authority import (
 )
 from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
 from simorgh_core.agents.task_store import AgentTaskStoreEntryV1
+from simorgh_core.agents.trace_cancellation_projection import (
+    CancellationTraceProjection,
+    project_task_cancellation,
+)
 from simorgh_core.agents.trace_child_invocations import (
     ChildTraceProjectionReport,
     project_classifier_invocation,
@@ -239,6 +243,44 @@ def _reconcile_request(
 
     decision = entry.record.routing_decision
     if decision is None:
+        cancellation = project_task_cancellation(
+            store=store,
+            task_entry=entry,
+            parent_event=task_claim,
+            base_ingested_at_ms=counter.current_ingestion_time(),
+        )
+        if cancellation is not None:
+            counter.absorb(cancellation)
+            _append_task_terminal(
+                store=store,
+                counter=counter,
+                entry=entry,
+                parent_event_id=cancellation.event.event_id,
+                disposition=cancellation.disposition,
+                reason_code=cancellation.reason_code,
+            )
+            return
+        if (
+            entry.record.phase == AgentTaskPhase.CANCELLED
+            and entry.record.cancellation_request is not None
+        ):
+            if store.view(request_id).envelope.terminal:
+                _append_source_evolution_gap(
+                    store=store,
+                    counter=counter,
+                    entry=entry,
+                )
+            return
+        if entry.record.phase == AgentTaskPhase.CANCELLED:
+            _append_task_terminal(
+                store=store,
+                counter=counter,
+                entry=entry,
+                parent_event_id=task_claim.event_id,
+                disposition=TraceDisposition.CANCELLED,
+                reason_code=AgentTaskPhase.CANCELLED.value,
+            )
+            return
         if entry.record.phase != AgentTaskPhase.ROUTING:
             _append_gap(
                 store=store,
@@ -286,6 +328,34 @@ def _reconcile_request(
     )
 
     if decision.state != RoutingState.ROUTED:
+        cancellation = project_task_cancellation(
+            store=store,
+            task_entry=entry,
+            parent_event=routing,
+            base_ingested_at_ms=counter.current_ingestion_time(),
+        )
+        if cancellation is not None:
+            counter.absorb(cancellation)
+            _append_task_terminal(
+                store=store,
+                counter=counter,
+                entry=entry,
+                parent_event_id=cancellation.event.event_id,
+                disposition=cancellation.disposition,
+                reason_code=cancellation.reason_code,
+            )
+            return
+        if (
+            entry.record.phase == AgentTaskPhase.CANCELLED
+            and entry.record.cancellation_request is not None
+        ):
+            if store.view(request_id).envelope.terminal:
+                _append_source_evolution_gap(
+                    store=store,
+                    counter=counter,
+                    entry=entry,
+                )
+            return
         if entry.record.phase in {
             AgentTaskPhase.CANCELLED,
             AgentTaskPhase.EXPIRED,
@@ -356,6 +426,15 @@ def _reconcile_request(
                 missing_source_id=result.invocation_id,
             )
 
+    cancellation = project_task_cancellation(
+        store=store,
+        task_entry=entry,
+        parent_event=routing,
+        base_ingested_at_ms=counter.current_ingestion_time(),
+    )
+    if cancellation is not None:
+        counter.absorb(cancellation)
+
     _project_request_terminal(
         store=store,
         counter=counter,
@@ -363,6 +442,7 @@ def _reconcile_request(
         routing_event_id=routing.event_id,
         projected=projected,
         specialists=specialists,
+        cancellation=cancellation,
     )
 
 
@@ -670,7 +750,29 @@ def _project_request_terminal(
     routing_event_id: UUID,
     projected: tuple[_ProjectedSpecialist, ...],
     specialists: tuple[InvocationRecord, ...],
+    cancellation: CancellationTraceProjection | None,
 ) -> None:
+    if cancellation is not None:
+        _append_task_terminal(
+            store=store,
+            counter=counter,
+            entry=entry,
+            parent_event_id=cancellation.event.event_id,
+            disposition=cancellation.disposition,
+            reason_code=cancellation.reason_code,
+        )
+        return
+    if (
+        entry.record.phase == AgentTaskPhase.CANCELLED
+        and entry.record.cancellation_request is not None
+    ):
+        if store.view(entry.request_id).envelope.terminal:
+            _append_source_evolution_gap(
+                store=store,
+                counter=counter,
+                entry=entry,
+            )
+        return
     if not specialists:
         if entry.record.phase in {
             AgentTaskPhase.CANCELLED,
