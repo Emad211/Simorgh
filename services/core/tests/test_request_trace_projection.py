@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 import pytest
 
 import simorgh_core.agents.trace_projection as projection_module
+from simorgh_core.agents.contracts import InvocationState
+from simorgh_core.agents.invocations import InvocationKind
 from simorgh_core.agents.trace_projection import (
     NullRequestTraceProjector,
     RequestTraceProjectionError,
@@ -44,24 +46,58 @@ def test_store_backed_projector_filters_every_authority_by_request(
 ) -> None:
     request_id = uuid4()
     other_id = uuid4()
+    invocation_id = uuid4()
+    other_invocation_id = uuid4()
     task_entry = SimpleNamespace(request_id=request_id)
     task_store = _TaskStore(task_entry)
+    invocation = SimpleNamespace(
+        request_id=request_id,
+        invocation_id=invocation_id,
+        kind=InvocationKind.SPECIALIST,
+        state=InvocationState.COMPLETED,
+        terminal=True,
+        parent_invocation_id=None,
+        attempt=1,
+        created_at_ms=1_000,
+    )
     invocation_store = _LoadStore(
         (
-            SimpleNamespace(request_id=request_id),
-            SimpleNamespace(request_id=other_id),
+            invocation,
+            SimpleNamespace(
+                request_id=other_id,
+                invocation_id=other_invocation_id,
+                kind=InvocationKind.MODEL,
+            ),
         )
+    )
+    context = SimpleNamespace(
+        request_id=request_id,
+        specialist_invocation_id=invocation_id,
+        context_bundle_id=uuid4(),
     )
     context_store = _LoadStore(
         (
-            SimpleNamespace(request_id=other_id),
-            SimpleNamespace(request_id=request_id),
+            SimpleNamespace(
+                request_id=other_id,
+                specialist_invocation_id=other_invocation_id,
+                context_bundle_id=uuid4(),
+            ),
+            context,
         )
+    )
+    result = SimpleNamespace(
+        request_id=request_id,
+        invocation_id=invocation_id,
+        result_id=uuid4(),
     )
     result_store = _LoadStore(
         (
-            SimpleNamespace(request_id=request_id),
-            SimpleNamespace(request_id=other_id),
+            result,
+            SimpleNamespace(
+                request_id=other_id,
+                invocation_id=other_invocation_id,
+                result_id=uuid4(),
+            ),
         )
     )
     trace_store = _TraceStore()
@@ -97,11 +133,9 @@ def test_store_backed_projector_filters_every_authority_by_request(
     assert task_store.requested == [request_id]
     assert captured["store"] is trace_store
     assert captured["task_entries"] == (task_entry,)
-    for key in ("invocation_records", "context_bundles", "result_records"):
-        records = captured[key]
-        assert isinstance(records, tuple)
-        assert len(records) == 1
-        assert records[0].request_id == request_id
+    assert captured["invocation_records"] == (invocation,)
+    assert captured["context_bundles"] == (context,)
+    assert captured["result_records"] == (result,)
     assert captured["base_ingested_at_ms"] == 9_000
 
 
