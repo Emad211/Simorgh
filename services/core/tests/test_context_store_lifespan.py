@@ -13,6 +13,9 @@ from simorgh_core.agents.context_store import (
     SQLiteContextStore,
     context_store_registry,
 )
+from simorgh_core.agents.trace_projecting_authority_stores import (
+    TraceProjectingContextStore,
+)
 from simorgh_core.app import app, lifespan
 from simorgh_core.config import get_settings
 
@@ -25,8 +28,9 @@ def test_application_lifespan_loads_and_resets_context_authority() -> None:
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
         current = context_store_registry.current()
-        assert isinstance(current, SQLiteContextStore)
-        assert Path(current.path) == path.expanduser().resolve()
+        assert isinstance(current, TraceProjectingContextStore)
+        assert current.load() == []
+        assert path.expanduser().resolve().exists()
 
     current = context_store_registry.current()
     assert isinstance(current, InMemoryContextStore)
