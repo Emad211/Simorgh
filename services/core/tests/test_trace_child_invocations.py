@@ -16,11 +16,13 @@ from simorgh_core.agents.invocations import (
 from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
 from simorgh_core.agents.task_store import AgentTaskStoreEntryV1
 from simorgh_core.agents.trace_child_invocations import (
-    project_correlated_child_invocations,
+    project_classifier_invocation,
+    project_specialist_owned_child_invocations,
 )
 from simorgh_core.agents.trace_contracts import (
     DurableTraceEventKind,
     TraceContextDetails,
+    TraceEventRecord,
     TraceInvocationDetails,
     TraceRoutingDetails,
     TraceSourceAuthorityKind,
@@ -56,7 +58,10 @@ def _task_entry(
     )
 
 
-def _task_claim(store: InMemoryTraceStore, request_id: UUID) -> UUID:
+def _task_claim(
+    store: InMemoryTraceStore,
+    request_id: UUID,
+) -> TraceEventRecord:
     return store.append(
         new_trace_event_candidate(
             request_id=request_id,
@@ -72,7 +77,7 @@ def _task_claim(store: InMemoryTraceStore, request_id: UUID) -> UUID:
             occurred_at_ms=1_000,
         ),
         ingested_at_ms=2_000,
-    ).record.event_id
+    ).record
 
 
 def _specialist_start(
@@ -81,8 +86,8 @@ def _specialist_start(
     request_id: UUID,
     invocation_id: UUID,
     input_fingerprint: str,
-) -> UUID:
-    task_event_id = _task_claim(store, request_id)
+) -> TraceEventRecord:
+    task_event = _task_claim(store, request_id)
     decision_id = uuid4()
     routing = store.append(
         new_trace_event_candidate(
@@ -92,8 +97,8 @@ def _specialist_start(
             source_authority_kind=TraceSourceAuthorityKind.ROUTING_DECISION,
             source_authority_id=decision_id,
             source_authority_sha256=_SHA_B,
-            parent_event_id=task_event_id,
-            causation_event_id=task_event_id,
+            parent_event_id=task_event.event_id,
+            causation_event_id=task_event.event_id,
             details=TraceRoutingDetails(
                 routing_fingerprint=_SHA_B,
                 state=RoutingState.ROUTED,
@@ -150,14 +155,14 @@ def _specialist_start(
             occurred_at_ms=1_300,
         ),
         ingested_at_ms=2_300,
-    ).record.event_id
+    ).record
 
 
 def test_classifier_model_is_linked_to_task_claim_and_usage_is_terminal() -> None:
     request_id = uuid4()
     invocation_id = uuid4()
     trace_store = InMemoryTraceStore()
-    task_event_id = _task_claim(trace_store, request_id)
+    task_event = _task_claim(trace_store, request_id)
     invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 1_500)
     invocation_store.begin(
         invocation_id=invocation_id,
@@ -180,13 +185,14 @@ def test_classifier_model_is_linked_to_task_claim_and_usage_is_terminal() -> Non
         committed_usage=usage,
     )
 
-    report = project_correlated_child_invocations(
+    report = project_classifier_invocation(
         store=trace_store,
         task_entry=_task_entry(
             request_id,
             classifier_invocation_id=invocation_id,
         ),
         invocation_records=tuple(invocation_store.load()),
+        task_claim_event=task_event,
         base_ingested_at_ms=3_000,
     )
     view = trace_store.view(request_id)
@@ -195,7 +201,7 @@ def test_classifier_model_is_linked_to_task_claim_and_usage_is_terminal() -> Non
     )
 
     assert report.projected_event_count == 2
-    assert model_events[0].parent_event_id == task_event_id
+    assert model_events[0].parent_event_id == task_event.event_id
     assert model_events[0].stage == TraceStage.MODEL
     assert model_events[1].usage == usage
     assert private_marker not in str(view.model_dump(mode="json"))
@@ -232,16 +238,17 @@ def test_specialist_owned_tool_is_linked_by_unique_cancellation_owner() -> None:
         cancellation_owner_id=owner_id,
     ).record
     trace_store = InMemoryTraceStore()
-    specialist_event_id = _specialist_start(
+    specialist_event = _specialist_start(
         trace_store,
         request_id=request_id,
         invocation_id=specialist_id,
         input_fingerprint=specialist.input_fingerprint,
     )
 
-    report = project_correlated_child_invocations(
+    report = project_specialist_owned_child_invocations(
         store=trace_store,
-        task_entry=_task_entry(request_id),
+        specialist_invocation=specialist,
+        specialist_start_event=specialist_event,
         invocation_records=(specialist, tool),
         base_ingested_at_ms=3_000,
     )
@@ -250,7 +257,7 @@ def test_specialist_owned_tool_is_linked_by_unique_cancellation_owner() -> None:
     )
 
     assert report.projected_event_count == 1
-    assert tool_event.parent_event_id == specialist_event_id
+    assert tool_event.parent_event_id == specialist_event.event_id
     assert tool_event.parent_invocation_id == specialist_id
     assert tool_event.stage == TraceStage.TOOL
 
@@ -287,11 +294,17 @@ def test_ambiguous_specialist_owner_does_not_guess_child_parent() -> None:
         cancellation_owner_id=owner_id,
     ).record
     trace_store = InMemoryTraceStore()
-    _task_claim(trace_store, request_id)
+    specialist_event = _specialist_start(
+        trace_store,
+        request_id=request_id,
+        invocation_id=specialists[0].invocation_id,
+        input_fingerprint=specialists[0].input_fingerprint,
+    )
 
-    report = project_correlated_child_invocations(
+    report = project_specialist_owned_child_invocations(
         store=trace_store,
-        task_entry=_task_entry(request_id),
+        specialist_invocation=specialists[0],
+        specialist_start_event=specialist_event,
         invocation_records=(*specialists, child),
         base_ingested_at_ms=3_000,
     )

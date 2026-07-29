@@ -17,9 +17,6 @@ from simorgh_core.agents.invocations import (
 from simorgh_core.agents.result_authority import AuthoritativeSpecialistResult
 from simorgh_core.agents.result_store import ResultStore
 from simorgh_core.agents.task_store import AgentTaskStore
-from simorgh_core.agents.trace_child_invocations import (
-    project_correlated_child_invocations,
-)
 from simorgh_core.agents.trace_reconciliation import (
     TraceReconciliationReport,
     reconcile_retained_trace_authority,
@@ -97,29 +94,14 @@ class StoreBackedRequestTraceProjector:
                 context_bundles=context_bundles,
                 result_records=result_records,
             )
-            observed_at_ms = max(0, int(self._wall_clock_millis()))
-            base_report = reconcile_retained_trace_authority(
+            return reconcile_retained_trace_authority(
                 store=self._trace_store,
                 task_entries=((task_entry,) if task_entry is not None else ()),
                 invocation_records=live_invocations,
                 context_bundles=live_contexts,
                 result_records=live_results,
-                base_ingested_at_ms=observed_at_ms,
+                base_ingested_at_ms=max(0, int(self._wall_clock_millis())),
             )
-            if task_entry is None:
-                return base_report
-            child_report = project_correlated_child_invocations(
-                store=self._trace_store,
-                task_entry=task_entry,
-                invocation_records=invocation_records,
-                base_ingested_at_ms=(
-                    observed_at_ms
-                    + base_report.projected_event_count
-                    + base_report.replayed_event_count
-                    + 1
-                ),
-            )
-            return _combine_reports(base_report, child_report)
         except RequestTraceProjectionError:
             raise
         except Exception as exc:
@@ -238,22 +220,6 @@ def _live_projection_authorities(
         if invocation_id in results_by_invocation
     )
     return live_invocations, live_contexts, live_results
-
-
-def _combine_reports(
-    first: TraceReconciliationReport,
-    second: TraceReconciliationReport,
-) -> TraceReconciliationReport:
-    return TraceReconciliationReport(
-        request_count=max(first.request_count, second.request_count),
-        projected_event_count=(
-            first.projected_event_count + second.projected_event_count
-        ),
-        replayed_event_count=(
-            first.replayed_event_count + second.replayed_event_count
-        ),
-        gap_event_count=first.gap_event_count + second.gap_event_count,
-    )
 
 
 request_trace_projector_registry = RequestTraceProjectorRegistry()

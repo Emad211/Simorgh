@@ -21,6 +21,11 @@ from simorgh_core.agents.result_authority import (
 )
 from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
 from simorgh_core.agents.task_store import AgentTaskStoreEntryV1
+from simorgh_core.agents.trace_child_invocations import (
+    ChildTraceProjectionReport,
+    project_classifier_invocation,
+    project_specialist_owned_child_invocations,
+)
 from simorgh_core.agents.trace_contracts import (
     DurableTraceEventKind,
     TraceContextDetails,
@@ -74,9 +79,17 @@ class _ProjectionCounter:
         self.gaps = 0
 
     def ingestion_time(self) -> int:
-        value = self.base_ingested_at_ms + self.next_offset
+        value = self.current_ingestion_time()
         self.next_offset += 1
         return value
+
+    def current_ingestion_time(self) -> int:
+        return self.base_ingested_at_ms + self.next_offset
+
+    def absorb(self, report: ChildTraceProjectionReport) -> None:
+        self.projected += report.projected_event_count
+        self.replayed += report.replayed_event_count
+        self.next_offset += report.attempted_event_count
 
     def record(self, *, kind: TraceClaimKind, gap: bool = False) -> None:
         if kind == TraceClaimKind.NEW:
@@ -238,6 +251,15 @@ def _reconcile_request(
             )
         return
 
+    classifier_report = project_classifier_invocation(
+        store=store,
+        task_entry=entry,
+        invocation_records=invocations,
+        task_claim_event=task_claim,
+        base_ingested_at_ms=counter.current_ingestion_time(),
+    )
+    counter.absorb(classifier_report)
+
     routing_hash = canonical_fingerprint(decision)
     routing = _append(
         store,
@@ -302,6 +324,7 @@ def _reconcile_request(
         counter=counter,
         entry=entry,
         specialists=specialists,
+        all_invocations=invocations,
         context_events=context_events,
         contexts_by_invocation=contexts_by_invocation,
         results_by_invocation=results_by_invocation,
@@ -397,6 +420,7 @@ def _project_specialists(
     counter: _ProjectionCounter,
     entry: AgentTaskStoreEntryV1,
     specialists: tuple[InvocationRecord, ...],
+    all_invocations: tuple[InvocationRecord, ...],
     context_events: dict[UUID, UUID],
     contexts_by_invocation: dict[UUID, SpecialistContextBundle],
     results_by_invocation: dict[UUID, AuthoritativeSpecialistResult],
@@ -503,6 +527,14 @@ def _project_specialists(
                     occurred_at_ms=invocation.created_at_ms,
                 ),
             )
+            child_report = project_specialist_owned_child_invocations(
+                store=store,
+                specialist_invocation=invocation,
+                specialist_start_event=start,
+                invocation_records=all_invocations,
+                base_ingested_at_ms=counter.current_ingestion_time(),
+            )
+            counter.absorb(child_report)
             terminal_event: TraceEventRecord | None = None
             result_event: TraceEventRecord | None = None
             result: AuthoritativeSpecialistResult | None = None
