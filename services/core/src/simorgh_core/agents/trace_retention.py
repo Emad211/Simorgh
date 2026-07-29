@@ -4,7 +4,9 @@ from collections.abc import Iterable
 from typing import Protocol
 from uuid import UUID
 
+from simorgh_core.agents.contracts import ExecutionMode
 from simorgh_core.agents.invocations import InvocationRecord, InvocationStore
+from simorgh_core.agents.task_state import AgentTaskPhase
 from simorgh_core.agents.task_store import AgentTaskStore, AgentTaskStoreEntryV1
 from simorgh_core.agents.trace_contracts import (
     DurableTraceEventKind,
@@ -58,16 +60,39 @@ def protected_trace_request_ids(
     task_entries: Iterable[AgentTaskStoreEntryV1],
     invocation_records: Iterable[InvocationRecord],
 ) -> frozenset[UUID]:
-    """Protect every request with nonterminal task or invocation authority."""
+    """Protect every request whose durable authority can still advance.
 
-    protected = {
-        entry.request_id
-        for entry in task_entries
-        if not entry.record.terminal
-    }
+    `AgentTaskRecord.terminal` intentionally treats `routed` as a stable routing
+    outcome, but a non-route-only request can still be waiting for its first
+    specialist/model/tool invocation. Retention must therefore distinguish a
+    stable routing decision from a completed request lifecycle.
+    """
+
+    tasks = tuple(task_entries)
+    invocations = tuple(invocation_records)
+    invocation_request_ids = {record.request_id for record in invocations}
+
+    protected: set[UUID] = set()
+    for entry in tasks:
+        record = entry.record
+        if not record.terminal:
+            protected.add(entry.request_id)
+            continue
+        if record.phase != AgentTaskPhase.ROUTED:
+            continue
+        task = getattr(record, "task", None)
+        if task is None:
+            # Defensive compatibility for legacy/incomplete fixtures. Production
+            # durable task records always carry the TaskEnvelope.
+            continue
+        if task.execution_mode == ExecutionMode.ROUTE_ONLY:
+            continue
+        if entry.request_id not in invocation_request_ids:
+            protected.add(entry.request_id)
+
     protected.update(
         record.request_id
-        for record in invocation_records
+        for record in invocations
         if not record.terminal
     )
     return frozenset(protected)
