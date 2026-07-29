@@ -24,6 +24,10 @@ from simorgh_core.agents.result_store import (
 )
 from simorgh_core.agents.sqlite_trace_store import SQLiteTraceStore
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
+from simorgh_core.agents.trace_projection import (
+    StoreBackedRequestTraceProjector,
+    request_trace_projector_registry,
+)
 from simorgh_core.agents.trace_reconciliation import (
     reconcile_retained_trace_authority,
 )
@@ -98,6 +102,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     result_store_configured = False
     context_store_configured = False
     trace_store_configured = False
+    trace_projector_configured = False
     try:
         _require_distinct_store_paths(settings)
         # Invocation identity is recovered before any dependent result authority is loaded.
@@ -165,7 +170,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         context_store_configured = True
         trace_store_registry.configure(trace_store)
         trace_store_configured = True
+        request_trace_projector_registry.configure(
+            StoreBackedRequestTraceProjector(
+                task_store=task_store,
+                invocation_store=invocation_store,
+                context_store=context_store,
+                result_store=result_store,
+                trace_store=trace_store,
+            )
+        )
+        trace_projector_configured = True
     except BaseException:
+        if trace_projector_configured:
+            request_trace_projector_registry.reset_to_null()
         if trace_store_configured:
             trace_store_registry.reset_to_memory()
         elif trace_store is not None:
@@ -198,21 +215,24 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            trace_store_registry.reset_to_memory()
+            request_trace_projector_registry.reset_to_null()
         finally:
             try:
-                context_store_registry.reset_to_memory()
+                trace_store_registry.reset_to_memory()
             finally:
                 try:
-                    result_store_registry.reset_to_memory()
+                    context_store_registry.reset_to_memory()
                 finally:
                     try:
-                        invocation_store_registry.reset_to_memory()
+                        result_store_registry.reset_to_memory()
                     finally:
                         try:
-                            await agent_task_control_plane.reset_to_memory_store()
+                            invocation_store_registry.reset_to_memory()
                         finally:
-                            await action_broker.reset_to_memory_journal()
+                            try:
+                                await agent_task_control_plane.reset_to_memory_store()
+                            finally:
+                                await action_broker.reset_to_memory_journal()
 
 
 app = FastAPI(
