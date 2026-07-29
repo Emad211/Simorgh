@@ -39,6 +39,20 @@ The transfer bundle itself is checked by:
 
 These checks are transfer validation, not a substitute for repository CI.
 
+## Published clean candidate
+
+- clean product commit: `90e684d41dabec96b355aaa71002f33f6fc370b1`;
+- direct parent: `93ff841295535fefb557df2f7501236ea26f6970`;
+- product diff: exactly 17 reviewed files;
+- temporary `.phase18` transfer files and temporary workflow changes are absent;
+- candidate validation run: `30495189320`;
+- candidate Core gates: Ruff, strict MyPy and complete pytest passed;
+- tested product artifact: `8741297344`;
+- artifact digest: `sha256:f6925808d66124bae5d751ece3eece242284eca53875f7c7edae9744e05b4a00`;
+- artifact-internal file list, patch and tarball SHA-256 checks passed.
+
+This record triggers the standard repository CI on the actual PR head. Phase 1.8 remains Draft.
+
 ## Required repository validation before merge
 
 Run on the exact resulting PR head:
