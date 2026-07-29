@@ -52,6 +52,12 @@ class TraceProjectingInvocationStore:
         cancellation_owner_id: UUID | None = None,
         attempt: int = 1,
     ) -> InvocationStart:
+        resolved_parent_id = self._resolve_parent_invocation_id(
+            request_id=request_id,
+            kind=kind,
+            parent_invocation_id=parent_invocation_id,
+            cancellation_owner_id=cancellation_owner_id,
+        )
         started = self._store.begin(
             invocation_id=invocation_id,
             request_id=request_id,
@@ -65,7 +71,7 @@ class TraceProjectingInvocationStore:
             model_id=model_id,
             tool_id=tool_id,
             connector_id=connector_id,
-            parent_invocation_id=parent_invocation_id,
+            parent_invocation_id=resolved_parent_id,
             cancellation_owner_id=cancellation_owner_id,
             attempt=attempt,
         )
@@ -193,6 +199,33 @@ class TraceProjectingInvocationStore:
 
     def close(self) -> None:
         self._store.close()
+
+    def _resolve_parent_invocation_id(
+        self,
+        *,
+        request_id: UUID,
+        kind: InvocationKind,
+        parent_invocation_id: UUID | None,
+        cancellation_owner_id: UUID | None,
+    ) -> UUID | None:
+        if (
+            parent_invocation_id is not None
+            or kind == InvocationKind.SPECIALIST
+            or cancellation_owner_id is None
+        ):
+            return parent_invocation_id
+
+        candidates = tuple(
+            record
+            for record in self._store.list_owned(request_id=request_id)
+            if record.kind == InvocationKind.SPECIALIST
+            and record.cancellation_owner_id == cancellation_owner_id
+        )
+        if len(candidates) > 1:
+            raise InvocationTraceProjectionError(
+                "child invocation parent authority is ambiguous"
+            )
+        return candidates[0].invocation_id if candidates else None
 
     @staticmethod
     def _project(request_id: UUID) -> None:
