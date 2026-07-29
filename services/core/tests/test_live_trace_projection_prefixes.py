@@ -10,6 +10,17 @@ from simorgh_core.agents.invocations import InvocationKind, InvocationState
 from simorgh_core.agents.trace_projection import StoreBackedRequestTraceProjector
 from simorgh_core.agents.trace_reconciliation import TraceReconciliationReport
 
+_TERMINAL_INVOCATION_STATES = frozenset(
+    {
+        InvocationState.COMPLETED,
+        InvocationState.FAILED,
+        InvocationState.CANCELLED,
+        InvocationState.EXPIRED,
+        InvocationState.UNKNOWN,
+        InvocationState.UNKNOWN_SIDE_EFFECT,
+    }
+)
+
 
 class _TaskStore:
     def __init__(self, request_id: UUID) -> None:
@@ -45,7 +56,7 @@ def _invocation(
         invocation_id=invocation_id,
         kind=kind,
         state=state,
-        terminal=state.terminal,
+        terminal=state in _TERMINAL_INVOCATION_STATES,
         parent_invocation_id=parent_invocation_id,
         attempt=attempt,
         created_at_ms=1_000 + attempt,
