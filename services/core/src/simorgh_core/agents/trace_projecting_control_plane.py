@@ -13,7 +13,6 @@ from simorgh_core.agents.control_plane import (
 )
 from simorgh_core.agents.task_state import AgentTaskRecord
 from simorgh_core.agents.trace_projection import (
-    RequestTraceProjectorRegistry,
     request_trace_projector_registry,
 )
 
@@ -24,17 +23,6 @@ class AgentTaskTraceUnavailableError(AgentTaskControlPlaneError):
 
 class TraceProjectingAgentTaskControlPlane(AgentTaskControlPlane):
     """Project one request after durable task/cancellation control-plane commits."""
-
-    def __init__(
-        self,
-        *args: object,
-        trace_projectors: RequestTraceProjectorRegistry | None = None,
-        **kwargs: object,
-    ) -> None:
-        super().__init__(*args, **kwargs)
-        self._trace_projectors = (
-            trace_projectors or request_trace_projector_registry
-        )
 
     async def submit(self, task: TaskEnvelope) -> AgentTaskRecord:
         try:
@@ -74,9 +62,10 @@ class TraceProjectingAgentTaskControlPlane(AgentTaskControlPlane):
         self._project_request(record.request_id)
         return record
 
-    def _project_request(self, request_id: UUID) -> None:
+    @staticmethod
+    def _project_request(request_id: UUID) -> None:
         try:
-            self._trace_projectors.current().project_request(request_id)
+            request_trace_projector_registry.current().project_request(request_id)
         except Exception as exc:
             raise AgentTaskTraceUnavailableError(
                 "durable task state committed but trace projection is unavailable"
