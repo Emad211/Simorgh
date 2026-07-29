@@ -13,17 +13,26 @@ from simorgh_core import __version__
 from simorgh_core.agents.api import agent_task_control_plane
 from simorgh_core.agents.api import router as agent_task_router
 from simorgh_core.agents.context_retention import RetentionAwareSQLiteContextStore
-from simorgh_core.agents.context_store import context_store_registry
+from simorgh_core.agents.context_store import ContextStore, context_store_registry
 from simorgh_core.agents.invocation_store import (
     SQLiteInvocationStore,
     invocation_store_registry,
 )
+from simorgh_core.agents.invocations import InvocationStore
 from simorgh_core.agents.result_store import (
+    ResultStore,
     SQLiteResultStore,
     result_store_registry,
 )
 from simorgh_core.agents.sqlite_trace_store import SQLiteTraceStore
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
+from simorgh_core.agents.trace_projecting_authority_stores import (
+    TraceProjectingContextStore,
+    TraceProjectingResultStore,
+)
+from simorgh_core.agents.trace_projecting_invocation_store import (
+    TraceProjectingInvocationStore,
+)
 from simorgh_core.agents.trace_projection import (
     StoreBackedRequestTraceProjector,
     request_trace_projector_registry,
@@ -91,9 +100,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     action_journal: SQLiteActionJournal | None = None
     task_store: SQLiteAgentTaskStore | None = None
-    invocation_store: SQLiteInvocationStore | None = None
-    result_store: SQLiteResultStore | None = None
-    context_store: RetentionAwareSQLiteContextStore | None = None
+    invocation_store: InvocationStore | None = None
+    result_store: ResultStore | None = None
+    context_store: ContextStore | None = None
     raw_trace_store: SQLiteTraceStore | None = None
     trace_store: RetentionAwareTraceStore | None = None
     action_journal_configured = False
@@ -105,18 +114,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     trace_projector_configured = False
     try:
         _require_distinct_store_paths(settings)
-        # Invocation identity is recovered before any dependent result authority is loaded.
-        invocation_store = SQLiteInvocationStore(
+        # The wrappers are installed while the projector registry is still a no-op.
+        # Startup recovery therefore reads durable authority without recursive projection.
+        raw_invocation_store = SQLiteInvocationStore(
             settings.simorgh_invocation_store_path,
         )
-        result_store = SQLiteResultStore(settings.simorgh_result_store_path)
-        context_store = RetentionAwareSQLiteContextStore(
+        invocation_store = TraceProjectingInvocationStore(raw_invocation_store)
+        raw_result_store = SQLiteResultStore(settings.simorgh_result_store_path)
+        result_store = TraceProjectingResultStore(raw_result_store)
+        raw_context_store = RetentionAwareSQLiteContextStore(
             settings.simorgh_context_store_path,
             invocation_store=invocation_store,
             max_terminal_records=(
                 settings.simorgh_context_store_max_terminal_records
             ),
         )
+        context_store = TraceProjectingContextStore(raw_context_store)
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
             max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
