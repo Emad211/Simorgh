@@ -225,6 +225,30 @@ class SQLiteTraceStore:
             _validate_record_groups(records)
             return records
 
+    def delete_trace(self, request_id: UUID) -> int:
+        """Delete one complete trace under the retention transaction boundary."""
+
+        with self._lock:
+            self._require_healthy_locked()
+            try:
+                row = self._connection.execute(
+                    "SELECT COUNT(*) AS count FROM trace_events WHERE request_id = ?",
+                    (str(request_id),),
+                ).fetchone()
+                count = int(row["count"]) if row is not None else 0
+                if count:
+                    with self._transaction():
+                        self._connection.execute(
+                            "DELETE FROM trace_events WHERE request_id = ?",
+                            (str(request_id),),
+                        )
+                return count
+            except sqlite3.DatabaseError as exc:
+                self._raise_database_failure_locked(
+                    "could not prune terminal trace",
+                    exc,
+                )
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
@@ -489,8 +513,8 @@ def _encoded_record(record: TraceEventRecord) -> tuple[str, str]:
 
 
 __all__ = [
-    "SQLiteTraceStore",
     "TRACE_STORE_SCHEMA_VERSION",
+    "SQLiteTraceStore",
     "TraceStoreCorruptionError",
     "TraceStoreInUseError",
     "TraceStoreSchemaError",

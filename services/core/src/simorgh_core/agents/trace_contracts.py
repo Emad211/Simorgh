@@ -790,9 +790,10 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
             raise ValueError("invocation trace source must equal invocation identity")
     elif event.invocation_id is not None and family not in {
         "budget",
+        "cancellation",
         "context",
         "result",
-        "cancellation",
+        "routing",
     }:
         raise ValueError("trace family cannot carry invocation identity")
 
@@ -821,8 +822,8 @@ __all__ = [
     "TraceBudgetAction",
     "TraceBudgetDetails",
     "TraceCancellationDetails",
-    "TraceContractError",
     "TraceContextDetails",
+    "TraceContractError",
     "TraceDisposition",
     "TraceEnvelope",
     "TraceEventCandidate",

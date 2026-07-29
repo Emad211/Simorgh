@@ -17,6 +17,8 @@ class TraceStoreRegistry:
             return self._store
 
     def configure(self, store: TraceStore) -> None:
+        # Validate the complete candidate before replacing healthy authority.
+        store.load()
         with self._lock:
             previous = self._store
             if previous is store:

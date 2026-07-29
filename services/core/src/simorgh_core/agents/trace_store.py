@@ -156,6 +156,17 @@ class InMemoryTraceStore:
                 )
             return records
 
+    def delete_trace(self, request_id: UUID) -> int:
+        """Delete one complete trace; used only by reviewed retention policy."""
+
+        trace_id = trace_id_for(request_id)
+        with self._lock:
+            self._require_open_locked()
+            event_ids = self._trace_events.pop(trace_id, [])
+            for event_id in event_ids:
+                self._events.pop(event_id, None)
+            return len(event_ids)
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -296,17 +307,41 @@ def _require_stage_causality(
     if candidate.event_kind == DurableTraceEventKind.INVOCATION_STARTED:
         if not isinstance(candidate.details, TraceInvocationDetails):
             raise TraceCausalityError("invocation start requires invocation details")
-        if (
-            candidate.details.invocation_kind == InvocationKind.SPECIALIST
-            and parent.event_kind
-            not in {
-                DurableTraceEventKind.CONTEXT_COMPILED,
-                DurableTraceEventKind.CONTEXT_REPLAYED,
-            }
-        ):
-            raise TraceCausalityError(
-                "specialist invocation must follow context authority"
-            )
+        if candidate.details.invocation_kind == InvocationKind.SPECIALIST:
+            if candidate.parent_invocation_id is None:
+                if parent.event_kind not in {
+                    DurableTraceEventKind.CONTEXT_COMPILED,
+                    DurableTraceEventKind.CONTEXT_REPLAYED,
+                }:
+                    raise TraceCausalityError(
+                        "specialist invocation must follow context authority"
+                    )
+            else:
+                if (
+                    parent.event_kind
+                    != DurableTraceEventKind.INVOCATION_TERMINAL
+                    or parent.invocation_id != candidate.parent_invocation_id
+                ):
+                    raise TraceCausalityError(
+                        "specialist retry must follow its terminal parent invocation"
+                    )
+                if candidate.causation_event_id is None:
+                    raise TraceCausalityError(
+                        "specialist retry requires its own context causation"
+                    )
+                causation = events.get(candidate.causation_event_id)
+                if (
+                    causation is None
+                    or causation.event_kind
+                    not in {
+                        DurableTraceEventKind.CONTEXT_COMPILED,
+                        DurableTraceEventKind.CONTEXT_REPLAYED,
+                    }
+                    or causation.invocation_id != candidate.invocation_id
+                ):
+                    raise TraceCausalityError(
+                        "specialist retry requires its own context causation"
+                    )
         return
     if candidate.event_kind == DurableTraceEventKind.INVOCATION_TERMINAL:
         _require_parent_kind(parent, DurableTraceEventKind.INVOCATION_STARTED)
