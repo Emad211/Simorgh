@@ -5,6 +5,11 @@ from pathlib import Path
 import pytest
 
 import simorgh_core.app as app_module
+from simorgh_core.agents.trace_projection import (
+    NullRequestTraceProjector,
+    StoreBackedRequestTraceProjector,
+    request_trace_projector_registry,
+)
 from simorgh_core.agents.trace_retention import RetentionAwareTraceStore
 from simorgh_core.agents.trace_store import (
     InMemoryTraceStore,
@@ -39,7 +44,15 @@ async def test_lifespan_configures_and_resets_trace_authority(
         assert isinstance(configured, RetentionAwareTraceStore)
         assert configured.load() == []
         assert Path(settings.simorgh_trace_store_path).exists()
+        assert isinstance(
+            request_trace_projector_registry.current(),
+            StoreBackedRequestTraceProjector,
+        )
 
     assert isinstance(trace_store_registry.current(), InMemoryTraceStore)
+    assert isinstance(
+        request_trace_projector_registry.current(),
+        NullRequestTraceProjector,
+    )
     with pytest.raises(TraceStoreClosedError, match="closed"):
         configured.load()
