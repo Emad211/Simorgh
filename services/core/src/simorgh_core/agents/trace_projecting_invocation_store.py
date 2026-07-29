@@ -20,6 +20,8 @@ from simorgh_core.agents.trace_projection import (
     request_trace_projector_registry,
 )
 
+_ZERO_USAGE = UsageVector()
+
 
 class InvocationTraceProjectionError(InvocationStoreError):
     """Invocation authority committed, but its trace projection failed."""
@@ -83,7 +85,7 @@ class TraceProjectingInvocationStore:
         *,
         invocation_id: UUID,
         result_payload: dict[str, Any],
-        committed_usage: UsageVector = UsageVector(),
+        committed_usage: UsageVector = _ZERO_USAGE,
     ) -> InvocationRecord:
         record = self._store.complete(
             invocation_id=invocation_id,
