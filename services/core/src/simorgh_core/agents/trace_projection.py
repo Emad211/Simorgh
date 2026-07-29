@@ -8,10 +8,10 @@ from uuid import UUID
 
 from simorgh_core.agents.context_contracts import SpecialistContextBundle
 from simorgh_core.agents.context_store import ContextStore
+from simorgh_core.agents.contracts import InvocationState
 from simorgh_core.agents.invocations import (
     InvocationKind,
     InvocationRecord,
-    InvocationState,
     InvocationStore,
 )
 from simorgh_core.agents.result_authority import AuthoritativeSpecialistResult
@@ -149,8 +149,10 @@ def _live_projection_authorities(
 
     contexts_by_invocation: dict[UUID, SpecialistContextBundle] = {}
     for bundle in context_bundles:
-        existing = contexts_by_invocation.get(bundle.specialist_invocation_id)
-        if existing is not None and existing != bundle:
+        existing_context = contexts_by_invocation.get(
+            bundle.specialist_invocation_id
+        )
+        if existing_context is not None and existing_context != bundle:
             raise RequestTraceProjectionError(
                 "conflicting live contexts exist for one specialist invocation"
             )
@@ -158,8 +160,8 @@ def _live_projection_authorities(
 
     results_by_invocation: dict[UUID, AuthoritativeSpecialistResult] = {}
     for result in result_records:
-        existing = results_by_invocation.get(result.invocation_id)
-        if existing is not None and existing != result:
+        existing_result = results_by_invocation.get(result.invocation_id)
+        if existing_result is not None and existing_result != result:
             raise RequestTraceProjectionError(
                 "conflicting live results exist for one specialist invocation"
             )
