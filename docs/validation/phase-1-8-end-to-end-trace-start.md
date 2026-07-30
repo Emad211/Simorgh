@@ -4,7 +4,7 @@
 
 - Phase: 1.8.
 - State: active implementation boundary; merge evidence not yet available.
-- Tracking issue: #57.
+- Tracking issue: #59 (canonical; #57 was the earlier duplicate).
 - Draft PR: #60.
 - Base branch: `main`.
 - Exact Phase 1.7 merge authority: `dab5333140da2d9cf9b982a57ede1a2d08397cf1`.

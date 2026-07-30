@@ -407,7 +407,7 @@ required output schema
 
 ## 1.8 Durable correlated end-to-end trace — VALIDATING
 
-Implementation is active in Draft PR #60 for issue #57.
+Implementation is active in Draft PR #60 for issue #59.
 
 ### Objective
 
