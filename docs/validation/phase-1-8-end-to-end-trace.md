@@ -2,7 +2,8 @@
 
 ## Scope
 
-- Tracking issue: #57.
+- Tracking issue: #59.
+- Earlier duplicate issue: #57.
 - Implementation PR: #60.
 - Base authority: Phase 1.7 merge `dab5333140da2d9cf9b982a57ede1a2d08397cf1`.
 - Boundary: durable, typed, privacy-safe audit projection only.
