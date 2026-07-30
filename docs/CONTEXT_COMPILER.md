@@ -1,6 +1,6 @@
 # Deterministic taint-aware Context Compiler
 
-Status: Phase 1.7 implementation is validating in PR #56 under issue #55.
+Status: Phase 1.7 merged through PR #56 at `dab5333140da2d9cf9b982a57ede1a2d08397cf1`; issue #55 completed and ADR 0020 accepted. Phase 1.8 durable correlated Trace merged through PR #60.
 
 ## Purpose
 
@@ -259,8 +259,8 @@ and `PRAGMA quick_check`.
 
 Startup validates every existing row and latches unhealthy on
 payload/hash/index/schema corruption. A second Core process cannot own the same
-context database. The path must be distinct from task, invocation, result, and
-Android journal databases.
+context database. The path must be distinct from task, invocation, result, trace,
+and Android journal databases.
 
 The Core lifespan configures `context_store_registry`, validates and prunes the
 store before serving traffic, and resets to an in-memory authority on shutdown
@@ -357,7 +357,6 @@ See ADR 0020 and
 - no permanent Memory or Personal Work Graph;
 - no public context-execution endpoint;
 - no dynamic tool discovery;
-- no Phase 1.8 complete end-to-end trace correlation;
-- no live-provider staging;
+- no completed live-provider staging;
 - no mutation, Voice, Notification, Scheduling, Channels, Delegation, MCP, or
   new Android action.
