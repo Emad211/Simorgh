@@ -154,28 +154,33 @@ def resolvable_gap_event_ids(
         if gap.gap_event_id not in unresolved:
             continue
         source_id = gap.missing_source_id
-        if gap.code == TraceGapCode.SOURCE_HASH_MISMATCH:
+        source_now_present = (
+            gap.code
+            in {
+                TraceGapCode.SOURCE_HASH_MISMATCH,
+                TraceGapCode.MISSING_TASK,
+            }
+            or (
+                gap.code == TraceGapCode.MISSING_ROUTING
+                and decision is not None
+            )
+            or (
+                gap.code == TraceGapCode.MISSING_CONTEXT
+                and source_id in context_invocation_ids
+            )
+            or (
+                gap.code == TraceGapCode.MISSING_INVOCATION
+                and source_id in invocation_by_id
+            )
+            or (
+                gap.code == TraceGapCode.MISSING_RESULT
+                and source_id in result_invocation_ids
+            )
+        )
+        if source_now_present:
             resolved.append(gap.gap_event_id)
-        elif gap.code == TraceGapCode.MISSING_TASK:
-            resolved.append(gap.gap_event_id)
-        elif gap.code == TraceGapCode.MISSING_ROUTING and decision is not None:
-            resolved.append(gap.gap_event_id)
-        elif (
-            gap.code == TraceGapCode.MISSING_CONTEXT
-            and source_id in context_invocation_ids
-        ):
-            resolved.append(gap.gap_event_id)
-        elif (
-            gap.code == TraceGapCode.MISSING_INVOCATION
-            and source_id in invocation_by_id
-        ):
-            resolved.append(gap.gap_event_id)
-        elif (
-            gap.code == TraceGapCode.MISSING_RESULT
-            and source_id in result_invocation_ids
-        ):
-            resolved.append(gap.gap_event_id)
-        elif gap.code == TraceGapCode.MISSING_PARENT_EVENT:
+            continue
+        if gap.code == TraceGapCode.MISSING_PARENT_EVENT:
             parent = invocation_by_id.get(source_id)
             if parent is not None and parent.terminal:
                 resolved.append(gap.gap_event_id)
