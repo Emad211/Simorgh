@@ -13,7 +13,6 @@ from simorgh_core.agents.task_store import AgentTaskStoreEntryV1
 from simorgh_core.agents.trace_contracts import (
     DurableTraceEventKind,
     TraceDisposition,
-    TraceEventRecord,
     TraceGapCode,
     TraceGapDetails,
     TraceSourceAuthorityKind,
