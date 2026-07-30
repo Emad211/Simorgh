@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-29
 - Phase: 1.8
-- Issue: #57
+- Issue: #59
 - Pull request: #60
 
 ## Context
