@@ -1,6 +1,6 @@
 # ADR 0021: Durable correlated trace is a source-linked audit projection
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-29
 - Phase: 1.8
 - Issue: #57
@@ -27,7 +27,10 @@ Introduce an independent durable trace authority with these rules:
 9. SQLite trace storage has its own path, lock, schema, health latch, backup boundary and retention policy.
 10. Retention deletes only whole terminal traces, protects every nonterminal task and invocation authority, and rechecks those authorities immediately before deletion.
 11. Store registry replacement is fail-closed: candidate load/validation occurs before replacing the current store.
-12. If retained authority advances after an immutable request terminal, startup reconciliation records a typed source-mismatch gap; it does not rewrite the old terminal or fail startup.
+12. If retained authority advances after an immutable request terminal, typed supersession and resolution events preserve historical status while establishing current status.
+13. Direct producer projection occurs only after the owning durable transition commits; projection failure never triggers execution retry.
+14. Model/tool child correlation requires exact retained identity: classifier invocation ID or one unambiguous shared cancellation owner.
+15. Online backup is the reviewed live-copy mechanism for the WAL database; restore must pass integrity and causal load validation.
 
 ## Causal model
 
@@ -56,7 +59,8 @@ Retries form a parent-invocation chain. A retry's parent event is the terminal e
 - another SQLite database and operational backup target;
 - source stores must remain available long enough for reconciliation;
 - typed event families require reviewed schema evolution;
-- historical gaps remain visible even if later source data appears; a future typed resolution/supersession event is required for live post-terminal retry and cancellation transitions.
+- historical gaps remain visible even when typed resolution marks them resolved for current status;
+- producer wrappers and current-status reconstruction add explicit implementation complexity.
 
 ## Rejected alternatives
 
@@ -82,4 +86,4 @@ Rejected because a trace sum would double-count one execution.
 
 ## Follow-up
 
-The next Phase 1.8 increments wire direct typed producers, complete model/tool/cancellation correlation, add full acceptance and operational evidence, and move this ADR to Accepted only with exact-head Core and Android CI plus review audit.
+Phase 1.9 adds explicitly budgeted live-provider staging. Phase 1.10 adds the complete GitHub workflow and presentation boundary. Public trace UI/export, archival tombstones and vendor telemetry remain separate reviewed decisions.
