@@ -1,6 +1,6 @@
 # Simorgh specialist-agent runtime
 
-Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52; durable cancellation propagation merged in PR #54. Phase 1.7 deterministic Context Compiler merged in PR #56. Phase 1.8 durable correlated trace is active in issue #59. The default execution API remains routing-only.
+Status: typed routing and policy foundation merged in PR #30; durable task authority merged in PR #37; durable invocation authority merged in PR #39; zero-external specialist execution merged in PR #44; typed result/evidence authority merged in PR #48; governed GitHub read authority merged in PR #52; durable cancellation propagation merged in PR #54; deterministic Context Compiler merged in PR #56; durable correlated trace merged in PR #60. Phase 1.9 live-provider staging is active in issue #65. The default execution API remains routing-only.
 
 ## Purpose
 
@@ -31,13 +31,15 @@ internal typed specialist execution
 durable specialist invocation result or honest terminal uncertainty
     ↓
 immutable typed result / artifact / evidence metadata authority
+    ↓
+durable correlated trace audit projection
 ```
 
 The current `POST /v1/agent-tasks` endpoint performs durable routing only. It does not automatically invoke the selected specialist, connector or Android action. PR #44 merged an internal control-plane method for one zero-external specialist; it is not exposed as a public execution endpoint. PR #48 adds an internal result terminalization boundary and does not expose a public result endpoint.
 
 ## Native durable authorities
 
-Five independent operational stores exist:
+Six independent operational stores exist:
 
 ```text
 AgentTaskStore
@@ -51,6 +53,9 @@ ResultStore
 
 ContextStore
   immutable compiled specialist context, exact schemas, taint, omissions and replay
+
+TraceStore
+  source-linked event sequence, current status, gaps, replay and privacy-safe audit reconstruction
 
 AndroidActionJournal
   device command delivery, ACK, result and Android side-effect uncertainty

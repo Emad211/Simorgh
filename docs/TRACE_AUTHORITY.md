@@ -1,6 +1,6 @@
 # Durable correlated trace authority
 
-Status: Phase 1.8 merge-candidate validation in issue #59 / Draft PR #60.
+Status: Phase 1.8 merged through PR #60 at `c175dbba8259d12cae1611ed95702e351b8a4636`; issue #59 completed and ADR 0021 accepted.
 
 ## Purpose
 

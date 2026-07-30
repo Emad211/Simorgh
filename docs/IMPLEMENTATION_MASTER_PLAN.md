@@ -48,8 +48,8 @@ Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
 Phase 1.5 Governed GitHub Read Tools     COMPLETE — PR #52
 Phase 1.6 Cancellation Propagation       COMPLETE — PR #54
 Phase 1.7 Context Compiler               COMPLETE — PR #56
-Phase 1.8 End-to-End Trace               VALIDATING — PR #60
-Phase 1.9 Live Provider Staging          QUEUED
+Phase 1.8 End-to-End Trace               COMPLETE — PR #60
+Phase 1.9 Live Provider Staging          ACTIVE — issue #65
 Phase 1.10 Complete GitHub Workflow      QUEUED
 Phase 2+                                 BLOCKED by Phase 1
 Voice PR #35                             PARKED
@@ -405,9 +405,9 @@ required output schema
 ```
 
 
-## 1.8 Durable correlated end-to-end trace — VALIDATING
+## 1.8 Durable correlated end-to-end trace — COMPLETE
 
-Implementation is active in Draft PR #60 for issue #59.
+Merged through PR #60 at `c175dbba8259d12cae1611ed95702e351b8a4636`. Issue #59 completed; ADR 0021 accepted. Exact validated head `9060e2541d06b250e6f707885ac541a3b718c31f` passed standard CI run `30508906505` with 482 Core tests and full Android build/JVM/lint/debug-APK gates.
 
 ### Objective
 
@@ -427,10 +427,41 @@ Reconstruct one durable, ordered, privacy-safe audit projection across task, rou
 - deterministic runtime acceptance for budgeted classifier plus governed GitHub read;
 - online-backup, standalone restore and corruption fail-closed acceptance.
 
-### Final merge gate
+### Merge evidence
 
-- exact PR Head passes Core installation, Ruff, strict MyPy and all tests;
-- the same Head passes Android build, JVM tests, lint and Debug APK upload;
-- final validation record pins exact Head, run, test count and artifact digests;
-- no temporary workflow/runtime database or unresolved review action remains;
-- scope remains Phase 1.8 only.
+- exact Head passed Core installation, Ruff, strict MyPy and 482 tests;
+- the same Head passed Android build, JVM tests, lint and Debug APK upload;
+- runtime-composition and online-backup acceptance passed with zero live external calls;
+- no temporary workflow/runtime database or unresolved review action remained;
+- PR #60 merged and issue #59 closed as completed.
+
+## 1.9 Explicitly budgeted live-provider staging — ACTIVE
+
+Tracking issue: #65.
+
+### Objective
+
+Validate at most one manually approved AvalAI canary request through the existing BudgetedModelGateway, durable InvocationStore and correlated Trace, then reconcile the captured provider request ID against a bounded typed User API transaction lookup.
+
+### Required boundary
+
+- manual `workflow_dispatch` only under a protected staging environment;
+- fixed Core-authored canary input with no user/project content;
+- one-call, token, elapsed-time, credit-floor and estimated-cost ceilings;
+- reviewed provider/base-URL/model allowlists and no automatic failover;
+- no provider-call retry after possible request entry;
+- exact request-ID, model, provider, usage and cost reconciliation;
+- sanitized schema-validated artifact with no prompt/output/credential/private fields;
+- fake/local adapters in ordinary CI; live execution remains explicitly approved.
+
+### Merge gate
+
+- ordinary CI remains zero-external and full Core/Android gates are green;
+- manual workflow cannot trigger from pull request, push, schedule or runtime API;
+- fake tests prove preflight, no-retry uncertainty, replay and reconciliation semantics;
+- one approved live run stays within the reviewed budget and leaks no secret/private marker;
+- ADR, operations guide and exact-head validation record are complete.
+
+### Explicit non-goals
+
+No production live-model enablement, automatic provider/model/domain failover, live GitHub connector, complete report workflow, mutation, Voice, Notification, Scheduling, Channels, Delegation, MCP, Memory, Personal Work Graph or self-improvement.
