@@ -47,6 +47,19 @@ Acceptance performs SQLite online backup while the source store is open in WAL m
 - Core diagnostics artifact: `8745928281`, digest `sha256:afa7b308d1d6c02692c83bf0ff1f7ddb2b6d77178cf49295cc84633b374ce3b6`.
 - Ordinary CI made zero live model/provider/connector/MCP or paid external calls.
 
+## Main-synchronized closeout candidate
+
+- Candidate: `63287034b2970fa362ed250ba7ff18d8b33059b6`.
+- Standard CI run: `30508738340` — successful.
+- Core: installation, Ruff, strict MyPy and **482 tests** passed.
+- JUnit: 482 tests, 0 failures, 0 errors, 0 skipped.
+- Android: build, JVM tests, lint and Debug APK upload passed.
+- Debug APK artifact: `8746311361`, digest `sha256:16afd678f68f867f9e504c082b8bc4396560700cb79e58f03cb50eea93da5cde`.
+- Android diagnostics artifact: `8746311029`, digest `sha256:4481f6a080a29b6221a54de256b3dcda33a647d8ee19bb97c00898c948930ca0`.
+- Core JUnit artifact: `8746301500`, digest `sha256:f6b7384f2bc08d7a49b8ab156612c50b6291eb91138e15ddb445b1071b314383`.
+- Core diagnostics artifact: `8746301261`, digest `sha256:81d8a3448b81d1d2b82ece8ed3f02709e76257690c10731e52686c7f6f715924`.
+- The branch contains the real merge from current `main`, uses canonical issue #59 and preserves the Phase 1.7 closeout record.
+
 ## Final exact-head gate
 
-The documentation closeout Head must independently pass the same standard Core and Android CI. The PR body pins that exact Head/run/artifact set before Ready-for-Review and merge.
+This validation-pin commit must independently pass the same standard Core and Android CI. The PR body pins that final exact Head/run/artifact set before Ready-for-Review and merge.
