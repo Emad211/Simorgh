@@ -158,12 +158,12 @@ class InMemoryTraceStore:
             return records
 
     def delete_trace(self, request_id: UUID) -> int:
-        """Delete one complete trace; used only by reviewed retention policy."""
-
-        trace_id = trace_id_for(request_id)
         with self._lock:
             self._require_open_locked()
-            event_ids = self._trace_events.pop(trace_id, [])
+            trace_id = trace_id_for(request_id)
+            event_ids = self._trace_events.pop(trace_id, None)
+            if event_ids is None:
+                return 0
             for event_id in event_ids:
                 self._events.pop(event_id, None)
             return len(event_ids)
@@ -401,14 +401,7 @@ def _require_stage_causality(
             raise TraceCausalityError(
                 "trace supersession causation must equal previous status"
             )
-        for gap_event_id in candidate.details.resolved_gap_event_ids:
-            gap_event = events.get(gap_event_id)
-            if gap_event is None or not isinstance(
-                gap_event.details, TraceGapDetails
-            ):
-                raise TraceCausalityError(
-                    "trace supersession can resolve only existing gap events"
-                )
+        _require_resolved_gap_events(events, candidate.details.resolved_gap_event_ids)
         if (
             parent.event_kind == DurableTraceEventKind.TRACE_GAP
             and parent.event_id
@@ -436,6 +429,7 @@ def _require_stage_causality(
             raise TraceCausalityError(
                 "trace resolution causation must equal superseded status"
             )
+        _require_resolved_gap_events(events, candidate.details.resolved_gap_event_ids)
         return
     if candidate.event_kind == DurableTraceEventKind.TRACE_TERMINAL:
         if not isinstance(candidate.details, TraceTerminalDetails):
@@ -451,6 +445,18 @@ def _require_stage_causality(
             if candidate.result_id != parent.result_id:
                 raise TraceCausalityError("terminal trace changed result identity")
         return
+
+
+def _require_resolved_gap_events(
+    events: dict[UUID, TraceEventRecord],
+    gap_event_ids: tuple[UUID, ...],
+) -> None:
+    for gap_event_id in gap_event_ids:
+        gap_event = events.get(gap_event_id)
+        if gap_event is None or not isinstance(gap_event.details, TraceGapDetails):
+            raise TraceCausalityError(
+                "trace status can resolve only existing gap events"
+            )
 
 
 def _require_parent_kind(
