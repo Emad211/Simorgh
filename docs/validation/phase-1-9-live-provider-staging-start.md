@@ -118,10 +118,12 @@ The accepted live run must prove:
 - exact durable invocation and trace identities;
 - bounded local estimated/committed usage;
 - captured provider request ID;
-- exact User API transaction lookup or explicit bounded pending/unavailable state;
-- exact cost under the reviewed ceiling;
+- an exact User API transaction matched to the same request, invocation, provider and model identities;
+- exact provider usage and cost under the reviewed ceiling;
 - no secret/private marker in logs or artifact;
 - exact replay with the same invocation identity creates no second request or charge.
+
+A transaction that remains pending or unavailable after the bounded lookup window is an incomplete acceptance state. It must not be accepted as the Phase 1.9 live canary and cannot satisfy the merge gate. A later bounded reconciliation may query only the User API for the same durable request ID, invocation ID and provider request ID; it must not reissue the model request. Phase 1.9 acceptance becomes complete only after that exact transaction is available and all identity, usage and cost checks pass.
 
 ## Failure semantics
 
@@ -143,7 +145,8 @@ If provider entry/completion is uncertain:
 - validate provider/model/request identity and canary contract;
 - durably terminalize before reporting success;
 - User API failure cannot erase completion;
-- unavailable transaction data remains explicit and never becomes zero cost;
+- unavailable transaction data remains explicit, never becomes zero cost and leaves live acceptance incomplete;
+- later reconciliation may inspect the same provider request only and may not call the model again;
 - usage/cost/model/status mismatch fails staging without modifying the completed invocation.
 
 ### Trace/report failure
@@ -162,7 +165,7 @@ Phase 1.9 cannot merge until:
 - staging contracts, User API adapter, service, CLI and workflow static tests pass;
 - manual workflow has no non-manual trigger and uses the protected environment;
 - preflight/no-retry/replay/reconciliation/privacy failure semantics are proven;
-- one explicitly approved live canary stays within the reviewed budget;
+- one explicitly approved live canary has an exact reconciled User API transaction and stays within the reviewed budget;
 - sanitized live artifact passes schema/hash/forbidden-marker validation;
 - exact implementation Head passes Core installation, Ruff, strict MyPy and all tests;
 - the same Head passes Android build, JVM tests, lint and Debug APK;
