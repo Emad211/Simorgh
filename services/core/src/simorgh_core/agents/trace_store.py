@@ -21,6 +21,7 @@ from simorgh_core.agents.trace_contracts import (
     TraceGapSummary,
     TraceInvocationDetails,
     TraceResultDetails,
+    TraceSupersessionDetails,
     TraceTerminalDetails,
     TraceView,
     trace_envelope_canonical_sha256,
@@ -202,21 +203,43 @@ def _require_appendable(
             )
         return
 
-    terminal_event = next(
-        (
-            event
-            for event in reversed(existing)
-            if event.event_kind == DurableTraceEventKind.TRACE_TERMINAL
-        ),
-        None,
-    )
-    if terminal_event is None:
+    status_event = _latest_status_event(existing)
+    if status_event is None or not _status_event_is_terminal(status_event):
         return
     if candidate.replay == DurableTraceReplayDisposition.REPLAYED:
         return
-    if candidate.event_kind == DurableTraceEventKind.TRACE_GAP:
+    if candidate.event_kind in {
+        DurableTraceEventKind.TRACE_GAP,
+        DurableTraceEventKind.TRACE_SUPERSEDED,
+    }:
         return
     raise TraceTerminalError("fresh event cannot extend a terminal durable trace")
+
+
+def _latest_status_event(
+    events: list[TraceEventRecord] | tuple[TraceEventRecord, ...],
+) -> TraceEventRecord | None:
+    return next(
+        (
+            event
+            for event in reversed(events)
+            if event.event_kind
+            in {
+                DurableTraceEventKind.TRACE_TERMINAL,
+                DurableTraceEventKind.TRACE_SUPERSEDED,
+                DurableTraceEventKind.TRACE_RESOLVED,
+            }
+        ),
+        None,
+    )
+
+
+def _status_event_is_terminal(event: TraceEventRecord) -> bool:
+    if isinstance(event.details, TraceTerminalDetails):
+        return True
+    if isinstance(event.details, TraceSupersessionDetails):
+        return event.details.terminal
+    raise TraceCausalityError("trace status event has invalid typed details")
 
 
 def _require_existing_references(
@@ -364,6 +387,56 @@ def _require_stage_causality(
         if candidate.replay_of_event_id != parent.event_id:
             raise TraceCausalityError("replay parent must be the original event")
         return
+    if candidate.event_kind == DurableTraceEventKind.TRACE_SUPERSEDED:
+        if not isinstance(candidate.details, TraceSupersessionDetails):
+            raise TraceCausalityError(
+                "trace superseded event requires supersession details"
+            )
+        previous = events.get(candidate.details.previous_status_event_id)
+        if previous is None or not _status_event_is_terminal(previous):
+            raise TraceCausalityError(
+                "trace supersession requires previous terminal status"
+            )
+        if candidate.causation_event_id != previous.event_id:
+            raise TraceCausalityError(
+                "trace supersession causation must equal previous status"
+            )
+        for gap_event_id in candidate.details.resolved_gap_event_ids:
+            gap_event = events.get(gap_event_id)
+            if gap_event is None or not isinstance(
+                gap_event.details, TraceGapDetails
+            ):
+                raise TraceCausalityError(
+                    "trace supersession can resolve only existing gap events"
+                )
+        if (
+            parent.event_kind == DurableTraceEventKind.TRACE_GAP
+            and parent.event_id
+            not in candidate.details.resolved_gap_event_ids
+        ):
+            raise TraceCausalityError(
+                "trace supersession gap parent must be explicitly resolved"
+            )
+        return
+    if candidate.event_kind == DurableTraceEventKind.TRACE_RESOLVED:
+        if not isinstance(candidate.details, TraceSupersessionDetails):
+            raise TraceCausalityError(
+                "trace resolved event requires supersession details"
+            )
+        previous = events.get(candidate.details.previous_status_event_id)
+        if (
+            previous is None
+            or previous.event_kind != DurableTraceEventKind.TRACE_SUPERSEDED
+            or _status_event_is_terminal(previous)
+        ):
+            raise TraceCausalityError(
+                "trace resolution requires previous nonterminal supersession"
+            )
+        if candidate.causation_event_id != previous.event_id:
+            raise TraceCausalityError(
+                "trace resolution causation must equal superseded status"
+            )
+        return
     if candidate.event_kind == DurableTraceEventKind.TRACE_TERMINAL:
         if not isinstance(candidate.details, TraceTerminalDetails):
             raise TraceCausalityError("terminal trace requires terminal details")
@@ -424,24 +497,32 @@ def _build_trace_view(
         for event in events
         if isinstance(event.details, TraceGapDetails)
     )
-    if gaps:
+    resolved_gap_event_ids = {
+        gap_event_id
+        for event in events
+        if isinstance(event.details, TraceSupersessionDetails)
+        for gap_event_id in event.details.resolved_gap_event_ids
+    }
+    unresolved_gap_event_ids = tuple(
+        gap.gap_event_id
+        for gap in gaps
+        if gap.gap_event_id not in resolved_gap_event_ids
+    )
+    status_event = _latest_status_event(events)
+    if unresolved_gap_event_ids:
         disposition = TraceDisposition.INCOMPLETE_GAP
         terminal = True
+    elif status_event is None:
+        disposition = TraceDisposition.IN_PROGRESS
+        terminal = False
+    elif isinstance(status_event.details, TraceTerminalDetails):
+        disposition = status_event.details.disposition
+        terminal = True
+    elif isinstance(status_event.details, TraceSupersessionDetails):
+        disposition = status_event.details.disposition
+        terminal = status_event.details.terminal
     else:
-        terminal_details = next(
-            (
-                event.details
-                for event in reversed(events)
-                if isinstance(event.details, TraceTerminalDetails)
-            ),
-            None,
-        )
-        if terminal_details is None:
-            disposition = TraceDisposition.IN_PROGRESS
-            terminal = False
-        else:
-            disposition = terminal_details.disposition
-            terminal = True
+        raise TraceCausalityError("trace status event has invalid details")
 
     provisional = TraceEnvelope.model_construct(
         schema_version="1.0",
@@ -461,6 +542,8 @@ def _build_trace_view(
         retention=strictest_retention(event.retention for event in events),
         gap_count=len(gaps),
         gaps=gaps,
+        unresolved_gap_count=len(unresolved_gap_event_ids),
+        unresolved_gap_event_ids=unresolved_gap_event_ids,
     )
     envelope = TraceEnvelope.model_validate(
         {

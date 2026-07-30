@@ -91,6 +91,8 @@ class DurableTraceEventKind(StrEnum):
     CANCELLATION_REPLAYED = "cancellation_replayed"
     TRACE_TERMINAL = "trace_terminal"
     TRACE_GAP = "trace_gap"
+    TRACE_SUPERSEDED = "trace_superseded"
+    TRACE_RESOLVED = "trace_resolved"
 
 
 class DurableTraceReplayDisposition(StrEnum):
@@ -342,6 +344,55 @@ class TraceTerminalDetails(BaseModel):
         return self
 
 
+class TraceSupersessionDetails(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        hide_input_in_errors=True,
+    )
+
+    family: Literal["supersession"] = "supersession"
+    previous_status_event_id: UUID
+    source_snapshot_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=_FINGERPRINT_PATTERN,
+    )
+    disposition: TraceDisposition
+    terminal: bool
+    reason_code: str = Field(pattern=_RESOURCE_ID_PATTERN, max_length=128)
+    resolved_gap_event_ids: tuple[UUID, ...] = Field(
+        default=(),
+        max_length=MAX_TRACE_GAPS,
+    )
+
+    @field_validator("reason_code")
+    @classmethod
+    def validate_reason_code(cls, value: str) -> str:
+        return _safe_required_identifier(value)
+
+    @model_validator(mode="after")
+    def validate_status_shape(self) -> Self:
+        if self.terminal:
+            if self.disposition in {
+                TraceDisposition.IN_PROGRESS,
+                TraceDisposition.INCOMPLETE_GAP,
+                TraceDisposition.CORRUPT,
+            }:
+                raise ValueError(
+                    "resolved trace status requires authoritative terminal disposition"
+                )
+        elif self.disposition != TraceDisposition.IN_PROGRESS:
+            raise ValueError(
+                "superseded nonterminal trace status must be in_progress"
+            )
+        if len(set(self.resolved_gap_event_ids)) != len(
+            self.resolved_gap_event_ids
+        ):
+            raise ValueError("resolved trace gap identities must be unique")
+        return self
+
+
 class TraceGapDetails(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -361,6 +412,7 @@ type TraceEventDetails = Annotated[
     | TraceResultDetails
     | TraceCancellationDetails
     | TraceTerminalDetails
+    | TraceSupersessionDetails
     | TraceGapDetails,
     Field(discriminator="family"),
 ]
@@ -488,6 +540,15 @@ class TraceEnvelope(BaseModel):
     retention: RetentionDisposition
     gap_count: int = Field(ge=0, le=MAX_TRACE_GAPS)
     gaps: tuple[TraceGapSummary, ...] = Field(default=(), max_length=MAX_TRACE_GAPS)
+    unresolved_gap_count: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_TRACE_GAPS,
+    )
+    unresolved_gap_event_ids: tuple[UUID, ...] = Field(
+        default=(),
+        max_length=MAX_TRACE_GAPS,
+    )
 
     @model_validator(mode="after")
     def validate_envelope(self) -> Self:
@@ -501,15 +562,30 @@ class TraceEnvelope(BaseModel):
             raise ValueError("trace observation range is invalid")
         if self.gap_count != len(self.gaps):
             raise ValueError("trace gap count is invalid")
+        if self.unresolved_gap_count != len(self.unresolved_gap_event_ids):
+            raise ValueError("trace unresolved gap count is invalid")
+        gap_event_ids = {gap.gap_event_id for gap in self.gaps}
+        if len(set(self.unresolved_gap_event_ids)) != len(
+            self.unresolved_gap_event_ids
+        ):
+            raise ValueError("trace unresolved gap identities must be unique")
+        if not set(self.unresolved_gap_event_ids).issubset(gap_event_ids):
+            raise ValueError("trace unresolved gap is absent from gap history")
         if self.disposition == TraceDisposition.IN_PROGRESS:
             if self.terminal:
                 raise ValueError("in-progress trace cannot be terminal")
         elif not self.terminal:
             raise ValueError("non-progress trace disposition must be terminal")
-        if self.gap_count and self.disposition != TraceDisposition.INCOMPLETE_GAP:
-            raise ValueError("trace gaps require incomplete-gap disposition")
-        if not self.gap_count and self.disposition == TraceDisposition.INCOMPLETE_GAP:
-            raise ValueError("incomplete-gap disposition requires a gap")
+        if self.unresolved_gap_count:
+            if (
+                self.disposition != TraceDisposition.INCOMPLETE_GAP
+                or not self.terminal
+            ):
+                raise ValueError(
+                    "unresolved trace gaps require terminal incomplete-gap disposition"
+                )
+        elif self.disposition == TraceDisposition.INCOMPLETE_GAP:
+            raise ValueError("incomplete-gap disposition requires unresolved gap")
         if self.canonical_sha256 != trace_envelope_canonical_sha256(self):
             raise ValueError("trace envelope hash does not match authoritative summary")
         return self
@@ -741,10 +817,27 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
             }
         ),
         "terminal": frozenset({DurableTraceEventKind.TRACE_TERMINAL}),
+        "supersession": frozenset(
+            {
+                DurableTraceEventKind.TRACE_SUPERSEDED,
+                DurableTraceEventKind.TRACE_RESOLVED,
+            }
+        ),
         "gap": frozenset({DurableTraceEventKind.TRACE_GAP}),
     }
     if event.event_kind not in allowed_kinds[family]:
         raise ValueError("trace event kind does not match typed detail family")
+    if isinstance(event.details, TraceSupersessionDetails):
+        if (
+            event.event_kind == DurableTraceEventKind.TRACE_SUPERSEDED
+            and event.details.terminal
+        ):
+            raise ValueError("trace superseded event cannot be terminal")
+        if (
+            event.event_kind == DurableTraceEventKind.TRACE_RESOLVED
+            and not event.details.terminal
+        ):
+            raise ValueError("trace resolved event must be terminal")
 
     if isinstance(event.details, TraceInvocationDetails):
         expected_stage = {
@@ -761,6 +854,7 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
             "result": TraceStage.RESULT,
             "cancellation": TraceStage.CANCELLATION,
             "terminal": TraceStage.TERMINAL,
+            "supersession": TraceStage.TERMINAL,
             "gap": TraceStage.TERMINAL,
         }[family]
     if event.stage != expected_stage:
@@ -774,6 +868,7 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
         "result": TraceSourceAuthorityKind.RESULT_RECORD,
         "cancellation": TraceSourceAuthorityKind.CANCELLATION_RECORD,
         "terminal": TraceSourceAuthorityKind.TASK_RECORD,
+        "supersession": TraceSourceAuthorityKind.TRACE_RECONCILIATION,
         "gap": TraceSourceAuthorityKind.TRACE_RECONCILIATION,
     }.get(family)
     if family == "budget":
@@ -837,6 +932,7 @@ __all__ = [
     "TraceRoutingDetails",
     "TraceSourceAuthorityKind",
     "TraceStage",
+    "TraceSupersessionDetails",
     "TraceTaskDetails",
     "TraceTerminalDetails",
     "TraceView",
