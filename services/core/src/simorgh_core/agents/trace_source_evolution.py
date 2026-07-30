@@ -180,7 +180,10 @@ def resolvable_gap_event_ids(
         if source_now_present:
             resolved.append(gap.gap_event_id)
             continue
-        if gap.code == TraceGapCode.MISSING_PARENT_EVENT:
+        if (
+            gap.code == TraceGapCode.MISSING_PARENT_EVENT
+            and source_id is not None
+        ):
             parent = invocation_by_id.get(source_id)
             if parent is not None and parent.terminal:
                 resolved.append(gap.gap_event_id)
