@@ -1,6 +1,6 @@
 # Durable correlated trace authority
 
-Status: Phase 1.8 implementation boundary in issue #57 / Draft PR #60.
+Status: Phase 1.8 merge-candidate validation in issue #57 / Draft PR #60.
 
 ## Purpose
 
@@ -73,8 +73,11 @@ It:
 - supports one or more specialist attempts and emits exactly one request terminal event;
 - lets the highest retained specialist attempt control request terminal state; only a result owned by that final attempt can complete the request;
 - records missing retained source authority as typed gaps;
-- converts a retry or changed terminal snapshot discovered after an immutable request terminal into `SOURCE_HASH_MISMATCH` instead of rewriting history or failing startup;
-- leaves model/tool producer integration and explicit terminal-supersession events for the next Phase 1.8 increment.
+- correlates classifier model calls from the exact `RoutingDecision.classifier_invocation_id`;
+- correlates specialist-owned model/tool calls only through one unambiguous shared cancellation owner;
+- projects typed cancellation settlement before request terminal state;
+- preserves historical terminal/gap rows while typed `trace_superseded` and `trace_resolved` events establish current status;
+- converts unresolved post-terminal source evolution into an explicit mismatch gap instead of rewriting history or failing startup.
 
 It cannot:
 
@@ -90,7 +93,8 @@ It cannot:
 `RetentionAwareTraceStore` prunes only complete trace groups selected by reviewed policy.
 
 - in-progress trace views are never selected;
-- requests with a nonterminal durable task or nonterminal invocation are protected;
+- requests with a nonterminal durable task or invocation are protected;
+- a routed execution request remains protected before its first invocation; `route_only` is terminal at routing;
 - the event currently being claimed is protected from immediate deletion;
 - protection and terminal state are read again immediately before each whole-trace deletion, so an authority change cannot be deleted from an older selection snapshot;
 - newest terminal traces are retained up to `SIMORGH_TRACE_STORE_MAX_TERMINAL_RECORDS`;
@@ -136,6 +140,7 @@ The trace database is an independent audit projection and has its own backup tar
 - Corruption, unsupported schema or process-lock conflict blocks startup; Core does not silently replace a durable trace database with empty memory.
 - Reconciliation after restore may add only derivable missing projections. It cannot retry work, erase a gap or manufacture success.
 - A migration must be explicit, versioned, backup-first and covered by round-trip/reopen tests; Phase 1.8 introduces no automatic schema migration.
+- Acceptance coverage performs SQLite online backup while WAL is active, restores a standalone point-in-time copy without WAL/SHM sidecars, proves later source writes do not alter the snapshot, and rejects payload corruption on reopen.
 
 ## Startup order
 
@@ -163,14 +168,35 @@ Candidate store validation completes before registry replacement. If loading the
 - `unknown` and `unknown_side_effect` remain honest terminal dispositions.
 - Existing immutable trace rows are retained for incident analysis unless reviewed retention removes the entire terminal trace.
 
+## Runtime producer projection and acceptance
+
+After startup reconciliation succeeds, request-scoped wrappers project only after the owning durable store transition commits:
+
+- task submit/status/cancellation settlement;
+- invocation begin/reserve/terminal/replay and cancellation settlement;
+- context bundle commit/replay;
+- authoritative result commit/replay.
+
+Projection failure is sanitized and visible, but it never re-runs routing, a provider, a connector, a tool, a specialist or cancellation. Exact retries read source authority and replay existing trace events without new usage.
+
+The final zero-external runtime-composition acceptance exercises the actual budgeted classifier, governed GitHub read service, Context Compiler, specialist ownership correlation, replay and SQLite reopen. It proves the ordered prefix:
+
+```text
+task
+-> classifier model start/terminal
+-> routing
+-> context
+-> specialist start
+-> governed GitHub tool start/terminal
+```
+
+Task text, classifier reason and GitHub body markers are absent from the durable trace.
+
 ## Current limitations
 
-This increment completes contracts, in-memory/SQLite authority, safe registry ownership, terminal retention and the zero-external specialist reconciliation path. Still pending in Phase 1.8:
-
-- direct producer wiring for routing/budget/model/tool/specialist/result/cancellation events;
-- complete model-classifier and governed GitHub-read trace acceptance;
-- cancellation settlement projection;
-- typed terminal supersession/resolution events for live post-terminal retry or cancellation transitions; startup reconciliation currently records such source advancement as `SOURCE_HASH_MISMATCH`;
-- retention tombstones or external archival;
-- public query API or UI, which remain out of scope;
-- exact-head CI/review/merge evidence.
+- no public trace query endpoint, dashboard or natural-language authoritative rendering;
+- no OpenTelemetry or vendor telemetry exporter;
+- no retention tombstone or external archival layer;
+- no live-provider staging, which remains Phase 1.9;
+- no complete GitHub report workflow or presentation, which remains Phase 1.10;
+- no mutation, Voice, Notification, Scheduling, Channels, Delegation, MCP, Memory, Personal Work Graph or self-improvement.
