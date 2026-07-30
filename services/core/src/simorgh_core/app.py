@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,16 +13,38 @@ from simorgh_core import __version__
 from simorgh_core.agents.api import agent_task_control_plane
 from simorgh_core.agents.api import router as agent_task_router
 from simorgh_core.agents.context_retention import RetentionAwareSQLiteContextStore
-from simorgh_core.agents.context_store import context_store_registry
+from simorgh_core.agents.context_store import ContextStore, context_store_registry
 from simorgh_core.agents.invocation_store import (
     SQLiteInvocationStore,
     invocation_store_registry,
 )
+from simorgh_core.agents.invocations import InvocationStore
 from simorgh_core.agents.result_store import (
+    ResultStore,
     SQLiteResultStore,
     result_store_registry,
 )
+from simorgh_core.agents.sqlite_trace_store import SQLiteTraceStore
 from simorgh_core.agents.task_store import SQLiteAgentTaskStore
+from simorgh_core.agents.trace_projecting_authority_stores import (
+    TraceProjectingContextStore,
+    TraceProjectingResultStore,
+)
+from simorgh_core.agents.trace_projecting_invocation_store import (
+    TraceProjectingInvocationStore,
+)
+from simorgh_core.agents.trace_projection import (
+    StoreBackedRequestTraceProjector,
+    request_trace_projector_registry,
+)
+from simorgh_core.agents.trace_reconciliation import (
+    reconcile_retained_trace_authority,
+)
+from simorgh_core.agents.trace_retention import (
+    RetentionAwareTraceStore,
+    StoreBackedTraceProtection,
+)
+from simorgh_core.agents.trace_store_registry import trace_store_registry
 from simorgh_core.agents.usage_recovery import (
     reconcile_task_store_invocation_usage,
 )
@@ -43,6 +66,7 @@ def _require_distinct_store_paths(settings: Settings) -> None:
         "invocations": settings.simorgh_invocation_store_path,
         "results": settings.simorgh_result_store_path,
         "contexts": settings.simorgh_context_store_path,
+        "traces": settings.simorgh_trace_store_path,
     }
     normalized: dict[str, Path] = {}
     for name, raw_path in configured.items():
@@ -65,7 +89,7 @@ def _require_distinct_store_paths(settings: Settings) -> None:
                 ) from None
             if same_authority:
                 raise RuntimeError(
-                    "Core durable task, invocation, result, context, and Android action "
+                    "Core durable task, invocation, result, context, trace, and Android action "
                     "store paths "
                     f"must be distinct ({left_name}, {right_name})"
                 )
@@ -76,28 +100,36 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     action_journal: SQLiteActionJournal | None = None
     task_store: SQLiteAgentTaskStore | None = None
-    invocation_store: SQLiteInvocationStore | None = None
-    result_store: SQLiteResultStore | None = None
-    context_store: RetentionAwareSQLiteContextStore | None = None
+    invocation_store: InvocationStore | None = None
+    result_store: ResultStore | None = None
+    context_store: ContextStore | None = None
+    raw_trace_store: SQLiteTraceStore | None = None
+    trace_store: RetentionAwareTraceStore | None = None
     action_journal_configured = False
     task_store_configured = False
     invocation_store_configured = False
     result_store_configured = False
     context_store_configured = False
+    trace_store_configured = False
+    trace_projector_configured = False
     try:
         _require_distinct_store_paths(settings)
-        # Invocation identity is recovered before any dependent result authority is loaded.
-        invocation_store = SQLiteInvocationStore(
+        # The wrappers are installed while the projector registry is still a no-op.
+        # Startup recovery therefore reads durable authority without recursive projection.
+        raw_invocation_store = SQLiteInvocationStore(
             settings.simorgh_invocation_store_path,
         )
-        result_store = SQLiteResultStore(settings.simorgh_result_store_path)
-        context_store = RetentionAwareSQLiteContextStore(
+        invocation_store = TraceProjectingInvocationStore(raw_invocation_store)
+        raw_result_store = SQLiteResultStore(settings.simorgh_result_store_path)
+        result_store = TraceProjectingResultStore(raw_result_store)
+        raw_context_store = RetentionAwareSQLiteContextStore(
             settings.simorgh_context_store_path,
             invocation_store=invocation_store,
             max_terminal_records=(
                 settings.simorgh_context_store_max_terminal_records
             ),
         )
+        context_store = TraceProjectingContextStore(raw_context_store)
         action_journal = SQLiteActionJournal(
             settings.simorgh_action_journal_path,
             max_terminal_records=settings.simorgh_action_journal_max_terminal_records,
@@ -112,6 +144,27 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             task_store=task_store,
             invocation_records=invocation_store.load(),
         )
+        raw_trace_store = SQLiteTraceStore(settings.simorgh_trace_store_path)
+        reconcile_retained_trace_authority(
+            store=raw_trace_store,
+            task_entries=task_store.load(),
+            invocation_records=invocation_store.load(),
+            context_bundles=context_store.load(),
+            result_records=result_store.load(),
+            base_ingested_at_ms=int(time.time() * 1_000),
+        )
+        trace_store = RetentionAwareTraceStore(
+            raw_trace_store,
+            protection=StoreBackedTraceProtection(
+                task_store=task_store,
+                invocation_store=invocation_store,
+            ),
+            max_terminal_records=(
+                settings.simorgh_trace_store_max_terminal_records
+            ),
+        )
+        raw_trace_store = None
+        trace_store.prune_terminal()
         await action_broker.configure_journal(
             action_journal,
             max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
@@ -128,7 +181,27 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         result_store_configured = True
         context_store_registry.configure(context_store)
         context_store_configured = True
+        trace_store_registry.configure(trace_store)
+        trace_store_configured = True
+        request_trace_projector_registry.configure(
+            StoreBackedRequestTraceProjector(
+                task_store=task_store,
+                invocation_store=invocation_store,
+                context_store=context_store,
+                result_store=result_store,
+                trace_store=trace_store,
+            )
+        )
+        trace_projector_configured = True
     except BaseException:
+        if trace_projector_configured:
+            request_trace_projector_registry.reset_to_null()
+        if trace_store_configured:
+            trace_store_registry.reset_to_memory()
+        elif trace_store is not None:
+            trace_store.close()
+        elif raw_trace_store is not None:
+            raw_trace_store.close()
         if context_store_configured:
             context_store_registry.reset_to_memory()
         elif context_store is not None:
@@ -155,18 +228,24 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            context_store_registry.reset_to_memory()
+            request_trace_projector_registry.reset_to_null()
         finally:
             try:
-                result_store_registry.reset_to_memory()
+                trace_store_registry.reset_to_memory()
             finally:
                 try:
-                    invocation_store_registry.reset_to_memory()
+                    context_store_registry.reset_to_memory()
                 finally:
                     try:
-                        await agent_task_control_plane.reset_to_memory_store()
+                        result_store_registry.reset_to_memory()
                     finally:
-                        await action_broker.reset_to_memory_journal()
+                        try:
+                            invocation_store_registry.reset_to_memory()
+                        finally:
+                            try:
+                                await agent_task_control_plane.reset_to_memory_store()
+                            finally:
+                                await action_broker.reset_to_memory_journal()
 
 
 app = FastAPI(

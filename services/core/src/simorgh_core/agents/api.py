@@ -15,7 +15,6 @@ from simorgh_core.agents.cancellation_runtime import (
 from simorgh_core.agents.contracts import TaskEnvelope
 from simorgh_core.agents.control_plane import (
     AgentTaskConflictError,
-    AgentTaskControlPlane,
     AgentTaskNotFoundError,
     AgentTaskRoutingUnknownError,
     AgentTaskStoreUnavailableError,
@@ -23,12 +22,16 @@ from simorgh_core.agents.control_plane import (
 from simorgh_core.agents.defaults import default_specialist_registry
 from simorgh_core.agents.router import SpecialistRouter
 from simorgh_core.agents.task_state import AgentTaskRecord
+from simorgh_core.agents.trace_projecting_control_plane import (
+    AgentTaskTraceUnavailableError,
+    TraceProjectingAgentTaskControlPlane,
+)
 from simorgh_core.agents.tracing import InMemoryTraceSink
 from simorgh_core.devices.action_api import OperatorDependency
 
 router = APIRouter(prefix="/v1/agent-tasks", tags=["agent-tasks"])
 agent_trace_sink = InMemoryTraceSink(maximum_events=20_000)
-agent_task_control_plane = AgentTaskControlPlane(
+agent_task_control_plane = TraceProjectingAgentTaskControlPlane(
     router=SpecialistRouter(
         registry=default_specialist_registry(),
         trace_sink=agent_trace_sink,
@@ -65,6 +68,19 @@ def _store_unavailable(exc: Exception) -> HTTPException:
     )
 
 
+def _trace_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "agent_task_trace_unavailable",
+            "message": (
+                "Durable task state was preserved, but its audit trace "
+                "projection is unavailable."
+            ),
+        },
+    )
+
+
 @router.post(
     "",
     response_model=AgentTaskRecord,
@@ -78,6 +94,8 @@ async def submit_agent_task(
         return await agent_task_control_plane.submit(task)
     except AgentTaskConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except AgentTaskTraceUnavailableError as exc:
+        raise _trace_unavailable() from exc
     except AgentTaskRoutingUnknownError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -102,6 +120,8 @@ async def get_agent_task(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AgentTaskConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except AgentTaskTraceUnavailableError as exc:
+        raise _trace_unavailable() from exc
     except AgentTaskStoreUnavailableError as exc:
         raise _store_unavailable(exc) from exc
 
@@ -128,5 +148,7 @@ async def cancel_agent_task(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AgentTaskConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except AgentTaskTraceUnavailableError as exc:
+        raise _trace_unavailable() from exc
     except AgentTaskStoreUnavailableError as exc:
         raise _store_unavailable(exc) from exc

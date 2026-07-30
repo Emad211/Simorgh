@@ -48,7 +48,7 @@ Phase 1.4 Typed Results and Artifacts    COMPLETE — PR #48
 Phase 1.5 Governed GitHub Read Tools     COMPLETE — PR #52
 Phase 1.6 Cancellation Propagation       COMPLETE — PR #54
 Phase 1.7 Context Compiler               COMPLETE — PR #56
-Phase 1.8 End-to-End Trace               ACTIVE — issue #59
+Phase 1.8 End-to-End Trace               VALIDATING — PR #60
 Phase 1.9 Live Provider Staging          QUEUED
 Phase 1.10 Complete GitHub Workflow      QUEUED
 Phase 2+                                 BLOCKED by Phase 1
@@ -385,7 +385,7 @@ A task cancellation must stop every future reservation and signal every owned ca
 
 ## 1.7 Context compiler and compaction — COMPLETE
 
-Merged through PR #56 at `dab5333140da2d9cf9b982a57ede1a2d08397cf1`. Issue #55 completed; ADR 0020 accepted. Exact validated head `855eddcc5a91d90912761fb0f5012cd3e45de9c4` passed standard CI run `30358547806` with 404 Core tests and full Android build/JVM/lint/debug-APK gates.
+Merged through PR #56 at `dab5333140da2d9cf9b982a57ede1a2d08397cf1`. Issue #55 completed; ADR 0020 accepted. Exact-head validation passed Ruff, strict MyPy, 404 Core tests and full Android build/JVM/lint/APK gates.
 
 ### Objective
 
@@ -404,18 +404,33 @@ remaining budget
 required output schema
 ```
 
-## 1.8 End-to-end correlated trace — ACTIVE
 
-Tracking issue: #59.
+## 1.8 Durable correlated end-to-end trace — VALIDATING
+
+Implementation is active in Draft PR #60 for issue #59.
 
 ### Objective
 
-Persist one privacy-safe, restart-safe and sequence-ordered trace correlated across routing, context, invocation, governed tool, typed result, cancellation and replay identities without storing private bodies or credentials.
+Reconstruct one durable, ordered, privacy-safe audit projection across task, routing, budget, context, model/tool/specialist invocations, authoritative result, replay, cancellation and uncertainty. Trace remains projection only and never grants execution authority.
 
-### Current boundary
+### Delivered boundary
 
-The existing `TraceEvent` kinds and process-local sinks are inputs to this step, not its final durable authority. Phase 1.8 must add stable trace identity, transactional sequence ordering, idempotent append/conflict semantics, SQLite WAL durability, completeness/gap projections, bounded whole-trace retention and exact Core-lifespan configuration.
+- strict typed event/detail/envelope contracts and deterministic IDs/hashes;
+- immutable in-memory and SQLite WAL authorities with transactional sequence, exact replay, corruption/schema/process-lock failure semantics;
+- direct producer projection after durable task/invocation/context/result commits;
+- deterministic startup reconciliation with zero external calls or new usage;
+- classifier and specialist-owned model/tool child correlation from exact retained identities;
+- typed cancellation settlement and conservative unknown-side-effect handling;
+- typed terminal supersession/resolution without rewriting historical events;
+- whole-trace terminal retention with active routed-request protection and pre-delete recheck;
+- independent path, lifespan ownership, backup/restore and incident procedures;
+- deterministic runtime acceptance for budgeted classifier plus governed GitHub read;
+- online-backup, standalone restore and corruption fail-closed acceptance.
 
-### Explicit non-goals
+### Final merge gate
 
-No network exporter, external observability service, live-provider staging, complete GitHub report workflow, public trace API, mutation, Voice, Notification, Memory, Work Graph, MCP or new Android behavior.
+- exact PR Head passes Core installation, Ruff, strict MyPy and all tests;
+- the same Head passes Android build, JVM tests, lint and Debug APK upload;
+- final validation record pins exact Head, run, test count and artifact digests;
+- no temporary workflow/runtime database or unresolved review action remains;
+- scope remains Phase 1.8 only.
