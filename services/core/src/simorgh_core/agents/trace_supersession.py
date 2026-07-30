@@ -70,19 +70,21 @@ def new_trace_resolved_candidate(
     reason_code: str,
     occurred_at_ms: int,
     parent_event_id: UUID,
+    resolved_gap_event_ids: Iterable[UUID] = (),
     result_id: UUID | None = None,
     privacy: PrivacyClassification = PrivacyClassification.INTERNAL,
     retention: RetentionDisposition = RetentionDisposition.PROJECT,
 ) -> TraceEventCandidate:
     """Create the terminal current-status event for one superseded trace epoch."""
 
+    resolved = _normalized_gap_ids(resolved_gap_event_ids)
     source_id, source_hash = _status_identity(
         request_id=request_id,
         event_kind=DurableTraceEventKind.TRACE_RESOLVED,
         previous_status_event_id=superseded_event.event_id,
         source_snapshot_sha256=source_snapshot_sha256,
         disposition=disposition,
-        resolved_gap_event_ids=(),
+        resolved_gap_event_ids=resolved,
     )
     return new_trace_event_candidate(
         request_id=request_id,
@@ -103,7 +105,7 @@ def new_trace_resolved_candidate(
             disposition=disposition,
             terminal=True,
             reason_code=reason_code,
-            resolved_gap_event_ids=(),
+            resolved_gap_event_ids=resolved,
         ),
     )
 
@@ -130,7 +132,7 @@ def _status_identity(
         NAMESPACE_URL,
         "simorgh-trace-status:"
         f"{request_id}:{event_kind.value}:{previous_status_event_id}:"
-        f"{source_snapshot_sha256}:{disposition.value}",
+        f"{source_snapshot_sha256}:{disposition.value}:{source_hash}",
     )
     return source_id, source_hash
 
