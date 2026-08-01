@@ -12,9 +12,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
-from simorgh_core.agents.live_provider_staging_contracts import (
-    AVALAI_USER_API_BASE_URL,
-)
+from simorgh_core.providers.avalai_constants import AVALAI_USER_API_BASE_URL
 
 _DECIMAL_PATTERN = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,15})?$"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
@@ -254,7 +252,7 @@ class HttpAvalAIUserAPI:
 
     def __init__(
         self,
-        *,
+        h:
         api_key: SecretStr,
         base_url: str = AVALAI_USER_API_BASE_URL,
         timeout_ms: int = 10_000,
