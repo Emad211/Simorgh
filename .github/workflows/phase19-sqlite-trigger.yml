@@ -1,0 +1,114 @@
+name: Phase 1.9 SQLite Payload Trigger
+
+on:
+  push:
+    branches:
+      - core/live-provider-staging
+    paths:
+      - .github/workflows/phase19-sqlite-trigger.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase19-sqlite-payload-trigger
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Extract and verify reviewed payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from base64 import b64decode
+          from hashlib import sha256
+          from pathlib import Path
+
+          source = Path(
+              ".github/workflows/phase19-sqlite-staging-store.yml"
+          ).read_text(encoding="utf-8")
+          start = "cat > /tmp/phase19-sqlite-payload.b64 <<'PAYLOAD'\n"
+          end = "\nPAYLOAD\n"
+          if source.count(start) != 1:
+              raise SystemExit("SQLite payload start marker mismatch")
+          encoded = source.split(start, 1)[1].split(end, 1)[0]
+          payload = b64decode(encoded, validate=True)
+          digest = sha256(payload).hexdigest()
+          expected = "d6e6b8d007cbcc301c3ee822c973afc98280939c1b33bed295a63a20c962b198"
+          if digest != expected:
+              raise SystemExit(f"SQLite payload hash mismatch: {digest}")
+          Path("/tmp/phase19-sqlite-payload.tar.gz").write_bytes(payload)
+          PY
+          mkdir -p /tmp/phase19-sqlite-overlay
+          tar -xzf /tmp/phase19-sqlite-payload.tar.gz -C /tmp/phase19-sqlite-overlay
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_store.py | cut -d' ' -f1)" = "7819300fe5a562a0efa8f5038a3b89d50123819cc9f74b74932b5ebd8b1774f6"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py | cut -d' ' -f1)" = "2870a99cd66d3556cb929c2530401b70d381291d77a6bdefe63240379bdb5e89"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/tests/test_live_provider_staging_store.py | cut -d' ' -f1)" = "6b8cc5a94c072ec13257c03912e8648c5c471994980947b194c21c8969953269"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/docs/validation/phase-1-9-user-api-contract-candidate.md | cut -d' ' -f1)" = "943f0f5b0410d4e55cd373efffdc9cb81d7b65ed809e085ac76d5352b11bd248"
+
+      - name: Apply payload and remove temporary workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a /tmp/phase19-sqlite-overlay/. .
+          rm .github/workflows/phase19-sqlite-staging-store.yml
+          rm .github/workflows/phase19-sqlite-trigger.yml
+          git diff --check
+
+      - name: Run complete Core gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+          git diff --check
+
+      - name: Commit validated SQLite authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          changed=$(git diff --cached --name-only | sort)
+          expected=$(printf '%s\n' \
+            .github/workflows/phase19-sqlite-staging-store.yml \
+            .github/workflows/phase19-sqlite-trigger.yml \
+            docs/validation/phase-1-9-user-api-contract-candidate.md \
+            services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py \
+            services/core/src/simorgh_core/agents/live_provider_staging_store.py \
+            services/core/tests/test_live_provider_staging_store.py | sort)
+          test "$changed" = "$expected"
+          git commit -m 'core: persist sanitized staging results in SQLite'
+
+      - name: Protected fast-forward push
+        shell: bash
+        env:
+          BRANCH: core/live-provider-staging
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
+            echo "branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$BRANCH"
