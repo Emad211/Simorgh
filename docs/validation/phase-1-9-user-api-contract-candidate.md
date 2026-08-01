@@ -78,8 +78,6 @@ transaction lookup, so it creates no second external call or usage charge.
 
 ## Deterministic validation
 
-Local zero-external validation before transfer:
-
 ```text
 focused policy/User-API/service tests: 27 passed
 complete local Core suite: 507 passed, 1 existing dependency warning
@@ -88,24 +86,34 @@ Python source line-length check: passed
 ordinary network calls: zero
 ```
 
-The composition syntax repair was applied through exact anchors and validated
-before the product commit `c8df54c4431fb3b4845155d6b9cd23505b0c1e55`:
+## SQLite staging-result authority
+
+The sanitized result now has strict in-memory and SQLite WAL authorities with:
+
+- one immutable result per staging run and provider invocation;
+- exact replay after close/reopen;
+- payload SHA-256 and indexed-column verification;
+- schema versioning and unsupported-schema failure;
+- exclusive process ownership;
+- corruption and index-mismatch fail-closed behavior;
+- deterministic load order and closed-store rejection.
+
+A restarted staging service can replay the sanitized durable result before
+credit, model discovery, model generation or transaction lookup, so restart
+replay remains zero-external and zero-charge.
+
+Updated zero-external validation:
 
 ```text
-Ruff: passed
-strict MyPy: passed across 78 source files
-Core tests: 514 passed, 2 existing dependency warnings
+focused policy/User-API/service/store tests: 34 passed
+complete local Core suite: 514 passed, 1 existing dependency warning
+compileall: passed
+Python source line-length check: passed
+ordinary network calls: zero
 ```
 
-The one-shot validation workflow removed itself from the product commit. No
-credential, protected environment, network request, generated database or
-runtime state entered the branch.
-
-## Next gate
-
-This owner-authored documentation commit triggers the ordinary exact-head CI.
-That head must pass standard Ruff, strict MyPy, the complete Core suite, Android
-build, JVM tests, lint and Debug APK before the fake canary composition can be
-accepted. SQLite staging-result durability and the protected manual workflow
+The exact PR head must still pass standard Ruff, strict MyPy, the complete Core
+test suite, Android build, JVM tests, lint and Debug APK after these durability
+files are committed. Lifespan configuration and the protected manual workflow
 remain separate later increments; no live request is permitted until those
 boundaries are merged and independently validated.
