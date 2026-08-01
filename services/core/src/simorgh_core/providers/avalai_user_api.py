@@ -198,9 +198,11 @@ class AvalAITransactionLookupResult(BaseModel):
     def validate_lookup(self) -> Self:
         if self.found != (self.transaction is not None):
             raise ValueError("transaction lookup found state is inconsistent")
-        if self.transaction is not None:
-            if self.transaction.transaction_id != self.requested_transaction_id:
-                raise ValueError("transaction lookup returned another request identity")
+        if (
+            self.transaction is not None
+            and self.transaction.transaction_id != self.requested_transaction_id
+        ):
+            raise ValueError("transaction lookup returned another request identity")
         return self
 
 
