@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$PRODUCT_HEAD_SHA"
-          test "$(git rev-parse HEAD^)" = "7616b409b0329f5f10d777e44dcce49146e60820"
+          test "$(git rev-parse HEAD^)" = "fb6e87bc22871fb79a11019343c85bae61240c0e"
           python - <<'PY'
           from base64 import b64decode
           from hashlib import sha256
@@ -59,7 +59,7 @@ jobs:
           encoded = source.split(start, 1)[1].split(end, 1)[0]
           payload = b64decode(encoded, validate=True)
           digest = sha256(payload).hexdigest()
-          expected = "d6e6b8d007cbcc301c3ee822c973afc98280939c1b33bed295a63a20c962b198"
+          expected = "2ab9f92b77c02c36f7cc83a16df7c328c571b90e52e0a494355f07bcd81fc656"
           if digest != expected:
               raise SystemExit(f"SQLite payload hash mismatch: {digest}")
           Path("/tmp/phase19-sqlite-payload.tar.gz").write_bytes(payload)
