@@ -272,9 +272,11 @@ class LiveProviderStagingResult(BaseModel):
             raise ValueError("incomplete staging result requires a typed code")
         if self.provider_request_id is not None and self.provider_request_id.version != 7:
             raise ValueError("staging provider request identity must be UUIDv7")
-        if self.transaction is not None:
-            if self.provider_request_id != self.transaction.transaction_id:
-                raise ValueError("staging transaction identity does not match provider request")
+        if (
+            self.transaction is not None
+            and self.provider_request_id != self.transaction.transaction_id
+        ):
+            raise ValueError("staging transaction identity does not match provider request")
         if self.canonical_sha256 != live_provider_staging_result_sha256(self):
             raise ValueError("staging result hash does not match authoritative content")
         expected_id = live_provider_staging_result_id_for(

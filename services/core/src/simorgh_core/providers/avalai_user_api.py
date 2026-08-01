@@ -252,7 +252,7 @@ class HttpAvalAIUserAPI:
 
     def __init__(
         self,
-        h:
+        *,
         api_key: SecretStr,
         base_url: str = AVALAI_USER_API_BASE_URL,
         timeout_ms: int = 10_000,
