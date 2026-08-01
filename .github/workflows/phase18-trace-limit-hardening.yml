@@ -104,11 +104,13 @@ jobs:
           git diff --cached --check
           changed=$(git diff --cached --name-only | sort)
           expected=$(printf '%s\n' \
+            .github/workflows/phase18-trace-limit-hardening.yml \
             docs/validation/phase-1-8-trace-limit-hardening.md \
             services/core/src/simorgh_core/agents/trace_contracts.py \
             services/core/src/simorgh_core/agents/trace_store.py \
             services/core/tests/test_sqlite_trace_store.py \
-            services/core/tests/test_trace_store.py | sort)
+            services/core/tests/test_trace_store.py \
+            tools/phase18-trace-limit-hardening.patch | sort)
           test "$changed" = "$expected"
           git commit -m 'core: enforce durable trace event and gap limits'
 
