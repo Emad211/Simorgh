@@ -6,6 +6,12 @@ on:
       - core/live-provider-staging
     paths:
       - .github/workflows/phase19-sqlite-trigger.yml
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase19-sqlite-trigger.yml
 
 permissions:
   contents: write
@@ -18,10 +24,13 @@ jobs:
   apply-and-validate:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      PRODUCT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PRODUCT_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.PRODUCT_HEAD_SHA }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -33,7 +42,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "7fe08040842cb4ac2d3600f080e738bf9ded1cb2"
+          test "$(git rev-parse HEAD)" = "$PRODUCT_HEAD_SHA"
+          test "$(git rev-parse HEAD^)" = "7616b409b0329f5f10d777e44dcce49146e60820"
           python - <<'PY'
           from base64 import b64decode
           from hashlib import sha256
@@ -102,14 +112,12 @@ jobs:
 
       - name: Protected fast-forward push
         shell: bash
-        env:
-          BRANCH: core/live-provider-staging
         run: |
           set -euo pipefail
-          git fetch origin "$BRANCH"
-          remote_head=$(git rev-parse "origin/$BRANCH")
-          if [[ "$remote_head" != "$GITHUB_SHA" ]]; then
-            echo "branch moved during validation: $remote_head != $GITHUB_SHA" >&2
+          git fetch origin "$PRODUCT_BRANCH"
+          remote_head=$(git rev-parse "origin/$PRODUCT_BRANCH")
+          if [[ "$remote_head" != "$PRODUCT_HEAD_SHA" ]]; then
+            echo "branch moved during validation: $remote_head != $PRODUCT_HEAD_SHA" >&2
             exit 1
           fi
-          git push origin "HEAD:refs/heads/$BRANCH"
+          git push origin "HEAD:refs/heads/$PRODUCT_BRANCH"
