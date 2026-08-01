@@ -1,0 +1,325 @@
+# Instincts generated from https://github.com/Emad211/Simorgh
+# Generated: 2026-08-01T02:12:14.097Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: Simorgh-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Emad211/Simorgh
+---
+
+# Simorgh Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: ci, core
+
+## Evidence
+
+- 5 commits analyzed
+- Detected conventional commit pattern
+- Examples: ci: stage Phase 1.8 trace-limit hardening patch, core: enforce durable trace event and gap limits
+
+---
+id: Simorgh-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Emad211/Simorgh
+---
+
+# Simorgh Commit Length
+
+## Action
+
+Keep commit messages concise (~46 characters)
+
+## Evidence
+
+- Average commit message length: 46 chars
+- Based on 5 commits
+
+---
+id: Simorgh-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Emad211/Simorgh
+---
+
+# Simorgh Naming Files
+
+## Action
+
+Use snake_case naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: snake_case
+
+---
+id: Simorgh-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Emad211/Simorgh
+---
+
+# Simorgh Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: Simorgh-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Emad211/Simorgh
+---
+
+# Simorgh Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: Simorgh-workflow-ci-workflow-addition-and-iteration
+trigger: "when doing ci workflow addition and iteration"
+confidence: 0.65
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/Emad211/Simorgh
+---
+
+# Simorgh Workflow Ci Workflow Addition And Iteration
+
+## Action
+
+Follow the ci-workflow-addition-and-iteration workflow:
+1. Create a new .github/workflows/*.yml file for the CI workflow.
+2. Iteratively update the workflow YAML file to refine steps, triggers, or add cleanup.
+3. Optionally, coordinate with related patch or code changes.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~3x per month
+- Files: .github/workflows/*.yml
+
+---
+id: simorgh-instinct-file-naming
+trigger: "When creating a new Python file"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct File Naming
+
+## Action
+
+Name the file using snake_case
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: simorgh-instinct-function-naming
+trigger: "When defining a new function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Function Naming
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: simorgh-instinct-class-naming
+trigger: "When defining a new class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Class Naming
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: simorgh-instinct-constant-naming
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Constant Naming
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: simorgh-instinct-import-style
+trigger: "When importing modules in Python"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Import Style
+
+## Action
+
+Use relative imports
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: simorgh-instinct-export-style
+trigger: "When exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: simorgh-instinct-test-location
+trigger: "When adding tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Test Location
+
+## Action
+
+Place tests in mixed locations (not strictly separated test folder)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: simorgh-instinct-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Commit Format
+
+## Action
+
+Use the conventional commit format with a prefix (e.g., 'ci:' or 'core:') followed by a concise description
+
+## Evidence
+
+- Pattern in commits.type: conventional
+- Prefixes in commits.prefixes
+- Examples: 'ci: stage Phase 1.8 trace-limit hardening patch'
+
+---
+id: simorgh-instinct-commit-length
+trigger: "When composing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Commit Length
+
+## Action
+
+Keep the commit message concise (around 46 characters on average)
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: simorgh-instinct-ci-workflow-addition
+trigger: "When introducing or updating a CI validation process for a new feature or patch"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: Emad211/Simorgh
+---
+
+# Simorgh Instinct Ci Workflow Addition
+
+## Action
+
+Create or update a .github/workflows/*.yml file and iteratively refine it
+
+## Evidence
+
+- Workflow: ci-workflow-addition-and-iteration
+- Files: .github/workflows/*.yml
+- Commits: 'ci: validate Phase 1.8 trace-limit hardening'
+
