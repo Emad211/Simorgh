@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
+import simorgh_core.agents.trace_store as trace_store_module
 from simorgh_core.agents.contracts import (
     InvocationState,
     RoutingMethod,
@@ -18,6 +19,7 @@ from simorgh_core.agents.result_authority import (
 )
 from simorgh_core.agents.task_state import AgentTaskPhase
 from simorgh_core.agents.trace_contracts import (
+    MAX_TRACE_GAPS,
     DurableTraceEventKind,
     DurableTraceReplayDisposition,
     TraceContextDetails,
@@ -39,6 +41,7 @@ from simorgh_core.agents.trace_store import (
     TraceCausalityError,
     TraceClaimKind,
     TraceConflictError,
+    TraceLimitError,
     TraceStoreClosedError,
     TraceTerminalError,
 )
@@ -73,6 +76,28 @@ def _task_event(
         occurred_at_ms=occurred_at_ms,
         privacy=privacy,
         retention=retention,
+    )
+
+
+def _gap_event(
+    request_id: UUID,
+    *,
+    source_id: UUID,
+    occurred_at_ms: int,
+) -> TraceEventCandidate:
+    return new_trace_event_candidate(
+        request_id=request_id,
+        event_kind=DurableTraceEventKind.TRACE_GAP,
+        stage=TraceStage.TERMINAL,
+        source_authority_kind=TraceSourceAuthorityKind.TRACE_RECONCILIATION,
+        source_authority_id=source_id,
+        source_authority_sha256=_SHA_A,
+        details=TraceGapDetails(
+            gap_code=TraceGapCode.MISSING_RESULT,
+            missing_stage=TraceStage.RESULT,
+            missing_source_kind=TraceSourceAuthorityKind.RESULT_RECORD,
+        ),
+        occurred_at_ms=occurred_at_ms,
     )
 
 
@@ -514,6 +539,66 @@ def test_terminal_trace_rejects_new_fresh_work_but_allows_gap() -> None:
     assert gap.sequence == 8
     assert view.envelope.disposition == TraceDisposition.INCOMPLETE_GAP
     assert view.envelope.gap_count == 1
+
+
+def test_event_limit_rejects_fresh_append_but_preserves_exact_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = uuid4()
+    store = InMemoryTraceStore()
+    task = store.append(_task_event(request_id), ingested_at_ms=2_000).record
+    store.append(
+        _routing_event(request_id, parent_event_id=task.event_id),
+        ingested_at_ms=2_010,
+    )
+    monkeypatch.setattr(trace_store_module, "MAX_TRACE_EVENTS", 2)
+
+    with pytest.raises(TraceLimitError, match="event count exceeds"):
+        store.append(
+            _gap_event(
+                request_id,
+                source_id=uuid4(),
+                occurred_at_ms=3_000,
+            ),
+            ingested_at_ms=3_100,
+        )
+
+    replay = store.append(_task_event(request_id), ingested_at_ms=9_000)
+    assert replay.kind == TraceClaimKind.REPLAY
+    assert replay.record == task
+    assert len(store.load()) == 2
+
+
+def test_gap_limit_rejects_before_poisoning_in_memory_trace() -> None:
+    request_id = uuid4()
+    store = InMemoryTraceStore()
+    store.append(_task_event(request_id), ingested_at_ms=2_000)
+
+    for index in range(MAX_TRACE_GAPS):
+        store.append(
+            _gap_event(
+                request_id,
+                source_id=uuid4(),
+                occurred_at_ms=3_000 + index,
+            ),
+            ingested_at_ms=4_000 + index,
+        )
+
+    baseline = store.view(request_id)
+    assert baseline.envelope.gap_count == MAX_TRACE_GAPS
+
+    with pytest.raises(TraceLimitError, match="gap count exceeds"):
+        store.append(
+            _gap_event(
+                request_id,
+                source_id=uuid4(),
+                occurred_at_ms=9_000,
+            ),
+            ingested_at_ms=9_100,
+        )
+
+    assert store.view(request_id) == baseline
+    assert len(store.load()) == MAX_TRACE_GAPS + 1
 
 
 def test_view_composes_strictest_privacy_and_retention() -> None:
