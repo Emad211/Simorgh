@@ -1,0 +1,6 @@
+interface:
+  display_name: "Simorgh"
+  short_description: "Repo-specific patterns and workflows for Simorgh"
+  default_prompt: "Use the Simorgh repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
