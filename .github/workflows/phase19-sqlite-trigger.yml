@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "464c08b3c50b9cbf2cc5e65de92700e06b26f3bc"
+          test "$(git rev-parse HEAD^)" = "7fe08040842cb4ac2d3600f080e738bf9ded1cb2"
           python - <<'PY'
           from base64 import b64decode
           from hashlib import sha256
