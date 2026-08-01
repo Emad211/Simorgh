@@ -1,0 +1,112 @@
+name: Phase 1.9 Composition Lint Fix
+
+on:
+  push:
+    branches:
+      - core/live-provider-staging
+    paths:
+      - .github/workflows/phase19-composition-lint-fix.yml
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase19-composition-lint-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase19-composition-lint-fix
+  cancel-in-progress: false
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PRODUCT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PRODUCT_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_HEAD_SHA }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Apply exact reviewed fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_HEAD_SHA"
+          python - <<'PY'
+          from pathlib import Path
+
+          contracts = Path(
+              "services/core/src/simorgh_core/agents/"
+              "live_provider_staging_contracts.py"
+          )
+          text = contracts.read_text(encoding="utf-8")
+          old = '''        if self.transaction is not None:\n            if self.provider_request_id != self.transaction.transaction_id:\n                raise ValueError("staging transaction identity does not match provider request")\n'''
+          new = '''        if (\n            self.transaction is not None\n            and self.provider_request_id != self.transaction.transaction_id\n        ):\n            raise ValueError("staging transaction identity does not match provider request")\n'''
+          if text.count(old) != 1:
+              raise SystemExit("staging result validator anchor mismatch")
+          contracts.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          user_api = Path(
+              "services/core/src/simorgh_core/providers/avalai_user_api.py"
+          )
+          text = user_api.read_text(encoding="utf-8")
+          old = '''    def __init__(\n        self,\n        h:\n        api_key: SecretStr,\n'''
+          new = '''    def __init__(\n        self,\n        *,\n        api_key: SecretStr,\n'''
+          if text.count(old) != 1:
+              raise SystemExit("AvalAI User API constructor anchor mismatch")
+          user_api.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          Path(".github/workflows/phase19-composition-lint-fix.yml").unlink()
+          PY
+          git diff --check
+          test ! -e .github/workflows/phase19-composition-lint-fix.yml
+
+      - name: Run complete Core gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+          git diff --check
+
+      - name: Commit validated fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          changed=$(git diff --cached --name-only | sort)
+          expected=$(printf '%s\n' \
+            .github/workflows/phase19-composition-lint-fix.yml \
+            services/core/src/simorgh_core/agents/live_provider_staging_contracts.py \
+            services/core/src/simorgh_core/providers/avalai_user_api.py | sort)
+          test "$changed" = "$expected"
+          git commit -m 'core: fix staging composition contract syntax'
+
+      - name: Protected fast-forward push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$PRODUCT_BRANCH"
+          remote_head=$(git rev-parse "origin/$PRODUCT_BRANCH")
+          if [[ "$remote_head" != "$PRODUCT_HEAD_SHA" ]]; then
+            echo "branch moved during validation: $remote_head != $PRODUCT_HEAD_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$PRODUCT_BRANCH"
