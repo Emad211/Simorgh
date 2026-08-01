@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+import simorgh_core.agents.trace_store as trace_store_module
 from simorgh_core.agents.contracts import RoutingMethod, RoutingState
 from simorgh_core.agents.result_authority import (
     PrivacyClassification,
@@ -20,6 +21,8 @@ from simorgh_core.agents.sqlite_trace_store import (
 )
 from simorgh_core.agents.task_state import AgentTaskPhase
 from simorgh_core.agents.trace_contracts import (
+    MAX_TRACE_EVENTS,
+    MAX_TRACE_GAPS,
     DurableTraceEventKind,
     TraceEventCandidate,
     TraceGapCode,
@@ -30,7 +33,11 @@ from simorgh_core.agents.trace_contracts import (
     TraceTaskDetails,
     new_trace_event_candidate,
 )
-from simorgh_core.agents.trace_store import TraceClaimKind, TraceConflictError
+from simorgh_core.agents.trace_store import (
+    TraceClaimKind,
+    TraceConflictError,
+    TraceLimitError,
+)
 
 _SHA_A = "a" * 64
 _SHA_B = "b" * 64
@@ -203,6 +210,82 @@ def test_sqlite_unsupported_schema_version_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(TraceStoreSchemaError, match="unsupported trace store schema"):
         SQLiteTraceStore(path)
+
+
+def test_sqlite_event_limit_preserves_replay_and_rolls_back_fresh_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "trace.sqlite3"
+    request_id = uuid4()
+    store = SQLiteTraceStore(path)
+    task = store.append(_task_event(request_id), ingested_at_ms=2_000).record
+    store.append(
+        _routing_event(
+            request_id,
+            parent_event_id=task.event_id,
+            decision_id=uuid4(),
+        ),
+        ingested_at_ms=2_010,
+    )
+    monkeypatch.setattr(trace_store_module, "MAX_TRACE_EVENTS", 2)
+    baseline = store.view(request_id)
+
+    with pytest.raises(TraceLimitError, match="event count exceeds"):
+        store.append(
+            _gap_event(request_id, source_id=uuid4()),
+            ingested_at_ms=9_000,
+        )
+
+    replay = store.append(
+        _task_event(request_id, occurred_at_ms=9_100),
+        ingested_at_ms=9_200,
+    )
+    assert replay.kind == TraceClaimKind.REPLAY
+    assert replay.record == task
+    assert store.view(request_id) == baseline
+    store.close()
+    monkeypatch.setattr(trace_store_module, "MAX_TRACE_EVENTS", MAX_TRACE_EVENTS)
+
+    reopened = SQLiteTraceStore(path)
+    assert reopened.view(request_id) == baseline
+    assert len(reopened.load()) == 2
+    reopened.close()
+
+
+def test_sqlite_gap_limit_rolls_back_and_reopens_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "trace.sqlite3"
+    request_id = uuid4()
+    store = SQLiteTraceStore(path)
+    store.append(_task_event(request_id), ingested_at_ms=2_000)
+    monkeypatch.setattr(trace_store_module, "MAX_TRACE_GAPS", 2)
+
+    for index in range(2):
+        store.append(
+            _gap_event(request_id, source_id=uuid4()),
+            ingested_at_ms=3_000 + index,
+        )
+
+    baseline = store.view(request_id)
+    assert baseline.envelope.gap_count == 2
+
+    with pytest.raises(TraceLimitError, match="gap count exceeds"):
+        store.append(
+            _gap_event(request_id, source_id=uuid4()),
+            ingested_at_ms=9_000,
+        )
+
+    assert store.view(request_id) == baseline
+    store.close()
+    monkeypatch.setattr(trace_store_module, "MAX_TRACE_GAPS", MAX_TRACE_GAPS)
+
+    reopened = SQLiteTraceStore(path)
+    assert reopened.view(request_id) == baseline
+    assert len(reopened.load()) == 3
+    reopened.close()
 
 
 def test_sqlite_concurrent_appends_assign_unique_contiguous_sequences(

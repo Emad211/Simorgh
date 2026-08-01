@@ -910,6 +910,8 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
 
 
 __all__ = [
+    "MAX_TRACE_EVENTS",
+    "MAX_TRACE_GAPS",
     "TRACE_CONTRACT_VERSION",
     "DurableTraceCacheDisposition",
     "DurableTraceEventKind",

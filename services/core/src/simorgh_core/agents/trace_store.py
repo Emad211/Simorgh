@@ -11,6 +11,8 @@ from simorgh_core.agents.contracts import InvocationState
 from simorgh_core.agents.invocations import InvocationKind
 from simorgh_core.agents.result_authority import strictest_privacy, strictest_retention
 from simorgh_core.agents.trace_contracts import (
+    MAX_TRACE_EVENTS,
+    MAX_TRACE_GAPS,
     DurableTraceEventKind,
     DurableTraceReplayDisposition,
     TraceDisposition,
@@ -51,6 +53,10 @@ class TraceTerminalError(TraceStoreError):
 
 
 class TraceStoreClosedError(TraceStoreError):
+    pass
+
+
+class TraceLimitError(TraceStoreError):
     pass
 
 
@@ -193,6 +199,16 @@ def _require_appendable(
     existing: list[TraceEventRecord],
     candidate: TraceEventCandidate,
 ) -> None:
+    if len(existing) >= MAX_TRACE_EVENTS:
+        raise TraceLimitError("trace event count exceeds durable trace limit")
+    if candidate.event_kind == DurableTraceEventKind.TRACE_GAP:
+        gap_count = sum(
+            event.event_kind == DurableTraceEventKind.TRACE_GAP
+            for event in existing
+        )
+        if gap_count >= MAX_TRACE_GAPS:
+            raise TraceLimitError("trace gap count exceeds durable trace limit")
+
     if not existing:
         if candidate.event_kind not in {
             DurableTraceEventKind.TASK_CLAIMED,
@@ -566,6 +582,7 @@ __all__ = [
     "TraceClaim",
     "TraceClaimKind",
     "TraceConflictError",
+    "TraceLimitError",
     "TraceNotFoundError",
     "TraceStore",
     "TraceStoreClosedError",
