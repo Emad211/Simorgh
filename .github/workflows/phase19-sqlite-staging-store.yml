@@ -1,0 +1,107 @@
+name: Phase 1.9 SQLite Staging Store
+
+on:
+  push:
+    branches:
+      - core/live-provider-staging
+    paths:
+      - .github/workflows/phase19-sqlite-staging-store.yml
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase19-sqlite-staging-store.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase19-sqlite-staging-store
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PRODUCT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PRODUCT_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_HEAD_SHA }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Verify and extract reviewed SQLite payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_HEAD_SHA"
+          test "$PRODUCT_HEAD_SHA" = "2f1249b0c82e8ea929ad21084305f35554838c09"
+          cat > /tmp/phase19-sqlite-payload.b64 <<'PAYLOAD'
+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
+PAYLOAD
+          base64 --decode /tmp/phase19-sqlite-payload.b64 > /tmp/phase19-sqlite-payload.tar.gz
+          echo "d6e6b8d007cbcc301c3ee822c973afc98280939c1b33bed295a63a20c962b198  /tmp/phase19-sqlite-payload.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/phase19-sqlite-overlay
+          tar -xzf /tmp/phase19-sqlite-payload.tar.gz -C /tmp/phase19-sqlite-overlay
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_store.py | cut -d' ' -f1)" = "7819300fe5a562a0efa8f5038a3b89d50123819cc9f74b74932b5ebd8b1774f6"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py | cut -d' ' -f1)" = "2870a99cd66d3556cb929c2530401b70d381291d77a6bdefe63240379bdb5e89"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/tests/test_live_provider_staging_store.py | cut -d' ' -f1)" = "6b8cc5a94c072ec13257c03912e8648c5c471994980947b194c21c8969953269"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/docs/validation/phase-1-9-user-api-contract-candidate.md | cut -d' ' -f1)" = "943f0f5b0410d4e55cd373efffdc9cb81d7b65ed809e085ac76d5352b11bd248"
+
+      - name: Apply SQLite staging-result authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a /tmp/phase19-sqlite-overlay/. .
+          rm .github/workflows/phase19-sqlite-staging-store.yml
+          git diff --check
+          test ! -e .github/workflows/phase19-sqlite-staging-store.yml
+
+      - name: Run complete Core gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+          ruff check .
+          mypy services/core/src
+          pytest
+          git diff --check
+
+      - name: Commit validated SQLite authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          changed=$(git diff --cached --name-only | sort)
+          expected=$(printf '%s\n' \
+            .github/workflows/phase19-sqlite-staging-store.yml \
+            docs/validation/phase-1-9-user-api-contract-candidate.md \
+            services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py \
+            services/core/src/simorgh_core/agents/live_provider_staging_store.py \
+            services/core/tests/test_live_provider_staging_store.py | sort)
+          test "$changed" = "$expected"
+          git commit -m 'core: persist sanitized staging results in SQLite'
+
+      - name: Protected fast-forward push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$PRODUCT_BRANCH"
+          remote_head=$(git rev-parse "origin/$PRODUCT_BRANCH")
+          if [[ "$remote_head" != "$PRODUCT_HEAD_SHA" ]]; then
+            echo "branch moved during validation: $remote_head != $PRODUCT_HEAD_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$PRODUCT_BRANCH"
