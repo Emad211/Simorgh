@@ -38,32 +38,16 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Extract and verify reviewed payload
+      - name: Assemble and verify reviewed payload
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$PRODUCT_HEAD_SHA"
-          test "$(git rev-parse HEAD^)" = "fb6e87bc22871fb79a11019343c85bae61240c0e"
-          python - <<'PY'
-          from base64 import b64decode
-          from hashlib import sha256
-          from pathlib import Path
-
-          source = Path(
-              ".github/workflows/phase19-sqlite-staging-store.yml"
-          ).read_text(encoding="utf-8")
-          start = "cat > /tmp/phase19-sqlite-payload.b64 <<'PAYLOAD'\n"
-          end = "\nPAYLOAD\n"
-          if source.count(start) != 1:
-              raise SystemExit("SQLite payload start marker mismatch")
-          encoded = source.split(start, 1)[1].split(end, 1)[0]
-          payload = b64decode(encoded, validate=True)
-          digest = sha256(payload).hexdigest()
-          expected = "2ab9f92b77c02c36f7cc83a16df7c328c571b90e52e0a494355f07bcd81fc656"
-          if digest != expected:
-              raise SystemExit(f"SQLite payload hash mismatch: {digest}")
-          Path("/tmp/phase19-sqlite-payload.tar.gz").write_bytes(payload)
-          PY
+          test "$(git rev-parse HEAD^)" = "63fbdfa0dcd66f9e8cfb1321cfb0abb43d27fa78"
+          cat .phase19/sqlite-payload.part00 .phase19/sqlite-payload.part01 \
+            | base64 --decode > /tmp/phase19-sqlite-payload.tar.gz
+          echo "d6e6b8d007cbcc301c3ee822c973afc98280939c1b33bed295a63a20c962b198  /tmp/phase19-sqlite-payload.tar.gz" \
+            | sha256sum -c -
           mkdir -p /tmp/phase19-sqlite-overlay
           tar -xzf /tmp/phase19-sqlite-payload.tar.gz -C /tmp/phase19-sqlite-overlay
           test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_store.py | cut -d' ' -f1)" = "7819300fe5a562a0efa8f5038a3b89d50123819cc9f74b74932b5ebd8b1774f6"
@@ -71,13 +55,16 @@ jobs:
           test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/tests/test_live_provider_staging_store.py | cut -d' ' -f1)" = "6b8cc5a94c072ec13257c03912e8648c5c471994980947b194c21c8969953269"
           test "$(sha256sum /tmp/phase19-sqlite-overlay/docs/validation/phase-1-9-user-api-contract-candidate.md | cut -d' ' -f1)" = "943f0f5b0410d4e55cd373efffdc9cb81d7b65ed809e085ac76d5352b11bd248"
 
-      - name: Apply payload and remove temporary workflows
+      - name: Apply payload and remove temporary transfer files
         shell: bash
         run: |
           set -euo pipefail
           cp -a /tmp/phase19-sqlite-overlay/. .
           rm .github/workflows/phase19-sqlite-staging-store.yml
           rm .github/workflows/phase19-sqlite-trigger.yml
+          rm .phase19/sqlite-payload.part00
+          rm .phase19/sqlite-payload.part01
+          rmdir .phase19
           git diff --check
 
       - name: Run complete Core gates
@@ -103,6 +90,8 @@ jobs:
           expected=$(printf '%s\n' \
             .github/workflows/phase19-sqlite-staging-store.yml \
             .github/workflows/phase19-sqlite-trigger.yml \
+            .phase19/sqlite-payload.part00 \
+            .phase19/sqlite-payload.part01 \
             docs/validation/phase-1-9-user-api-contract-candidate.md \
             services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py \
             services/core/src/simorgh_core/agents/live_provider_staging_store.py \
