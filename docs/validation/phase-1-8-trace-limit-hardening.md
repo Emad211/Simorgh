@@ -1,10 +1,18 @@
-# Phase 1.8 trace limit hardening candidate
+# Phase 1.8 trace limit hardening validation
 
 ## Scope
 
 This hardening remains inside the durable correlated Trace authority. It adds no
 model, provider, connector, tool, specialist, Android action, public API,
 Voice, Notification, Memory, MCP or Phase 1.9 behavior.
+
+- Canonical issue: #67.
+- Implementation PR: #68.
+- Base `main`: `c56ed9e039281ca0676ca36659880ea7521c25a8`.
+- Validated product commit: `88f3d3e89bce394e8420498ff7d152a1d5ba7c84`.
+
+Phase 1.9 issue #65 remains blocked until this PR is merged with exact-head Core
+and Android gates green.
 
 ## Confirmed failure
 
@@ -60,6 +68,26 @@ compileall: passed
 Python source line-length check: passed
 ```
 
-The exact remote PR head must still pass standard Ruff, strict MyPy, all Core
-tests, Android build, JVM tests, lint and Debug APK upload before this candidate
-can replace the previously green Phase 1.8 merge candidate.
+Remote one-shot validation verified the exact source Git blobs and reviewed
+patch SHA-256 before mutation, removed all staging files, and passed:
+
+```text
+Ruff: passed
+strict MyPy: passed across 73 source files
+Core tests: 486 passed, 2 existing dependency deprecation warnings
+```
+
+The resulting PR diff contains exactly five reviewed files and no temporary
+workflow, patcher, generated database, WAL/SHM file or process-lock file.
+
+## Final gate
+
+The ordinary owner-authored exact PR head must independently pass:
+
+- Core installation, Ruff, strict MyPy and all tests;
+- Android build, JVM tests, lint and Debug APK upload;
+- zero live model/provider/connector/MCP or paid external calls;
+- zero unresolved review thread or required review action.
+
+The PR body records the exact final head, workflow run, test count and artifact
+digests before Ready-for-Review and merge.
