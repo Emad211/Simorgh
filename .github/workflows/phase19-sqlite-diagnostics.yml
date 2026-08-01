@@ -1,0 +1,103 @@
+name: Phase 1.9 SQLite Payload Diagnostics
+
+on:
+  push:
+    branches:
+      - core/live-provider-staging
+    paths:
+      - .github/workflows/phase19-sqlite-diagnostics.yml
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths:
+      - .github/workflows/phase19-sqlite-diagnostics.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase19-sqlite-payload-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PRODUCT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_HEAD_SHA }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Assemble and apply reviewed SQLite payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_HEAD_SHA"
+          cat .phase19/sqlite-payload.part00 .phase19/sqlite-payload.part01 \
+            | base64 --decode > /tmp/phase19-sqlite-payload.tar.gz
+          echo "d6e6b8d007cbcc301c3ee822c973afc98280939c1b33bed295a63a20c962b198  /tmp/phase19-sqlite-payload.tar.gz" \
+            | sha256sum -c -
+          mkdir -p /tmp/phase19-sqlite-overlay
+          tar -xzf /tmp/phase19-sqlite-payload.tar.gz -C /tmp/phase19-sqlite-overlay
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_store.py | cut -d' ' -f1)" = "7819300fe5a562a0efa8f5038a3b89d50123819cc9f74b74932b5ebd8b1774f6"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py | cut -d' ' -f1)" = "2870a99cd66d3556cb929c2530401b70d381291d77a6bdefe63240379bdb5e89"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/services/core/tests/test_live_provider_staging_store.py | cut -d' ' -f1)" = "6b8cc5a94c072ec13257c03912e8648c5c471994980947b194c21c8969953269"
+          test "$(sha256sum /tmp/phase19-sqlite-overlay/docs/validation/phase-1-9-user-api-contract-candidate.md | cut -d' ' -f1)" = "943f0f5b0410d4e55cd373efffdc9cb81d7b65ed809e085ac76d5352b11bd248"
+          cp -a /tmp/phase19-sqlite-overlay/. .
+          git diff --check
+
+      - name: Install project and development tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Capture Ruff, MyPy and pytest diagnostics
+        shell: bash
+        run: |
+          set +e
+          mkdir -p /tmp/phase19-diagnostics
+          ruff check . > /tmp/phase19-diagnostics/ruff.txt 2>&1
+          echo $? > /tmp/phase19-diagnostics/ruff.exit
+          mypy services/core/src > /tmp/phase19-diagnostics/mypy.txt 2>&1
+          echo $? > /tmp/phase19-diagnostics/mypy.exit
+          pytest > /tmp/phase19-diagnostics/pytest.txt 2>&1
+          echo $? > /tmp/phase19-diagnostics/pytest.exit
+          git diff --check > /tmp/phase19-diagnostics/diff-check.txt 2>&1
+          echo $? > /tmp/phase19-diagnostics/diff-check.exit
+          {
+            echo "head=$PRODUCT_HEAD_SHA"
+            echo "ruff=$(cat /tmp/phase19-diagnostics/ruff.exit)"
+            echo "mypy=$(cat /tmp/phase19-diagnostics/mypy.exit)"
+            echo "pytest=$(cat /tmp/phase19-diagnostics/pytest.exit)"
+            echo "diff_check=$(cat /tmp/phase19-diagnostics/diff-check.exit)"
+          } > /tmp/phase19-diagnostics/summary.txt
+          cat /tmp/phase19-diagnostics/summary.txt
+          exit 0
+
+      - name: Upload exact diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase19-sqlite-payload-diagnostics
+          path: /tmp/phase19-diagnostics/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Fail if any gate failed
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat /tmp/phase19-diagnostics/ruff.exit)" = "0"
+          test "$(cat /tmp/phase19-diagnostics/mypy.exit)" = "0"
+          test "$(cat /tmp/phase19-diagnostics/pytest.exit)" = "0"
+          test "$(cat /tmp/phase19-diagnostics/diff-check.exit)" = "0"
