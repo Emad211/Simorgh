@@ -1,0 +1,374 @@
+diff --git a/docs/validation/phase-1-8-trace-limit-hardening.md b/docs/validation/phase-1-8-trace-limit-hardening.md
+new file mode 100644
+index 0000000..28178d6
+--- /dev/null
++++ b/docs/validation/phase-1-8-trace-limit-hardening.md
+@@ -0,0 +1,65 @@
++# Phase 1.8 trace limit hardening candidate
++
++## Scope
++
++This hardening remains inside the durable correlated Trace authority. It adds no
++model, provider, connector, tool, specialist, Android action, public API,
++Voice, Notification, Memory, MCP or Phase 1.9 behavior.
++
++## Confirmed failure
++
++`TraceEnvelope` accepts at most 100,000 events and 256 historical gap records,
++but the store previously enforced only the per-record sequence constraint. A
++257th distinct `trace_gap` could therefore be durably appended and only fail
++later while reconstructing `TraceView`, leaving a request trace that could no
++longer be queried safely.
++
++The failure was reproduced against the extracted Phase 1.8 source snapshot:
++
++```text
++events persisted: 258
++view result: TraceEnvelope ValidationError
++```
++
++## Fix
++
++- reject a fresh append before sequence allocation when the trace already
++  contains `MAX_TRACE_EVENTS` events;
++- reject a fresh `trace_gap` before sequence allocation when the trace already
++  contains `MAX_TRACE_GAPS` historical gaps;
++- use a typed `TraceLimitError` rather than leaking a later Pydantic validation
++  failure;
++- preserve exact duplicate replay even when the in-memory or SQLite trace has
++  reached the event limit;
++- let SQLite roll rejected event-limit and gap-limit appends back without
++  latching the healthy store as corrupt;
++- export the reviewed trace-limit constants so store enforcement and contracts
++  share one authority.
++
++## Regression evidence
++
++Focused tests prove:
++
++- the 257th in-memory gap is rejected before mutation;
++- the prior 256-gap `TraceView` remains byte-for-byte reconstructable;
++- exact replay remains available at the event limit in both store
++  implementations;
++- SQLite rejects fresh event-limit and gap-limit appends transactionally;
++- close/reopen produces the same baseline trace and record count.
++
++Local zero-external validation on the extracted snapshot:
++
++```text
++focused trace-store tests: 20 passed
++Core shard 1: 139 passed, 1 existing deprecation warning
++Core shard 2: 122 passed
++Core shard 3: 95 passed
++Core shard 4: 128 passed
++Core total: 484 passed
++compileall: passed
++Python source line-length check: passed
++```
++
++The exact remote PR head must still pass standard Ruff, strict MyPy, all Core
++tests, Android build, JVM tests, lint and Debug APK upload before this candidate
++can replace the previously green Phase 1.8 merge candidate.
++diff --git a/services/core/src/simorgh_core/agents/trace_contracts.py b/services/core/src/simorgh_core/agents/trace_contracts.py
++index 6bdeff3..51fd68d 100644
++--- a/services/core/src/simorgh_core/agents/trace_contracts.py
+++++ b/services/core/src/simorgh_core/agents/trace_contracts.py
++@@ -910,6 +910,8 @@ def _validate_event_family(event: TraceEventCandidate) -> None:
++ 
++ 
++ __all__ = [
+++    "MAX_TRACE_EVENTS",
+++    "MAX_TRACE_GAPS",
++     "TRACE_CONTRACT_VERSION",
++     "DurableTraceCacheDisposition",
++     "DurableTraceEventKind",
++diff --git a/services/core/src/simorgh_core/agents/trace_store.py b/services/core/src/simorgh_core/agents/trace_store.py
++index 5991ee9..052de21 100644
++--- a/services/core/src/simorgh_core/agents/trace_store.py
+++++ b/services/core/src/simorgh_core/agents/trace_store.py
++@@ -11,6 +11,8 @@ from simorgh_core.agents.contracts import InvocationState
++ from simorgh_core.agents.invocations import InvocationKind
++ from simorgh_core.agents.result_authority import strictest_privacy, strictest_retention
++ from simorgh_core.agents.trace_contracts import (
+++    MAX_TRACE_EVENTS,
+++    MAX_TRACE_GAPS,
++     DurableTraceEventKind,
++     DurableTraceReplayDisposition,
++     TraceDisposition,
++@@ -54,6 +56,10 @@ class TraceStoreClosedError(TraceStoreError):
++     pass
++ 
++ 
+++class TraceLimitError(TraceStoreError):
+++    pass
+++
+++
++ class TraceClaimKind(StrEnum):
++     NEW = "new"
++     REPLAY = "replay"
++@@ -193,6 +199,16 @@ def _require_appendable(
++     existing: list[TraceEventRecord],
++     candidate: TraceEventCandidate,
++ ) -> None:
+++    if len(existing) >= MAX_TRACE_EVENTS:
+++        raise TraceLimitError("trace event count exceeds durable trace limit")
+++    if candidate.event_kind == DurableTraceEventKind.TRACE_GAP:
+++        gap_count = sum(
+++            event.event_kind == DurableTraceEventKind.TRACE_GAP
+++            for event in existing
+++        )
+++        if gap_count >= MAX_TRACE_GAPS:
+++            raise TraceLimitError("trace gap count exceeds durable trace limit")
+++
++     if not existing:
++         if candidate.event_kind not in {
++             DurableTraceEventKind.TASK_CLAIMED,
++@@ -566,6 +582,7 @@ __all__ = [
++     "TraceClaim",
++     "TraceClaimKind",
++     "TraceConflictError",
+++    "TraceLimitError",
++     "TraceNotFoundError",
++     "TraceStore",
++     "TraceStoreClosedError",
++diff --git a/services/core/tests/test_sqlite_trace_store.py b/services/core/tests/test_sqlite_trace_store.py
++index 958e9cf..5a65a82 100644
++--- a/services/core/tests/test_sqlite_trace_store.py
+++++ b/services/core/tests/test_sqlite_trace_store.py
++@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
++ 
++ import pytest
++ 
+++import simorgh_core.agents.trace_store as trace_store_module
++ from simorgh_core.agents.contracts import RoutingMethod, RoutingState
++ from simorgh_core.agents.result_authority import (
++     PrivacyClassification,
++@@ -20,6 +21,8 @@ from simorgh_core.agents.sqlite_trace_store import (
++ )
++ from simorgh_core.agents.task_state import AgentTaskPhase
++ from simorgh_core.agents.trace_contracts import (
+++    MAX_TRACE_EVENTS,
+++    MAX_TRACE_GAPS,
++     DurableTraceEventKind,
++     TraceEventCandidate,
++     TraceGapCode,
++@@ -30,7 +33,11 @@ from simorgh_core.agents.trace_contracts import (
++     TraceTaskDetails,
++     new_trace_event_candidate,
++ )
++-from simorgh_core.agents.trace_store import TraceClaimKind, TraceConflictError
+++from simorgh_core.agents.trace_store import (
+++    TraceClaimKind,
+++    TraceConflictError,
+++    TraceLimitError,
+++)
++ 
++ _SHA_A = "a" * 64
++ _SHA_B = "b" * 64
++@@ -205,6 +212,82 @@ def test_sqlite_unsupported_schema_version_fails_closed(tmp_path: Path) -> None:
++         SQLiteTraceStore(path)
++ 
++ 
+++def test_sqlite_event_limit_preserves_replay_and_rolls_back_fresh_append(
+++    tmp_path: Path,
+++    monkeypatch: pytest.MonkeyPatch,
+++) -> None:
+++    path = tmp_path / "trace.sqlite3"
+++    request_id = uuid4()
+++    store = SQLiteTraceStore(path)
+++    task = store.append(_task_event(request_id), ingested_at_ms=2_000).record
+++    store.append(
+++        _routing_event(
+++            request_id,
+++            parent_event_id=task.event_id,
+++            decision_id=uuid4(),
+++        ),
+++        ingested_at_ms=2_010,
+++    )
+++    monkeypatch.setattr(trace_store_module, "MAX_TRACE_EVENTS", 2)
+++    baseline = store.view(request_id)
+++
+++    with pytest.raises(TraceLimitError, match="event count exceeds"):
+++        store.append(
+++            _gap_event(request_id, source_id=uuid4()),
+++            ingested_at_ms=9_000,
+++        )
+++
+++    replay = store.append(
+++        _task_event(request_id, occurred_at_ms=9_100),
+++        ingested_at_ms=9_200,
+++    )
+++    assert replay.kind == TraceClaimKind.REPLAY
+++    assert replay.record == task
+++    assert store.view(request_id) == baseline
+++    store.close()
+++    monkeypatch.setattr(trace_store_module, "MAX_TRACE_EVENTS", MAX_TRACE_EVENTS)
+++
+++    reopened = SQLiteTraceStore(path)
+++    assert reopened.view(request_id) == baseline
+++    assert len(reopened.load()) == 2
+++    reopened.close()
+++
+++
+++def test_sqlite_gap_limit_rolls_back_and_reopens_cleanly(
+++    tmp_path: Path,
+++    monkeypatch: pytest.MonkeyPatch,
+++) -> None:
+++    path = tmp_path / "trace.sqlite3"
+++    request_id = uuid4()
+++    store = SQLiteTraceStore(path)
+++    store.append(_task_event(request_id), ingested_at_ms=2_000)
+++    monkeypatch.setattr(trace_store_module, "MAX_TRACE_GAPS", 2)
+++
+++    for index in range(2):
+++        store.append(
+++            _gap_event(request_id, source_id=uuid4()),
+++            ingested_at_ms=3_000 + index,
+++        )
+++
+++    baseline = store.view(request_id)
+++    assert baseline.envelope.gap_count == 2
+++
+++    with pytest.raises(TraceLimitError, match="gap count exceeds"):
+++        store.append(
+++            _gap_event(request_id, source_id=uuid4()),
+++            ingested_at_ms=9_000,
+++        )
+++
+++    assert store.view(request_id) == baseline
+++    store.close()
+++    monkeypatch.setattr(trace_store_module, "MAX_TRACE_GAPS", MAX_TRACE_GAPS)
+++
+++    reopened = SQLiteTraceStore(path)
+++    assert reopened.view(request_id) == baseline
+++    assert len(reopened.load()) == 3
+++    reopened.close()
+++
+++
++ def test_sqlite_concurrent_appends_assign_unique_contiguous_sequences(
++     tmp_path: Path,
++ ) -> None:
++diff --git a/services/core/tests/test_trace_store.py b/services/core/tests/test_trace_store.py
++index 07f7611..e1c65b9 100644
++--- a/services/core/tests/test_trace_store.py
+++++ b/services/core/tests/test_trace_store.py
++@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
++ import pytest
++ from pydantic import ValidationError
++ 
+++import simorgh_core.agents.trace_store as trace_store_module
++ from simorgh_core.agents.contracts import (
++     InvocationState,
++     RoutingMethod,
++@@ -18,6 +19,7 @@ from simorgh_core.agents.result_authority import (
++ )
++ from simorgh_core.agents.task_state import AgentTaskPhase
++ from simorgh_core.agents.trace_contracts import (
+++    MAX_TRACE_GAPS,
++     DurableTraceEventKind,
++     DurableTraceReplayDisposition,
++     TraceContextDetails,
++@@ -39,6 +41,7 @@ from simorgh_core.agents.trace_store import (
++     TraceCausalityError,
++     TraceClaimKind,
++     TraceConflictError,
+++    TraceLimitError,
++     TraceStoreClosedError,
++     TraceTerminalError,
++ )
++@@ -76,6 +79,28 @@ def _task_event(
++     )
++ 
++ 
+++def _gap_event(
+++    request_id: UUID,
+++    *,
+++    source_id: UUID,
+++    occurred_at_ms: int,
+++) -> TraceEventCandidate:
+++    return new_trace_event_candidate(
+++        request_id=request_id,
+++        event_kind=DurableTraceEventKind.TRACE_GAP,
+++        stage=TraceStage.TERMINAL,
+++        source_authority_kind=TraceSourceAuthorityKind.TRACE_RECONCILIATION,
+++        source_authority_id=source_id,
+++        source_authority_sha256=_SHA_A,
+++        details=TraceGapDetails(
+++            gap_code=TraceGapCode.MISSING_RESULT,
+++            missing_stage=TraceStage.RESULT,
+++            missing_source_kind=TraceSourceAuthorityKind.RESULT_RECORD,
+++        ),
+++        occurred_at_ms=occurred_at_ms,
+++    )
+++
+++
++ def _routing_event(
++     request_id: UUID,
++     *,
++@@ -516,6 +541,66 @@ def test_terminal_trace_rejects_new_fresh_work_but_allows_gap() -> None:
++     assert view.envelope.gap_count == 1
++ 
++ 
+++def test_event_limit_rejects_fresh_append_but_preserves_exact_replay(
+++    monkeypatch: pytest.MonkeyPatch,
+++) -> None:
+++    request_id = uuid4()
+++    store = InMemoryTraceStore()
+++    task = store.append(_task_event(request_id), ingested_at_ms=2_000).record
+++    store.append(
+++        _routing_event(request_id, parent_event_id=task.event_id),
+++        ingested_at_ms=2_010,
+++    )
+++    monkeypatch.setattr(trace_store_module, "MAX_TRACE_EVENTS", 2)
+++
+++    with pytest.raises(TraceLimitError, match="event count exceeds"):
+++        store.append(
+++            _gap_event(
+++                request_id,
+++                source_id=uuid4(),
+++                occurred_at_ms=3_000,
+++            ),
+++            ingested_at_ms=3_100,
+++        )
+++
+++    replay = store.append(_task_event(request_id), ingested_at_ms=9_000)
+++    assert replay.kind == TraceClaimKind.REPLAY
+++    assert replay.record == task
+++    assert len(store.load()) == 2
+++
+++
+++def test_gap_limit_rejects_before_poisoning_in_memory_trace() -> None:
+++    request_id = uuid4()
+++    store = InMemoryTraceStore()
+++    store.append(_task_event(request_id), ingested_at_ms=2_000)
+++
+++    for index in range(MAX_TRACE_GAPS):
+++        store.append(
+++            _gap_event(
+++                request_id,
+++                source_id=uuid4(),
+++                occurred_at_ms=3_000 + index,
+++            ),
+++            ingested_at_ms=4_000 + index,
+++        )
+++
+++    baseline = store.view(request_id)
+++    assert baseline.envelope.gap_count == MAX_TRACE_GAPS
+++
+++    with pytest.raises(TraceLimitError, match="gap count exceeds"):
+++        store.append(
+++            _gap_event(
+++                request_id,
+++                source_id=uuid4(),
+++                occurred_at_ms=9_000,
+++            ),
+++            ingested_at_ms=9_100,
+++        )
+++
+++    assert store.view(request_id) == baseline
+++    assert len(store.load()) == MAX_TRACE_GAPS + 1
+++
+++
++ def test_view_composes_strictest_privacy_and_retention() -> None:
++     request_id = uuid4()
++     store = InMemoryTraceStore()
