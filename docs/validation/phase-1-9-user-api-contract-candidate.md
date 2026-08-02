@@ -117,3 +117,46 @@ test suite, Android build, JVM tests, lint and Debug APK after these durability
 files are committed. Lifespan configuration and the protected manual workflow
 remain separate later increments; no live request is permitted until those
 boundaries are merged and independently validated.
+
+## Config, registry and Core lifespan increment
+
+Source baseline:
+
+```text
+repository: Emad211/Simorgh
+branch: core/live-provider-staging
+head: 33f4545cdc5ea22b62b8c3324eac0b4e6ef9df14
+```
+
+The branch now exposes an independent runtime path:
+
+```text
+SIMORGH_LIVE_PROVIDER_STAGING_RESULT_STORE_PATH=.simorgh/live-provider-staging-results.sqlite3
+```
+
+The path joins the exact-path and hard-link alias guard, so it cannot share
+persistent authority with task, invocation, result, context, Trace or Android
+action storage. `:memory:` remains a test-only exception.
+
+`LiveProviderStagingResultStoreRegistry` validates a candidate with `load()`
+before publication, closes replaced authorities and installs fresh in-memory
+authority on reset. Core lifespan opens and validates the SQLite sanitized
+result store without reading a credential or constructing a live provider/User
+API client, publishes it only after the existing durable source authorities are
+ready, releases ownership on every startup failure and resets it before
+Invocation Store shutdown.
+
+Ten focused tests cover:
+
+- candidate validation before registry replacement;
+- replacement and reset ownership;
+- default independent configuration;
+- exact-path and hard-link alias rejection;
+- normal startup/shutdown publication and lock release;
+- registry-publication and late startup failure unwind;
+- staging-before-invocation shutdown order.
+
+This increment adds no live workflow, no credential injection and no external
+call. Exact-head CI must pass Ruff, strict MyPy, every Core test, Android build,
+Android JVM tests, Android lint and Debug APK upload before this substep is
+considered complete.
