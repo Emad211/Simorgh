@@ -15,7 +15,7 @@
 - Phase: 1.9 — Live Provider Staging
 - Completed substep: durable staging-result configuration, registry and Core
   lifespan
-- Next substep: deterministic staging-result linkage to correlated Trace
+- Active substep: deterministic staging-result linkage to correlated Trace
   identity and terminal evidence
 
 The current Handoff commit is the branch `HEAD`; resolve its SHA from Git before
@@ -163,7 +163,31 @@ cancellation-result persistence, public endpoints, Android actions or Phase
 Also read every PR #70 comment, review, changed file and check created after
 `395eaecd7617b260f1b0bd57a2f364a030aa74f5`.
 
+## Trace-link candidate in this commit
+
+- Adds canonical `trace_id` and invocation-terminal event identity to every
+  staging result without changing its content-addressed result identity.
+- Validates every published staging-result store read/write against exact
+  Invocation and immutable Trace authority.
+- Protects traces referenced by durable staging results from retention
+  pruning.
+- Adds positive, replay, mismatch/tamper and SQLite restart coverage.
+
+This candidate has not yet passed the exact resulting-head CI. The next
+execution must verify that CI and update this file with the product SHA, run
+ID, test counts and artifact IDs before starting cancellation durability.
+
 ## Exact continuation point
+
+First verify the current branch Head and its ordinary CI. If the Trace-link
+candidate is not fully green, inspect and fix only candidate-caused failures.
+Once its exact Head passes Core and Android gates, update this Handoff with
+the verified SHA and CI evidence. Then start only the next Phase 1.9 substep:
+persist sanitized cancellation and transport-uncertainty outcomes without a
+second provider request. Do not start reconciliation-disposition changes, the
+protected live workflow or a real provider call in the same increment.
+
+<!-- Previous continuation rationale retained below for audit. -->
 
 First verify the current branch Head and its ordinary CI, then audit how
 `LiveProviderStagingResult`, `BudgetedModelGateway` and the request Trace

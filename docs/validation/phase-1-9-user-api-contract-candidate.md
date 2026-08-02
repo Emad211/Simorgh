@@ -160,3 +160,26 @@ This increment adds no live workflow, no credential injection and no external
 call. Exact-head CI must pass Ruff, strict MyPy, every Core test, Android build,
 Android JVM tests, Android lint and Debug APK upload before this substep is
 considered complete.
+
+## Deterministic Trace linkage
+
+The staging-result payload now carries the canonical request-level `trace_id`
+and the canonical fresh invocation-terminal event identity. These identities are
+derived from existing Trace contracts and are excluded from the staging result
+content hash because they are deterministic projections of request/invocation
+identity rather than an independent authority.
+
+Core publishes a `TraceLinkedLiveProviderStagingResultStore` that validates every
+claim, lookup, invocation lookup and load against the retained terminal model
+invocation event and its exact native `InvocationRecord`. Validation checks the
+immutable event identity, source-authority hash, state, committed usage and
+result-payload hash. Missing, changed or corrupt evidence fails closed before a
+new staging result is persisted. Exact replay performs only durable local reads
+and does not call the provider or User API.
+
+Trace retention now unions request identities referenced by durable staging
+results with the existing task/invocation protection set, preventing a retained
+staging result from outliving its required audit Trace. This increment adds no
+new Trace event kind, does not make Trace execution authority and stores no raw
+prompt, output, provider body, header, credential, IP address or private User API
+field.

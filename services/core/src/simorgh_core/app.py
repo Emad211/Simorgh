@@ -28,6 +28,10 @@ from simorgh_core.agents.live_provider_staging_store import (
 from simorgh_core.agents.live_provider_staging_store_registry import (
     live_provider_staging_result_store_registry,
 )
+from simorgh_core.agents.live_provider_staging_trace import (
+    LiveProviderStagingTraceProtection,
+    TraceLinkedLiveProviderStagingResultStore,
+)
 from simorgh_core.agents.result_store import (
     ResultStore,
     SQLiteResultStore,
@@ -115,6 +119,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     invocation_store: InvocationStore | None = None
     result_store: ResultStore | None = None
     context_store: ContextStore | None = None
+    raw_staging_result_store: LiveProviderStagingResultStore | None = None
     staging_result_store: LiveProviderStagingResultStore | None = None
     raw_trace_store: SQLiteTraceStore | None = None
     trace_store: RetentionAwareTraceStore | None = None
@@ -144,7 +149,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             ),
         )
         context_store = TraceProjectingContextStore(raw_context_store)
-        staging_result_store = SQLiteLiveProviderStagingResultStore(
+        raw_staging_result_store = SQLiteLiveProviderStagingResultStore(
             settings.simorgh_live_provider_staging_result_store_path,
         )
         action_journal = SQLiteActionJournal(
@@ -172,9 +177,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         )
         trace_store = RetentionAwareTraceStore(
             raw_trace_store,
-            protection=StoreBackedTraceProtection(
-                task_store=task_store,
-                invocation_store=invocation_store,
+            protection=LiveProviderStagingTraceProtection(
+                base=StoreBackedTraceProtection(
+                    task_store=task_store,
+                    invocation_store=invocation_store,
+                ),
+                result_store=raw_staging_result_store,
             ),
             max_terminal_records=(
                 settings.simorgh_trace_store_max_terminal_records
@@ -182,6 +190,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         )
         raw_trace_store = None
         trace_store.prune_terminal()
+        staging_result_store = TraceLinkedLiveProviderStagingResultStore(
+            store=raw_staging_result_store,
+            invocation_store=invocation_store,
+            trace_store=trace_store,
+        )
+        raw_staging_result_store = None
         await action_broker.configure_journal(
             action_journal,
             max_terminal_actions=settings.simorgh_action_journal_max_terminal_records,
@@ -221,6 +235,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             live_provider_staging_result_store_registry.reset_to_memory()
         elif staging_result_store is not None:
             staging_result_store.close()
+        elif raw_staging_result_store is not None:
+            raw_staging_result_store.close()
         if trace_store_configured:
             trace_store_registry.reset_to_memory()
         elif trace_store is not None:

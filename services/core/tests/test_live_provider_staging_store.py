@@ -15,6 +15,8 @@ from simorgh_core.agents.live_provider_staging_contracts import (
     LiveProviderStagingResult,
     live_provider_staging_result_id_for,
     live_provider_staging_result_sha256,
+    live_provider_staging_terminal_event_id_for,
+    live_provider_staging_trace_id_for,
 )
 from simorgh_core.agents.live_provider_staging_sqlite_store import (
     LiveProviderStagingStoreCorruptionError,
@@ -66,6 +68,13 @@ def _result(
         staging_run_id=staging_run_id,
         request_id=request_id,
         invocation_id=invocation_id,
+        trace_id=live_provider_staging_trace_id_for(request_id),
+        invocation_terminal_event_id=(
+            live_provider_staging_terminal_event_id_for(
+                request_id=request_id,
+                invocation_id=invocation_id,
+            )
+        ),
         provider_id="avalai",
         model_id="gpt-5.4-mini",
         transaction_provider_id="openai",

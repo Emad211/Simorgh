@@ -9,6 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from simorgh_core.agents.contracts import InvocationState, ModelTier, UsageVector
 from simorgh_core.agents.invocations import canonical_fingerprint
+from simorgh_core.agents.trace_contracts import (
+    DurableTraceEventKind,
+    DurableTraceReplayDisposition,
+    TraceSourceAuthorityKind,
+    trace_event_id_for,
+    trace_id_for,
+)
 from simorgh_core.providers.avalai_constants import (
     AVALAI_API_BASE_URL,
     AVALAI_PROVIDER_ID,
@@ -219,6 +226,8 @@ class LiveProviderStagingResult(BaseModel):
     staging_run_id: UUID
     request_id: UUID
     invocation_id: UUID
+    trace_id: UUID
+    invocation_terminal_event_id: UUID
     provider_id: Literal["avalai"] = AVALAI_PROVIDER_ID
     model_id: str = Field(pattern=_MODEL_ID_PATTERN, max_length=128)
     transaction_provider_id: str = Field(pattern=_MODEL_ID_PATTERN, max_length=128)
@@ -257,6 +266,18 @@ class LiveProviderStagingResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_result(self) -> Self:
+        if self.trace_id != live_provider_staging_trace_id_for(self.request_id):
+            raise ValueError("staging trace ID does not match request identity")
+        expected_terminal_event_id = (
+            live_provider_staging_terminal_event_id_for(
+                request_id=self.request_id,
+                invocation_id=self.invocation_id,
+            )
+        )
+        if self.invocation_terminal_event_id != expected_terminal_event_id:
+            raise ValueError(
+                "staging terminal event ID does not match invocation identity"
+            )
         if self.completed_at_ms < self.started_at_ms:
             raise ValueError("staging completion cannot precede start")
         if self.disposition == LiveProviderStagingDisposition.COMPLETED:
@@ -288,6 +309,24 @@ class LiveProviderStagingResult(BaseModel):
         return self
 
 
+def live_provider_staging_trace_id_for(request_id: UUID) -> UUID:
+    return trace_id_for(request_id)
+
+
+def live_provider_staging_terminal_event_id_for(
+    *,
+    request_id: UUID,
+    invocation_id: UUID,
+) -> UUID:
+    return trace_event_id_for(
+        trace_id=live_provider_staging_trace_id_for(request_id),
+        source_authority_kind=TraceSourceAuthorityKind.INVOCATION_RECORD,
+        source_authority_id=invocation_id,
+        event_kind=DurableTraceEventKind.INVOCATION_TERMINAL,
+        replay=DurableTraceReplayDisposition.FRESH,
+    )
+
+
 def live_provider_staging_result_payload(
     value: LiveProviderStagingResult | dict[str, object],
 ) -> dict[str, object]:
@@ -300,6 +339,8 @@ def live_provider_staging_result_payload(
         "staging_result_id",
         "canonical_sha256",
         "replayed",
+        "trace_id",
+        "invocation_terminal_event_id",
         "started_at_ms",
         "completed_at_ms",
     ):
@@ -343,4 +384,6 @@ __all__ = [
     "live_provider_staging_result_id_for",
     "live_provider_staging_result_payload",
     "live_provider_staging_result_sha256",
+    "live_provider_staging_terminal_event_id_for",
+    "live_provider_staging_trace_id_for",
 ]

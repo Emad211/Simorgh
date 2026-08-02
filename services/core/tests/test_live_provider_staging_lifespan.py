@@ -18,6 +18,9 @@ from simorgh_core.agents.live_provider_staging_store import (
 from simorgh_core.agents.live_provider_staging_store_registry import (
     live_provider_staging_result_store_registry,
 )
+from simorgh_core.agents.live_provider_staging_trace import (
+    TraceLinkedLiveProviderStagingResultStore,
+)
 from simorgh_core.config import get_settings
 
 
@@ -52,8 +55,15 @@ def test_lifespan_publishes_and_closes_sqlite_staging_result_authority(
 
     with TestClient(app_module.app):
         started = live_provider_staging_result_store_registry.current()
-        assert isinstance(started, SQLiteLiveProviderStagingResultStore)
-        assert started.path == str(staging_path.resolve())
+        assert isinstance(
+            started,
+            TraceLinkedLiveProviderStagingResultStore,
+        )
+        assert isinstance(
+            started.underlying_store,
+            SQLiteLiveProviderStagingResultStore,
+        )
+        assert started.underlying_store.path == str(staging_path.resolve())
         assert started.load() == []
 
     assert isinstance(
@@ -161,7 +171,7 @@ def test_shutdown_resets_staging_authority_before_invocation_authority(
     with TestClient(app_module.app):
         assert isinstance(
             live_provider_staging_result_store_registry.current(),
-            SQLiteLiveProviderStagingResultStore,
+            TraceLinkedLiveProviderStagingResultStore,
         )
 
     assert order == ["staging", "invocations"]

@@ -28,6 +28,8 @@ from simorgh_core.agents.live_provider_staging_contracts import (
     LiveProviderStagingResult,
     live_provider_staging_result_id_for,
     live_provider_staging_result_sha256,
+    live_provider_staging_terminal_event_id_for,
+    live_provider_staging_trace_id_for,
 )
 from simorgh_core.agents.live_provider_staging_store import (
     LiveProviderStagingClaimKind,
@@ -467,6 +469,13 @@ def _new_result(
         staging_run_id=request.staging_run_id,
         request_id=request.request_id,
         invocation_id=request.invocation_id,
+        trace_id=live_provider_staging_trace_id_for(request.request_id),
+        invocation_terminal_event_id=(
+            live_provider_staging_terminal_event_id_for(
+                request_id=request.request_id,
+                invocation_id=request.invocation_id,
+            )
+        ),
         provider_id=policy.provider_id,
         model_id=policy.selected_model_id,
         transaction_provider_id=pricing.transaction_provider_id,
