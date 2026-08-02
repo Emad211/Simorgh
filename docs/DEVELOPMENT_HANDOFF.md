@@ -14,6 +14,8 @@
   `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
 - Trace-link product implementation Head:
   `40ac5c755cff50c60d4dda0f9ec7520d2f048961`
+- Exact owner-authored validation Head:
+  `416af29624e48328c4ec28b2518587ab7ec41cc5`
 - Completed substeps:
   - durable staging-result configuration, registry and Core lifespan;
   - deterministic staging-result linkage to correlated Trace identity and
@@ -22,8 +24,9 @@
   uncertainty outcomes without a second provider request.
 
 The current Handoff commit is the branch `HEAD`; resolve its SHA from Git before
-starting the next step. Do not copy an assumed self-referential SHA into this
-file.
+starting the next step. Do not place an assumed self-referential SHA in this
+file. The immutable product and validation SHAs above are the evidence for the
+completed substep.
 
 ## Architecture and invariants
 
@@ -62,7 +65,7 @@ The completed Phase 1.9 foundations preserve these invariants:
   and ordered shutdown.
 - Added ten focused registry, path and lifespan tests.
 
-Lifecycle implementation evidence:
+Lifecycle evidence:
 
 ```text
 Head: 395eaecd7617b260f1b0bd57a2f364a030aa74f5
@@ -80,7 +83,7 @@ Android build/JVM/lint/APK: passed
   every `LiveProviderStagingResult`.
 - Kept those identities outside the staging content hash because they are
   deterministic projections of existing request/invocation identities; strict
-  validators reject any inconsistent value.
+  validators reject inconsistent values.
 - Added `live_provider_staging_trace_evidence()` to verify the exact native
   Invocation record and immutable terminal Trace event.
 - Added `TraceLinkedLiveProviderStagingResultStore`, which validates every
@@ -96,13 +99,7 @@ Android build/JVM/lint/APK: passed
   restart and retention-protection tests.
 - Added no Trace event kind and did not turn Trace into source authority.
 
-Trace-link product implementation Head:
-
-```text
-40ac5c755cff50c60d4dda0f9ec7520d2f048961
-```
-
-Exact increment from Handoff baseline
+The exact increment from Handoff baseline
 `ccdf59a7c5b4f96ce6cd628f3ec720cd3aa93fec` contains only these nine paths:
 
 - `docs/DEVELOPMENT_HANDOFF.md`
@@ -118,12 +115,12 @@ Exact increment from Handoff baseline
 No transfer workflow, patcher, generated database, WAL/SHM file, credential or
 other temporary artifact remains in the product diff.
 
-## Trace-link validation state
+## Verified Trace-link validation
 
-The exact transfer run applied the candidate, applied three deterministic Ruff
-fixes, validated the complete Core tree and published the product commit:
+Transfer validation and product publication:
 
 ```text
+Product Head: 40ac5c755cff50c60d4dda0f9ec7520d2f048961
 Workflow: Phase 1.9 Trace Link Transfer
 Run ID: 30772525231
 Run number: 8
@@ -135,20 +132,45 @@ focused Trace-link tests: 4 passed
 ordinary provider/User-API/connector calls: zero
 ```
 
-The ordinary CI run created directly from the bot-authored product commit was:
+The first ordinary CI created directly from the bot-authored product commit had
+`action_required` with zero jobs (`30772569782`, run #983). That was a GitHub
+workflow-authorization state, not a product failure. The same product tree was
+then validated by an owner-authored Handoff commit.
+
+Exact owner-authored validation:
 
 ```text
-Run ID: 30772569782
-Run number: 983
-Conclusion: action_required
-Jobs created: zero
+Validated Head: 416af29624e48328c4ec28b2518587ab7ec41cc5
+Workflow: CI
+Run ID: 30772631461
+Run number: 984
+Conclusion: success
+core-quality: success
+android-quality: success
+Ruff: all checks passed
+strict MyPy: no issues in 81 source files
+Core: 534 passed, 2 dependency warnings, 12.65s
+focused Trace-link tests: 4 passed
+Android assembleDebug: passed
+Android testDebugUnitTest: passed
+Android lintDebug: passed
+Android build: BUILD SUCCESSFUL, 53 actionable tasks
+Debug APK upload: passed
 ```
 
-This is a GitHub workflow-authorization state, not a Core or Android failure.
-This owner-authored Handoff update must trigger the ordinary CI on a Head whose
-product tree contains `40ac5c755cff50c60d4dda0f9ec7520d2f048961`. Do not start
-new production work until both Core and Android jobs on that exact owner-authored
-Head are green.
+Artifacts from run `30772631461`:
+
+- `core-quality-diagnostics` — ID `8841014488`,
+  SHA-256 `cee50c3236860401be7395eb4348af3c6032b831835ef77dd33845330224ab91`
+- `core-test-report` — ID `8841014671`,
+  SHA-256 `5579985007a3b4d26c80aee93b91c239241b20a8aba178804e378af589044ce3`
+- `android-build-diagnostics` — ID `8841017620`,
+  SHA-256 `62982634a125fb2e48e0abb95b544b019065f37a8978ffbc7d1bcbc27509516f`
+- `simorgh-android-debug` — ID `8841017973`,
+  SHA-256 `ad6aadfd44175c9aa802d4a42b503cff1b99b8ba5b7745c4ad78b30d4d4100eb`
+
+No AvalAI model request, User API request, connector call, credential injection
+or paid external call was introduced or executed by this increment.
 
 ## Explicit non-goals of the completed substep
 
@@ -202,22 +224,22 @@ The Trace-link increment did not add:
 - `.github/workflows/ci.yml`
 
 Also read every PR #70 comment, review, changed file and check created after
-`40ac5c755cff50c60d4dda0f9ec7520d2f048961`.
+`416af29624e48328c4ec28b2518587ab7ec41cc5`.
 
 ## Exact continuation point
 
-First verify the current branch Head and its ordinary CI. If either Core or
-Android is not green, inspect that exact run and fix only failures caused by the
-Trace-link increment or this Handoff update.
+First verify the current branch Head and its ordinary CI. This Handoff evidence
+update is documentation-only; if its exact CI is not green, inspect and resolve
+only that failure before changing production code.
 
-Once exact-head CI is green, implement one narrow Phase 1.9 increment that
-persists a sanitized staging result when cancellation or provider transport
-uncertainty occurs after durable invocation reservation or possible provider
-entry. Preserve the existing conservative Invocation state, never automatically
-retry the model, and ensure replay with the same invocation identity performs
-zero second provider/User-API call and adds zero usage. Add positive,
-cancellation-before-entry, cancellation-after-possible-entry, transport
-uncertainty, restart and replay tests.
+Then implement one narrow Phase 1.9 increment that persists a sanitized staging
+result when cancellation or provider transport uncertainty occurs after durable
+invocation reservation or possible provider entry. Preserve the existing
+conservative Invocation state, never automatically retry the model, and ensure
+replay with the same invocation identity performs zero second provider/User-API
+call and adds zero usage. Add positive, cancellation-before-entry,
+cancellation-after-possible-entry, transport-uncertainty, restart and replay
+tests.
 
 Do not change reconciliation-disposition semantics, add the protected live
 workflow, use credentials, make a real provider call or start Phase 1.10 in the
