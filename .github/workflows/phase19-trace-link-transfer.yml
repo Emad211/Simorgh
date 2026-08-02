@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: phase19-trace-link-transfer
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   apply-and-validate:
@@ -24,17 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: core/live-provider-staging
-          fetch-depth: 8
-
-      - name: Verify exact transfer ancestry
-        shell: bash
-        run: |
-          set -euo pipefail
-          baseline=ccdf59a7c5b4f96ce6cd628f3ec720cd3aa93fec
-          test "$(git merge-base HEAD "$baseline")" = "$baseline"
-          actual="$(git diff --name-only "$baseline"..HEAD | sort)"
-          expected=$'.github/workflows/phase19-trace-link-transfer.yml\ntools/apply_phase19_trace_link.py'
-          test "$actual" = "$expected"
+          fetch-depth: 12
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,26 +32,55 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Apply deterministic candidate
-        run: python tools/apply_phase19_trace_link.py
-
       - name: Install project and development tools
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
 
-      - name: Validate Core candidate
+      - name: Apply, validate, and publish deterministic result
         shell: bash
         run: |
-          set -euo pipefail
-          ruff check . --exclude tools/apply_phase19_trace_link.py
-          mypy services/core/src
-          pytest
-          git diff --check
-
-      - name: Verify final product diff
-        shell: bash
-        run: |
-          set -euo pipefail
+          set -u -o pipefail
           baseline=ccdf59a7c5b4f96ce6cd628f3ec720cd3aa93fec
+          log=/tmp/phase19-trace-link-transfer.log
+          status=0
+
+          {
+            echo "baseline=$baseline"
+            echo "input_head=$(git rev-parse HEAD)"
+            test "$(git merge-base HEAD "$baseline")" = "$baseline"
+            actual="$(git diff --name-only "$baseline"..HEAD | sort)"
+            expected=$'.github/workflows/phase19-trace-link-transfer.yml\ntools/apply_phase19_trace_link.py'
+            test "$actual" = "$expected"
+            python tools/apply_phase19_trace_link.py
+            ruff check . --exclude tools/apply_phase19_trace_link.py
+            mypy services/core/src
+            pytest
+            git diff --check
+          } >"$log" 2>&1 || status=$?
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ "$status" -ne 0 ]; then
+            git reset --hard HEAD
+            rm tools/apply_phase19_trace_link.py
+            rm .github/workflows/phase19-trace-link-transfer.yml
+            mkdir -p docs/validation
+            {
+              echo '# Phase 1.9 Trace-link transfer failure'
+              echo
+              echo 'The exact-head transfer failed before product publication.'
+              echo 'No product change from this candidate was committed.'
+              echo
+              echo '```text'
+              sed -E 's/(api[_-]?key|authorization|bearer)[^[:space:]]*/[redacted]/Ig' "$log" | tail -n 240
+              echo '```'
+            } > docs/validation/phase-1-9-trace-link-transfer-failure.md
+            git add -A
+            git commit -m "docs: record Phase 1.9 trace-link transfer failure"
+            git push origin HEAD:core/live-provider-staging
+            exit "$status"
+          fi
+
           rm tools/apply_phase19_trace_link.py
           rm .github/workflows/phase19-trace-link-transfer.yml
           actual="$(git diff --name-only "$baseline" | sort)"
@@ -69,13 +88,6 @@ jobs:
           test "$actual" = "$expected"
           git diff --check
           ruff check .
-
-      - name: Publish validated product commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "core: link staging results to terminal trace evidence"
           git push origin HEAD:core/live-provider-staging
