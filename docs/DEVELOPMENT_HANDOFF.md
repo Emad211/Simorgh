@@ -7,16 +7,19 @@
 - Base branch: `main`
 - Working branch: `core/live-provider-staging`
 - Merge base: `a76b5aee006a1ac9dfe54080d02cb54fceef8bde`
-- Source baseline: `33f4545cdc5ea22b62b8c3324eac0b4e6ef9df14`
-- Verified lifecycle implementation Head:
-  `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
 - Pull request: #70 — `Core: establish budgeted AvalAI staging policy and User API boundary`
 - Issue: #65 — `Phase 1 Step 1.9: explicitly budgeted AvalAI live-provider staging`
 - Phase: 1.9 — Live Provider Staging
-- Completed substep: durable staging-result configuration, registry and Core
-  lifespan
-- Active substep: deterministic staging-result linkage to correlated Trace
-  identity and terminal evidence
+- Verified lifecycle implementation Head:
+  `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
+- Trace-link product implementation Head:
+  `40ac5c755cff50c60d4dda0f9ec7520d2f048961`
+- Completed substeps:
+  - durable staging-result configuration, registry and Core lifespan;
+  - deterministic staging-result linkage to correlated Trace identity and
+    immutable invocation-terminal evidence.
+- Next substep: durable sanitized cancellation and provider-transport
+  uncertainty outcomes without a second provider request.
 
 The current Handoff commit is the branch `HEAD`; resolve its SHA from Git before
 starting the next step. Do not copy an assumed self-referential SHA into this
@@ -25,21 +28,30 @@ file.
 ## Architecture and invariants
 
 Simorgh remains authoritative for Task and Invocation identity, budget, durable
-state, execution, Trace, privacy and replay. Provider adapters cannot create
-authority or trigger retry.
+state, execution, privacy and replay. Trace is an immutable audit projection;
+it does not authorize execution and billing evidence cannot rewrite Invocation
+truth.
 
-The completed lifecycle substep preserves these invariants:
+The completed Phase 1.9 foundations preserve these invariants:
 
 - Core startup performs no provider, User API, connector or Android call;
-- no credential is read or persisted by the staging-result store;
-- stored staging reports contain sanitized typed metadata only;
-- all persistent Core stores must have distinct filesystem identities;
-- a staging store is validated before registry publication;
-- failed startup releases SQLite process ownership;
-- shutdown removes staging authority before closing Invocation authority;
-- Trace remains an audit projection and was not extended by this substep.
+- no credential is read or persisted by the staging-result authority;
+- staging results contain sanitized typed metadata only;
+- persistent Core stores have distinct filesystem identities;
+- staging store candidates are validated before registry publication;
+- startup failure releases SQLite process ownership;
+- shutdown removes staging authority before Invocation authority;
+- one staging result links only to its deterministic request Trace and fresh
+  invocation-terminal event;
+- InvocationStore remains the execution source of truth;
+- missing, changed or corrupt Invocation/Trace evidence fails closed;
+- exact replay performs durable local reads only and cannot create a second
+  model or User API call;
+- retained staging results protect their required Trace from pruning;
+- raw prompt, model output, provider/User-API body, header, credential, IP
+  address and private provider fields remain excluded.
 
-## Completed in the lifecycle substep
+## Completed lifecycle substep
 
 - Added `SIMORGH_LIVE_PROVIDER_STAGING_RESULT_STORE_PATH` to Settings and
   `.env.example`.
@@ -49,155 +61,165 @@ The completed lifecycle substep preserves these invariants:
 - Wired `SQLiteLiveProviderStagingResultStore` into Core startup, failure unwind
   and ordered shutdown.
 - Added ten focused registry, path and lifespan tests.
-- Updated the Phase 1.9 validation record.
-- Reviewed the exact nine-path diff from the source baseline; no unrelated file,
-  workflow, credential or generated durable artifact entered the increment.
 
-## Files changed by the lifecycle increment
+Lifecycle implementation evidence:
 
-- `.env.example`
+```text
+Head: 395eaecd7617b260f1b0bd57a2f364a030aa74f5
+CI run ID: 30771299238
+CI run number: 972
+Ruff: passed
+strict MyPy: passed for 80 source files
+Core: 530 passed, 2 dependency warnings
+Android build/JVM/lint/APK: passed
+```
+
+## Completed deterministic Trace-link substep
+
+- Added canonical `trace_id` and fresh invocation-terminal event identity to
+  every `LiveProviderStagingResult`.
+- Kept those identities outside the staging content hash because they are
+  deterministic projections of existing request/invocation identities; strict
+  validators reject any inconsistent value.
+- Added `live_provider_staging_trace_evidence()` to verify the exact native
+  Invocation record and immutable terminal Trace event.
+- Added `TraceLinkedLiveProviderStagingResultStore`, which validates every
+  claim, replay, lookup, invocation lookup and load before returning authority.
+- Validation checks request/invocation identity, model invocation kind,
+  terminal state, committed usage, Trace event identity, stage, source kind,
+  source-authority SHA-256, result-payload SHA-256 and fresh replay disposition.
+- Added `LiveProviderStagingTraceProtection`, which extends existing Trace
+  retention protection with request IDs referenced by durable staging results.
+- Wired the raw SQLite staging store into retention protection and publishes
+  only the Trace-linked wrapper through the process registry.
+- Added positive, exact replay, missing/mismatched/tampered evidence, SQLite
+  restart and retention-protection tests.
+- Added no Trace event kind and did not turn Trace into source authority.
+
+Trace-link product implementation Head:
+
+```text
+40ac5c755cff50c60d4dda0f9ec7520d2f048961
+```
+
+Exact increment from Handoff baseline
+`ccdf59a7c5b4f96ce6cd628f3ec720cd3aa93fec` contains only these nine paths:
+
 - `docs/DEVELOPMENT_HANDOFF.md`
 - `docs/validation/phase-1-9-user-api-contract-candidate.md`
-- `services/core/src/simorgh_core/config.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_contracts.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_trace.py`
 - `services/core/src/simorgh_core/app.py`
-- `services/core/src/simorgh_core/agents/live_provider_staging_store_registry.py`
-- `services/core/tests/test_live_provider_staging_store_registry.py`
-- `services/core/tests/test_live_provider_staging_settings_and_paths.py`
 - `services/core/tests/test_live_provider_staging_lifespan.py`
+- `services/core/tests/test_live_provider_staging_store.py`
+- `services/core/tests/test_live_provider_staging_trace.py`
 
-## Verified validation
+No transfer workflow, patcher, generated database, WAL/SHM file, credential or
+other temporary artifact remains in the product diff.
 
-Exact implementation Head:
+## Trace-link validation state
 
-```text
-395eaecd7617b260f1b0bd57a2f364a030aa74f5
-```
-
-GitHub Actions:
-
-```text
-workflow: CI
-run ID: 30771299238
-run number: 972
-core-quality: success
-android-quality: success
-```
-
-Core evidence:
+The exact transfer run applied the candidate, applied three deterministic Ruff
+fixes, validated the complete Core tree and published the product commit:
 
 ```text
-Ruff: all checks passed
-strict MyPy: no issues in 80 source files
-pytest: 530 passed, 2 dependency deprecation warnings, 11.53s
-focused lifecycle tests included: 10 passed
+Workflow: Phase 1.9 Trace Link Transfer
+Run ID: 30772525231
+Run number: 8
+Conclusion: success
+Ruff: passed after 3 deterministic fixes
+strict MyPy: no issues in 81 source files
+Core: 534 passed, 2 dependency warnings
+focused Trace-link tests: 4 passed
+ordinary provider/User-API/connector calls: zero
 ```
 
-Android evidence:
+The ordinary CI run created directly from the bot-authored product commit was:
 
 ```text
-assembleDebug: passed
-testDebugUnitTest: passed
-lintDebug: passed
-Gradle: BUILD SUCCESSFUL, 53 actionable tasks
-Debug APK upload: passed
+Run ID: 30772569782
+Run number: 983
+Conclusion: action_required
+Jobs created: zero
 ```
 
-Artifacts attached to run 30771299238:
+This is a GitHub workflow-authorization state, not a Core or Android failure.
+This owner-authored Handoff update must trigger the ordinary CI on a Head whose
+product tree contains `40ac5c755cff50c60d4dda0f9ec7520d2f048961`. Do not start
+new production work until both Core and Android jobs on that exact owner-authored
+Head are green.
 
-- `core-quality-diagnostics` — ID `8840616381`
-- `core-test-report` — ID `8840616614`
-- `android-build-diagnostics` — ID `8840618168`
-- `simorgh-android-debug` — ID `8840618358`
+## Explicit non-goals of the completed substep
 
-No AvalAI model request, User API request, connector call, live secret injection
-or paid external call was introduced or executed by this increment.
+The Trace-link increment did not add:
 
-The Handoff evidence update is documentation-only and creates a newer branch
-Head. Verify that current Head and its ordinary CI before changing production
-code; use the lifecycle implementation Head and run above as the immutable
-product-validation evidence.
-
-## Explicit non-goals
-
-The completed substep did not add a live workflow, secret injection, real
-AvalAI call, provider retry/failover/streaming, Trace identity fields,
-cancellation-result persistence, public endpoints, Android actions or Phase
-1.10.
+- cancellation-result persistence;
+- a new reconciliation disposition contract;
+- protected `workflow_dispatch` live staging;
+- credential injection or a real AvalAI request;
+- provider retry, failover, streaming or tool use;
+- a public endpoint;
+- Android actions;
+- Phase 1.10 behavior.
 
 ## Remaining Phase 1.9 work
 
-1. Link the staging result deterministically to correlated Trace identity and
-   terminal event evidence.
-2. Persist sanitized cancellation and transport-uncertainty outcomes without a
-   second provider request.
-3. Make reconciliation disposition explicit (`exact`, `pending`,
+1. Persist sanitized cancellation and provider-transport uncertainty outcomes
+   without a second provider request.
+2. Make reconciliation disposition explicit (`exact`, `pending`,
    `unavailable`, `mismatch`).
-4. Add the protected manual one-call staging workflow and sanitized artifact.
-5. Execute one approved canary, reconcile exact transaction cost and prove
+3. Add the protected manual one-call staging workflow and sanitized artifact.
+4. Execute one approved canary, reconcile exact transaction cost and prove
    replay creates no second request or charge.
-6. Complete operational documentation, review audit and merge PR #70.
+5. Complete operational documentation, review audit and merge PR #70.
 
 ## Mandatory reads for the next execution
 
 - `docs/DEVELOPMENT_HANDOFF.md`
 - `docs/SIMORGH_MASTER_DIRECTIVE.md`
 - `docs/IMPLEMENTATION_MASTER_PLAN.md`
+- `docs/CANCELLATION_PROPAGATION.md`
 - `docs/TRACE_AUTHORITY.md`
 - `docs/validation/phase-1-9-user-api-contract-candidate.md`
-- `docs/validation/phase-1-9-sqlite-staging-store-candidate.md`
 - `services/core/src/simorgh_core/agents/live_provider_staging.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_contracts.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_store.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_trace.py`
 - `services/core/src/simorgh_core/agents/model_gateway.py`
-- `services/core/src/simorgh_core/agents/trace_contracts.py`
-- `services/core/src/simorgh_core/agents/trace_projection.py`
-- `services/core/src/simorgh_core/agents/trace_store.py`
-- `services/core/src/simorgh_core/agents/sqlite_trace_store.py`
+- `services/core/src/simorgh_core/agents/invocations.py`
+- `services/core/src/simorgh_core/agents/invocation_store.py`
+- `services/core/src/simorgh_core/agents/trace_projecting_invocation_store.py`
 - `services/core/tests/test_live_provider_staging.py`
 - `services/core/tests/test_live_provider_staging_contracts.py`
-- `services/core/tests/test_live_trace_projection_prefixes.py`
-- `services/core/tests/test_request_trace_projection.py`
+- `services/core/tests/test_live_provider_staging_store.py`
+- `services/core/tests/test_live_provider_staging_trace.py`
+- `services/core/tests/test_budgeted_model_gateway.py`
+- `services/core/tests/test_gateway_cancellation_settlement.py`
+- `services/core/tests/test_cancellation_invocation_authority.py`
+- `services/core/tests/test_cancellation_acceptance.py`
 - `.github/workflows/ci.yml`
 
 Also read every PR #70 comment, review, changed file and check created after
-`395eaecd7617b260f1b0bd57a2f364a030aa74f5`.
-
-## Trace-link candidate in this commit
-
-- Adds canonical `trace_id` and invocation-terminal event identity to every
-  staging result without changing its content-addressed result identity.
-- Validates every published staging-result store read/write against exact
-  Invocation and immutable Trace authority.
-- Protects traces referenced by durable staging results from retention
-  pruning.
-- Adds positive, replay, mismatch/tamper and SQLite restart coverage.
-
-This candidate has not yet passed the exact resulting-head CI. The next
-execution must verify that CI and update this file with the product SHA, run
-ID, test counts and artifact IDs before starting cancellation durability.
+`40ac5c755cff50c60d4dda0f9ec7520d2f048961`.
 
 ## Exact continuation point
 
-First verify the current branch Head and its ordinary CI. If the Trace-link
-candidate is not fully green, inspect and fix only candidate-caused failures.
-Once its exact Head passes Core and Android gates, update this Handoff with
-the verified SHA and CI evidence. Then start only the next Phase 1.9 substep:
-persist sanitized cancellation and transport-uncertainty outcomes without a
-second provider request. Do not start reconciliation-disposition changes, the
-protected live workflow or a real provider call in the same increment.
+First verify the current branch Head and its ordinary CI. If either Core or
+Android is not green, inspect that exact run and fix only failures caused by the
+Trace-link increment or this Handoff update.
 
-<!-- Previous continuation rationale retained below for audit. -->
+Once exact-head CI is green, implement one narrow Phase 1.9 increment that
+persists a sanitized staging result when cancellation or provider transport
+uncertainty occurs after durable invocation reservation or possible provider
+entry. Preserve the existing conservative Invocation state, never automatically
+retry the model, and ensure replay with the same invocation identity performs
+zero second provider/User-API call and adds zero usage. Add positive,
+cancellation-before-entry, cancellation-after-possible-entry, transport
+uncertainty, restart and replay tests.
 
-First verify the current branch Head and its ordinary CI, then audit how
-`LiveProviderStagingResult`, `BudgetedModelGateway` and the request Trace
-projector currently correlate Task, Invocation and terminal events. Implement
-one narrow Phase 1.9 increment that gives every persisted staging result a
-deterministic, validated link to the correlated Trace identity and terminal
-evidence without turning Trace into source authority and without storing raw
-prompt, output, provider body, header, credential or private User API fields.
-Add positive, replay, mismatch/corruption and restart tests; run Ruff, strict
-MyPy, the full Core suite and Android gates; update this Handoff with exact SHA
-and CI evidence. Do not address cancellation durability, reconciliation
-disposition, the protected live workflow or a real provider call in that same
-increment.
+Do not change reconciliation-disposition semantics, add the protected live
+workflow, use credentials, make a real provider call or start Phase 1.10 in the
+same increment. Update this Handoff with exact SHA and CI evidence when that
+single step is complete.
