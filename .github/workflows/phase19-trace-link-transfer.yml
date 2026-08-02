@@ -1,9 +1,9 @@
 name: Phase 1.9 Trace Link Transfer
 
 on:
-  push:
-    branches:
-      - core/live-provider-staging
+  pull_request:
+    types:
+      - synchronize
     paths:
       - .github/workflows/phase19-trace-link-transfer.yml
 
