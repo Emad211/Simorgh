@@ -12,7 +12,7 @@ _READINESS = Path(
     "docs/validation/phase-1-9-protected-environment-readiness.md"
 )
 _CHECKLIST = Path("docs/validation/phase-1-9-live-acceptance-checklist.md")
-_WORKFLOW = Path(".github/workflows/live-provider-staging.yml")
+_WORKER = Path(".github/workflows/live-provider-staging.yml")
 
 
 def _read(path: Path) -> str:
@@ -28,30 +28,35 @@ def test_live_staging_documents_cross_link() -> None:
     assert "phase-1-9-live-acceptance-checklist.md" in adr
     assert "ADR 0022" in runbook
     assert "phase-1-9-live-acceptance-checklist.md" in runbook
+    assert ".github/workflows/live-provider-staging-dispatch.yml" in runbook
+    assert ".github/workflows/live-provider-staging.yml" in runbook
 
 
-def test_adr_preserves_manual_no_retry_authority_boundary() -> None:
+def test_adr_preserves_pinned_manual_no_retry_authority_boundary() -> None:
     text = " ".join(_read(_ADR).split())
 
     required = (
         "Status: Accepted",
+        ".github/workflows/live-provider-staging-dispatch.yml",
         "workflow_dispatch",
-        "live-provider-staging",
+        ".github/workflows/live-provider-staging.yml",
+        "workflow_call",
+        "full 40-character commit SHA",
+        "approved_dispatcher_sha",
+        "refs/heads/main",
+        "does not pass repository or organization secrets",
         "AVALAI_API_KEY",
-        "lowercase 40-character commit SHA",
         "exactly one model call",
         "zero retries",
         "only the AvalAI User API transaction lookup",
-        "pending` or `unavailable` reconciliation is incomplete",
-        "default branch",
-        "bootstrap/default-branch strategy",
+        "`pending` or `unavailable` reconciliation is incomplete",
         "Ordinary CI remains fake and zero-external",
     )
     for marker in required:
         assert marker in text
 
 
-def test_runbook_matches_reviewed_policy_and_workflow() -> None:
+def test_runbook_matches_reviewed_policy_and_topology() -> None:
     text = _read(_RUNBOOK)
     policy = reviewed_live_provider_staging_policy("gpt-5.4-mini")
 
@@ -86,31 +91,28 @@ def test_runbook_matches_reviewed_policy_and_workflow() -> None:
     assert policy.api_base_url in text
     assert policy.user_api_base_url in text
     assert policy.selected_model_id in text
+    assert "approved_dispatcher_sha" in text
+    assert "secrets: inherit" in text
     assert "do not start another model request" in text.casefold()
-    assert "gh workflow disable live-provider-staging.yml" in text
+    assert "gh workflow disable live-provider-staging-dispatch.yml" in text
     assert "gh run cancel <RUN_ID>" in text
 
 
-def test_readiness_audit_fails_closed_on_external_configuration() -> None:
+def test_readiness_audit_fails_closed_before_bootstrap_and_environment() -> None:
     text = _read(_READINESS)
 
     assert "Overall readiness: **NOT READY FOR LIVE DISPATCH**" in text
-    assert "workflow is absent from the default branch" in text
+    assert "Dispatcher merged to `main` | PENDING" in text
     assert "Environment object exists | UNVERIFIED" in text
     assert "Required reviewers configured | UNVERIFIED" in text
     assert "Environment secret exists | UNVERIFIED" in text
     assert "Explicit user spend approval | NOT GRANTED" in text
     assert "No live workflow may be dispatched from this state." in text
-    assert (
-        "Live workflow dispatches observed or initiated by this audit: `0`"
-        in text
-    )
-    assert (
-        "Real AvalAI/User API calls initiated by this audit: `0`" in text
-    )
+    assert "Live workflow dispatches observed or initiated by this audit: `0`" in text
+    assert "Real AvalAI/User API calls initiated by this audit: `0`" in text
 
 
-def test_live_acceptance_checklist_locks_limits_and_rejection_states() -> None:
+def test_live_acceptance_checklist_locks_two_shas_and_limits() -> None:
     text = _read(_CHECKLIST)
     policy = reviewed_live_provider_staging_policy("gpt-5.4-mini")
 
@@ -138,16 +140,17 @@ def test_live_acceptance_checklist_locks_limits_and_rejection_states() -> None:
     for marker in expected:
         assert marker in text
 
-    assert "approved_commit_sha" in text
-    assert "approved_ref" in text
+    assert "approved_dispatcher_sha" in text
+    assert "approved_worker_sha" in text
+    assert "approved_ref: refs/heads/main" in text
     assert "approved_by_user" in text
     assert "Reconciliation disposition is `exact`" in text
     assert "`pending`, `unavailable`, `mismatch`, `unknown`" in text
     assert "do not issue another model request" in text
 
 
-def test_pre_secret_workflow_runs_documentation_contract_tests() -> None:
-    text = _read(_WORKFLOW)
+def test_pre_secret_worker_runs_documentation_contract_tests() -> None:
+    text = _read(_WORKER)
     gate = text.index("Run pre-secret quality and fake acceptance gates")
     live_job = text.index("live-canary:")
     test_path = "services/core/tests/test_live_provider_staging_documentation.py"
