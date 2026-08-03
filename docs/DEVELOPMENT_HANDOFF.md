@@ -3,7 +3,7 @@
 ## Current snapshot
 
 - Date: 2026-08-03
-- Audit time: `2026-08-03T13:11+03:30`
+- Audit time: `2026-08-03T14:49+03:30`
 - Repository: `Emad211/Simorgh`
 - Default/base branch: `main`
 - Audited `main` commit:
@@ -19,11 +19,11 @@
   `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`
 - Reviewed reusable-worker commit:
   `47b65f359fd844067346d987f9102f6eeab911d9`
-- Non-live settings-audit product Head:
-  `ae2bc640226da8a117174f70530483c67b03a2c4`
+- Authenticated settings-audit product Head:
+  `ef33f37af04f76439490930b1d220b63495155f7`
 - Product merge-preview validated by CI:
-  `6d08d271e5c0f242b288e43fd442a7a772ada549`
-- Product CI: run `30803084979`, number `1058`, success
+  `535d3c27299aeeb9d315db26bdf08f5376a4abc9`
+- Product CI: run `30809544297`, number `1062`, success
 - Operational readiness: **NOT READY FOR LIVE DISPATCH**
 - Approval package: **NOT PREPARED**
 - Live dispatcher/worker runs initiated by this work: `0`
@@ -83,7 +83,7 @@ worker @ 47b65f359fd844067346d987f9102f6eeab911d9
   validates caller repository/ref/workflow path
   validates exact worker SHA and fixed model
   runs fake quality gates before Environment access
-  live job names environment live-provider-staging
+  live job names Environment live-provider-staging
   AVALAI_API_KEY is referenced only in the protected step
 ```
 
@@ -92,44 +92,50 @@ composition, sanitized artifact and no-retry uncertainty semantics were complete
 in earlier Phase 1.9 increments. This increment changed no runtime or live
 workflow behavior.
 
-## Completed non-live GitHub settings audit
+## Completed authenticated configuration-evidence refresh
 
 ### Repository and CI state
 
-The following were proved through connected GitHub repository operations:
+The following were proved through authenticated GitHub repository operations:
 
-- dispatcher file exists on `main`;
-- dispatcher blob on `main`, bootstrap branch and PR #70 is
+- authenticated repository permission is admin;
+- default branch remains `main` at
+  `3bcb41437e3b8d2f497516ef9a214de5becf45e9`;
+- dispatcher file remains present on `main` with blob
   `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`;
-- dispatcher is `workflow_dispatch` only and exposes only
-  `approved_dispatcher_sha`;
-- worker and model are hardcoded;
+- dispatcher remains `workflow_dispatch` only with only
+  `approved_dispatcher_sha` as input;
+- worker SHA and model remain hardcoded;
 - dispatcher forwards no secret and has no `secrets: inherit`;
-- worker is `workflow_call` only and validates the expected repository, `main`,
-  dispatcher path, exact worker SHA and fixed model;
-- PR #70 had zero conversation comments, zero submitted reviews and zero inline
-  review threads at the audit point;
-- Issue #65 remained open;
-- the exact merge-preview passed full Core and Android CI.
+- worker remains `workflow_call` only and validates the expected repository,
+  `main`, dispatcher path, exact worker SHA and fixed model;
+- PR #70 is open, Draft and mergeable;
+- PR #70 has zero conversation comments, zero submitted reviews and zero inline
+  review threads at this audit point;
+- Issue #65 remains open;
+- exact product merge-preview `535d3c27299aeeb9d315db26bdf08f5376a4abc9`
+  passed full Core and Android CI.
 
-### Connector capability audit
+### Authenticated Connector capability result
 
-The complete GitHub Connector surface available in this execution was inspected.
-It exposed repository files, commits, pull requests, issues, reviews, CI runs,
-jobs, logs and artifacts. It did **not** expose read operations for:
+The complete authenticated GitHub Connector surface exposed during this
+execution was discovered again. It supports repository files, commits, pull
+requests, issues, reviews, CI runs, jobs, logs and artifacts. It still provides
+no read operations for:
 
 - workflow metadata/state such as `active` or `disabled_manually`;
 - deployment Environment objects;
 - required reviewer rules;
 - prevention of self-review;
-- Environment deployment branch/tag policies;
-- Environment secret names or update timestamps.
+- Environment deployment branch/tag restrictions;
+- Environment secret names or update timestamps;
+- repository/organization secret inventories needed to prove absence of a weaker
+  fallback.
 
-No unavailable setting was inferred. Lack of a Connector endpoint is not evidence
-that a GitHub setting is absent. The provider secret value was neither requested
-nor read.
+No unavailable setting was inferred. Lack of an endpoint is not evidence that a
+setting is absent. The provider secret value was neither requested nor read.
 
-### Verified settings
+### Directly verified state
 
 ```text
 default branch: VERIFIED main
@@ -139,13 +145,13 @@ dispatcher trigger/input: VERIFIED
 dispatcher worker SHA/model pinning: VERIFIED
 dispatcher secret forwarding: VERIFIED absent
 worker caller/SHA/model checks: VERIFIED
-worker environment name in YAML: VERIFIED
+worker Environment name in YAML: VERIFIED
 worker secret reference placement: VERIFIED
 ordinary CI isolation: VERIFIED
 full merge-preview Core/Android CI: VERIFIED
 ```
 
-### Unverified external settings
+### External state still unverified
 
 ```text
 dispatcher enabled and visible in Actions: UNVERIFIED
@@ -164,9 +170,9 @@ explicit user spend approval: NOT GRANTED
 
 ## Approval-package decision
 
-The approval package was not prepared because the non-live prerequisites above
-were not all proved. The values below are retained only as a candidate identity
-for the next audit; they are not authorization:
+The approval package was not prepared because all non-live prerequisites were
+not proved. These values are retained only as a candidate identity for a future
+audit and are not authorization:
 
 ```text
 dispatcher_sha_on_main: 3bcb41437e3b8d2f497516ef9a214de5becf45e9
@@ -188,8 +194,8 @@ permission to dispatch.
 ## Files changed by this increment
 
 From previous Handoff Head
-`096890150c7cf129eab19ebf4ac0bdf05e631e2f` to audit product Head
-`ae2bc640226da8a117174f70530483c67b03a2c4`, the product increment changes only:
+`901e858e3be6d92d9a64e1617fdcf972dec4c2c9` to audit product Head
+`ef33f37af04f76439490930b1d220b63495155f7`, the product increment changes only:
 
 - `docs/validation/phase-1-9-protected-environment-readiness.md`
 - `docs/validation/phase-1-9-live-acceptance-checklist.md`
@@ -203,40 +209,36 @@ was changed.
 
 ## Static test coverage
 
-Two additional documentation-contract tests were added, bringing the full Core
-suite to 575 tests. The documentation suite now proves:
+The existing documentation-contract suite was updated to lock the refreshed
+repository, worker, dispatcher, PR, merge-preview and CI identities. It continues
+to prove:
 
-- exact repository, worker, dispatcher, PR, merge-preview and CI identities are
-  retained in readiness evidence;
 - unavailable Connector settings remain explicitly `UNVERIFIED`;
 - the audit records that no secret value was requested or read;
 - checklist state remains `non_live_prerequisites_complete: false`;
 - approval package remains `NOT PREPARED`;
 - no Environment/reviewer/secret field can silently become approved through a
   documentation edit;
-- all previous topology, policy, no-retry, privacy and pre-secret gates remain
-  locked.
+- all topology, policy, no-retry, privacy and pre-secret gates remain locked.
 
-The first candidate run (#1057) reached 574 passing tests and one formatting-only
-Markdown assertion failure. Ruff, MyPy and Android were otherwise unaffected.
-The assertion was changed to compare normalized whitespace.
+The full Core suite remains 575 tests.
 
 ## Validation evidence
 
 Exact audit product validation:
 
 ```text
-Product Head: ae2bc640226da8a117174f70530483c67b03a2c4
-Merge preview: 6d08d271e5c0f242b288e43fd442a7a772ada549
+Product Head: ef33f37af04f76439490930b1d220b63495155f7
+Merge preview: 535d3c27299aeeb9d315db26bdf08f5376a4abc9
 Workflow: CI
-Run ID: 30803084979
-Run number: 1058
+Run ID: 30809544297
+Run number: 1062
 Conclusion: success
 core-quality: success
 android-quality: success
 Ruff: all checks passed
 strict MyPy: no issues in 83 source files
-Core: 575 passed, 2 dependency warnings, 12.85s
+Core: 575 passed, 2 dependency warnings, 11.62s
 Android assembleDebug: passed
 Android testDebugUnitTest: passed
 Android lintDebug: passed
@@ -246,29 +248,30 @@ credential access: zero
 real AvalAI/User API calls: zero
 ```
 
-Artifacts from run `30803084979`:
+Artifacts from run `30809544297`:
 
-- `core-quality-diagnostics` — ID `8851630583`,
-  SHA-256 `f9d97aa1978d3d043c57d25e80f9368edc89e9bbd991add176f089d64f4c4aa2`
-- `core-test-report` — ID `8851631134`,
-  SHA-256 `1ecc66854bdeceb7211bb65dc7671e6d94fa7e9a14d1ec8892371b2983c77953`
-- `android-build-diagnostics` — ID `8851641252`,
-  SHA-256 `b9cff75a807bd7bbf4f2d4ceb52bb90c719134b124a3ff207018e9dc07705edd`
-- `simorgh-android-debug` — ID `8851642241`,
-  SHA-256 `d5436ac5a7bdefbfca47f0cab705e6d6861ddf0ca50fd99e5d2480d763b7c7a3`
+- `core-quality-diagnostics` — ID `8854191790`,
+  SHA-256 `5d3c2a41827a5f0fe4e201b1ad202e5d0949061c4dc5f89d9c4429b1274f8e37`
+- `core-test-report` — ID `8854192067`,
+  SHA-256 `cd58b631e01b81e220aeaa258504df47c8b7114860772199a0ced039bac3c126`
+- `android-build-diagnostics` — ID `8854195852`,
+  SHA-256 `57f8917a66653c55adf5f385cb4a09a6b39a66a9301f987b140c3615bda14351`
+- `simorgh-android-debug` — ID `8854196297`,
+  SHA-256 `85b5d52e73b2e6625ace866970c49ac2d0e8249d540a4948306e14e56904e99f`
 
 ## Current blockers
 
-1. Workflow state (`active`/disabled and visible in Actions) is not available
-   through the connected tool surface.
-2. Environment existence and protection settings are not available.
-3. Environment-secret name/update metadata is not available.
-4. Credential validity, provider credit and model availability remain live
+1. Workflow state (`active`/disabled and visible in Actions) remains unavailable
+   through the connected authenticated surface.
+2. Environment existence and protection settings remain unavailable.
+3. Environment-secret name/update metadata remains unavailable.
+4. Absence of weaker repository/organization secret fallback cannot be proved.
+5. Credential validity, provider credit and model availability remain live
    preflight facts and are not proved.
-5. No exact live approval has been granted.
-6. No canary, provider request ID, exact transaction or sanitized live artifact
+6. No exact live approval has been granted.
+7. No canary, provider request ID, exact transaction or sanitized live artifact
    exists.
-7. PR #70 remains Draft and Phase 1.9 merge acceptance is incomplete.
+8. PR #70 remains Draft and Phase 1.9 merge acceptance is incomplete.
 
 ## Remaining Phase 1.9 work
 
@@ -317,7 +320,7 @@ Artifacts from run `30803084979`:
 
 Also inspect all PR #70 comments, submitted reviews, inline review threads,
 changed files and checks created after audit product Head
-`ae2bc640226da8a117174f70530483c67b03a2c4`.
+`ef33f37af04f76439490930b1d220b63495155f7`.
 
 ## Exact continuation point
 
