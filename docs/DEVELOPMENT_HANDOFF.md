@@ -19,8 +19,8 @@
   `7d11af47a0801b4593b6cf031bfaa49b247c0bb7`
 - Reconciliation-disposition product Head:
   `50b1484d9113951f15a1fc060d58f13896f52a9e`
-- Last fully validated owner-authored Head before this increment:
-  `874b675c16c1d1c71af4a4d58a8f7eac4738bbdd`
+- Exact owner-authored validation Head for this increment:
+  `aadee09fdf76e66a54a6149a5dfcf5d813916b48`
 - Completed substeps:
   - disabled-by-default AvalAI policy and sanitized User API boundary;
   - exactly-one-call fake canary composition;
@@ -29,13 +29,13 @@
   - deterministic staging-result linkage to Invocation and Trace evidence;
   - durable sanitized cancellation and provider-transport uncertainty results;
   - typed canonical reconciliation disposition.
-- Next substep after exact-head CI: protected manual staging workflow and
-  sanitized validation artifact, without executing the real canary yet.
+- Next substep: protected manual staging workflow, dedicated composition entry
+  and sanitized validation artifact, without dispatching a real canary yet.
 
 The current Handoff commit is the branch `HEAD`; resolve its SHA from Git before
 starting the next execution. Do not place an assumed self-referential SHA in this
-file. The immutable product SHA above and the exact CI evidence below are the
-source of truth for this increment.
+file. The immutable product and exact validation SHAs above are the source of
+truth for the completed increment.
 
 ## Architecture and invariants
 
@@ -126,7 +126,7 @@ boundary, Trace authority or Invocation transition changed in this increment.
 
 ## Files changed by this increment
 
-The exact diff from previous Handoff Head
+The exact product diff from previous Handoff Head
 `874b675c16c1d1c71af4a4d58a8f7eac4738bbdd` to product Head
 `50b1484d9113951f15a1fc060d58f13896f52a9e` contains only:
 
@@ -136,10 +136,11 @@ The exact diff from previous Handoff Head
 - `services/core/tests/test_live_provider_staging.py`
 - `services/core/tests/test_live_provider_staging_reconciliation.py`
 
-No transfer workflow, patcher, generated database, WAL/SHM file, process-lock
-file, credential or other temporary artifact remains in the product diff.
+The owner-authored validation commit changes only this Handoff. No transfer
+workflow, patcher, generated database, WAL/SHM file, process-lock file,
+credential or other temporary artifact remains in the product diff.
 
-## Validation state
+## Validation evidence
 
 An initial transfer run reached 550 passing tests and one test-only expectation
 failure. It published no product commit. The fixture was corrected so the test
@@ -160,7 +161,7 @@ focused reconciliation-disposition tests: 12 passed
 provider/User API/connector paid calls: zero
 ```
 
-The ordinary CI created directly from the bot-authored product commit is:
+The ordinary CI created directly from the bot-authored product commit was:
 
 ```text
 Run ID: 30774559050
@@ -169,20 +170,45 @@ Conclusion: action_required
 Jobs created: zero
 ```
 
-This is a GitHub workflow-authorization state, not a Core or Android product
-failure. This owner-authored Handoff commit must trigger ordinary CI against the
-same product tree. Do not begin the next production substep until both Core and
-Android jobs on that exact owner-authored Head are green.
+This was a GitHub workflow-authorization state, not a Core or Android product
+failure. The same product tree was then validated through an owner-authored
+Handoff commit.
 
-Previous exact owner-authored validation remains:
+Exact owner-authored full validation:
 
 ```text
-Validated Head: 874b675c16c1d1c71af4a4d58a8f7eac4738bbdd
-CI run ID: 30773944113
-CI run number: 991
-Core: success — 539 passed
-Android: success — assembleDebug, JVM tests, lint and APK upload
+Validated Head: aadee09fdf76e66a54a6149a5dfcf5d813916b48
+Workflow: CI
+Run ID: 30774611110
+Run number: 997
+Conclusion: success
+core-quality: success
+android-quality: success
+Ruff: all checks passed
+strict MyPy: no issues in 81 source files
+Core: 551 passed, 2 dependency warnings, 11.46s
+focused reconciliation-disposition tests: 12 passed
+Android assembleDebug: passed
+Android testDebugUnitTest: passed
+Android lintDebug: passed
+Android build: BUILD SUCCESSFUL in 19s, 53 actionable tasks
+Debug APK upload: passed
+ordinary live provider/User API calls: zero
 ```
+
+Artifacts from run `30774611110`:
+
+- `core-quality-diagnostics` — ID `8841597153`,
+  SHA-256 `ad1c83dda3946830525d0c5df6e8ac1e004631f3a2fb87482d6e5e14e291120e`
+- `core-test-report` — ID `8841597284`,
+  SHA-256 `140224124bbef4d5f713a701b36a7e9722702c8797886de595c99deb122271a3`
+- `android-build-diagnostics` — ID `8841598978`,
+  SHA-256 `59af55c5fe557e177a306b087fa64133968a10ed289725a1ef241a4b180cab72`
+- `simorgh-android-debug` — ID `8841599192`,
+  SHA-256 `079f354252ab5547d22c7c8d833f9ab5cbb56732511bf148b5186cb5fc006aee`
+
+Previous exact validation evidence remains retained in Git history and earlier
+Handoff revisions.
 
 ## Test coverage added or extended
 
@@ -262,13 +288,13 @@ The increment covers:
 - `.github/workflows/ci.yml`
 
 Also read every PR #70 comment, review, changed file and check created after
-`50b1484d9113951f15a1fc060d58f13896f52a9e`.
+`aadee09fdf76e66a54a6149a5dfcf5d813916b48`.
 
 ## Exact continuation point
 
 First resolve the current branch Head and verify the ordinary CI triggered by
-this Handoff update. If either Core or Android is not green, inspect and fix only
-that exact failure before changing production code.
+this final Handoff evidence update. If either Core or Android is not green,
+inspect and fix only that exact failure before changing production code.
 
 Once exact-head CI is green, implement one narrow Phase 1.9 increment for the
 manual staging execution boundary without making the real paid canary request:
