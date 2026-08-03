@@ -17,10 +17,11 @@ def _workflow_text() -> str:
     return _WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_live_workflow_is_manual_only_and_single_concurrency() -> None:
+def test_live_worker_is_callable_only_and_single_concurrency() -> None:
     text = _workflow_text()
 
-    assert text.count("workflow_dispatch:") == 1
+    assert text.count("workflow_call:") == 1
+    assert "workflow_dispatch:" not in text
     assert "pull_request:" not in text
     assert "push:" not in text
     assert "schedule:" not in text
@@ -29,7 +30,7 @@ def test_live_workflow_is_manual_only_and_single_concurrency() -> None:
     assert "permissions:\n  contents: read" in text
 
 
-def test_live_workflow_uses_protected_environment_and_secret_once() -> None:
+def test_live_worker_uses_protected_environment_and_secret_once() -> None:
     text = _workflow_text()
 
     assert "environment:\n      name: live-provider-staging" in text
@@ -41,22 +42,28 @@ def test_live_workflow_uses_protected_environment_and_secret_once() -> None:
     assert "AVALAI_API_KEY" not in text[:live_job_offset]
 
 
-def test_live_workflow_checks_exact_commit_and_fixed_reviewed_model() -> None:
+def test_live_worker_checks_exact_caller_commit_and_fixed_model() -> None:
     text = _workflow_text()
     policy = reviewed_live_provider_staging_policy("gpt-5.4-mini")
 
     assert "^[0-9a-f]{40}$" in text
-    assert text.count('test "$REVIEWED_COMMIT_SHA" = "$DISPATCH_SHA"') == 2
     assert text.count('test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"') == 2
-    assert text.count("DISPATCH_SHA: ${{ github.sha }}") == 2
-    assert "options:\n          - gpt-5.4-mini" in text
+    assert text.count('test "$CALLER_REPOSITORY" = "Emad211/Simorgh"') == 2
+    assert text.count('test "$CALLER_REF" = "refs/heads/main"') == 2
+    assert text.count(
+        'test "$CALLER_WORKFLOW_REF" = "Emad211/Simorgh/.github/workflows/'
+        'live-provider-staging-dispatch.yml@refs/heads/main"'
+    ) == 2
+    assert text.count('test "$MODEL_ID" = "gpt-5.4-mini"') == 2
+    assert "reviewed_commit_sha:" in text
+    assert "model_id:" in text
     assert policy.max_model_calls == 1
     assert policy.allowed_model_ids == ("gpt-5.4-mini",)
     assert "SIMORGH_CANARY" not in text
     assert "input_text" not in text
 
 
-def test_live_workflow_runs_quality_before_secret_and_verifies_artifact() -> None:
+def test_live_worker_runs_quality_before_secret_and_verifies_artifact() -> None:
     text = _workflow_text()
 
     assert "ruff check ." in text
@@ -73,7 +80,7 @@ def test_live_workflow_runs_quality_before_secret_and_verifies_artifact() -> Non
     assert "retention-days: 30" in text
 
 
-def test_live_workflow_actions_and_direct_dependencies_are_pinned() -> None:
+def test_live_worker_actions_and_direct_dependencies_are_pinned() -> None:
     text = _workflow_text()
     uses_lines = "\n".join(
         line.strip() for line in text.splitlines() if line.strip().startswith("uses:")
