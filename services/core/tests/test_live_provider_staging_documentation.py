@@ -45,7 +45,7 @@ def test_adr_preserves_manual_no_retry_authority_boundary() -> None:
         "pending` or `unavailable` reconciliation is incomplete",
         "default branch",
         "bootstrap/default-branch strategy",
-        "ordinary CI remains fake and zero-external",
+        "Ordinary CI remains fake and zero-external",
     )
     for marker in required:
         assert marker in text
@@ -72,7 +72,7 @@ def test_runbook_matches_reviewed_policy_and_workflow() -> None:
         (
             "| Transaction lookup | "
             f"`{policy.transaction_poll_attempts}` attempts, "
-            f"`{policy.transaction_poll_interval_ms} ms` interval |"
+            f"`{policy.transaction_poll_interval_ms}` ms` interval |"
         ),
         f"| User API timeout | `{policy.user_api_timeout_ms} ms` |",
         (
