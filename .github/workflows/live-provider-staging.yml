@@ -1,0 +1,146 @@
+name: Phase 1.9 Live Provider Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit_sha:
+        description: Exact reviewed 40-character commit SHA to execute
+        required: true
+        type: string
+      model_id:
+        description: Reviewed staging model
+        required: true
+        default: gpt-5.4-mini
+        type: choice
+        options:
+          - gpt-5.4-mini
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-provider-staging
+  cancel-in-progress: false
+
+jobs:
+  validate-reviewed-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out exact reviewed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.reviewed_commit_sha }}
+          persist-credentials: false
+
+      - name: Verify immutable reviewed commit
+        shell: bash
+        env:
+          REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install reviewed dependencies
+        run: |
+          python -m pip install pip==26.2
+          python -m pip install -e ".[dev]" \
+            --constraint .github/constraints/live-provider-staging.txt
+
+      - name: Run pre-secret quality and fake acceptance gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check .
+          mypy services/core/src
+          pytest \
+            services/core/tests/test_live_provider_staging.py \
+            services/core/tests/test_live_provider_staging_artifact.py \
+            services/core/tests/test_live_provider_staging_cli.py \
+            services/core/tests/test_live_provider_staging_workflow.py \
+            -q
+
+  live-canary:
+    needs: validate-reviewed-head
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: live-provider-staging
+
+    steps:
+      - name: Check out exact reviewed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.reviewed_commit_sha }}
+          persist-credentials: false
+
+      - name: Verify immutable reviewed commit
+        shell: bash
+        env:
+          REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install reviewed dependencies
+        run: |
+          python -m pip install pip==26.2
+          python -m pip install -e ".[dev]" \
+            --constraint .github/constraints/live-provider-staging.txt
+
+      - name: Execute one protected fixed canary and local replay
+        shell: bash
+        env:
+          AVALAI_API_KEY: ${{ secrets.AVALAI_API_KEY }}
+          AVALAI_BASE_URL: https://api.avalai.ir/v1
+          AVALAI_USER_API_BASE_URL: https://api.avalai.ir/user/v1
+          AVALAI_DEFAULT_MODEL: ${{ inputs.model_id }}
+          SIMORGH_ENV: production
+          SIMORGH_ACTION_JOURNAL_PATH: ${{ runner.temp }}/simorgh/action-journal.sqlite3
+          SIMORGH_AGENT_TASK_STORE_PATH: ${{ runner.temp }}/simorgh/agent-tasks.sqlite3
+          SIMORGH_INVOCATION_STORE_PATH: ${{ runner.temp }}/simorgh/invocations.sqlite3
+          SIMORGH_RESULT_STORE_PATH: ${{ runner.temp }}/simorgh/results.sqlite3
+          SIMORGH_CONTEXT_STORE_PATH: ${{ runner.temp }}/simorgh/contexts.sqlite3
+          SIMORGH_TRACE_STORE_PATH: ${{ runner.temp }}/simorgh/traces.sqlite3
+          SIMORGH_LIVE_PROVIDER_STAGING_RESULT_STORE_PATH: ${{ runner.temp }}/simorgh/live-provider-staging-results.sqlite3
+        run: |
+          set -euo pipefail
+          python -m simorgh_core.agents.live_provider_staging_cli run \
+            --source-commit-sha "${{ inputs.reviewed_commit_sha }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --model-id "${{ inputs.model_id }}" \
+            --output "${{ runner.temp }}/live-provider-staging.json"
+
+      - name: Verify sanitized artifact contract
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m simorgh_core.agents.live_provider_staging_cli verify \
+            --artifact "${{ runner.temp }}/live-provider-staging.json" \
+            --require-passed
+
+      - name: Upload sanitized validation artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: live-provider-staging-${{ github.run_id }}
+          path: ${{ runner.temp }}/live-provider-staging.json
+          if-no-files-found: error
+          retention-days: 30
