@@ -175,7 +175,6 @@ async def test_manual_composition_uses_native_authorities_and_proves_zero_call_r
         monotonic_millis=lambda: 100,
         sleep=_no_sleep,
         id_factory=ids.__next__,
-        propagate_internal_errors=True,
     )
 
     evidence = artifact.model_dump(mode="json")
@@ -225,7 +224,6 @@ async def test_manual_composition_emits_failed_artifact_without_model_retry(
         monotonic_millis=lambda: 100,
         sleep=_no_sleep,
         id_factory=ids.__next__,
-        propagate_internal_errors=True,
     )
 
     evidence = artifact.model_dump(mode="json")

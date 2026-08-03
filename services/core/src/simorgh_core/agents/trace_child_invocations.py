@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from simorgh_core.agents.contracts import InvocationState
+from simorgh_core.agents.contracts import InvocationState, RoutingState
 from simorgh_core.agents.invocations import (
     InvocationKind,
     InvocationRecord,
@@ -64,6 +64,44 @@ def project_classifier_invocation(
         store=store,
         records=matches,
         root_parent_event=task_claim_event,
+        root_parent_invocation_id=None,
+        base_ingested_at_ms=base_ingested_at_ms,
+    )
+
+
+def project_routed_root_invocations(
+    *,
+    store: TraceStore,
+    task_entry: AgentTaskStoreEntryV1,
+    routing_event: TraceEventRecord,
+    invocation_records: tuple[InvocationRecord, ...],
+    base_ingested_at_ms: int,
+) -> ChildTraceProjectionReport:
+    """Project root model/tool calls owned by the exact routed specialist."""
+
+    decision = task_entry.record.routing_decision
+    if (
+        decision is None
+        or decision.state != RoutingState.ROUTED
+        or decision.selected_agent_id is None
+        or decision.selected_agent_version is None
+    ):
+        return _empty_report()
+    direct = tuple(
+        record
+        for record in invocation_records
+        if record.request_id == task_entry.request_id
+        and record.kind in {InvocationKind.MODEL, InvocationKind.TOOL}
+        and record.parent_invocation_id is None
+        and record.cancellation_owner_id is None
+        and record.agent_id == decision.selected_agent_id
+        and record.agent_version == decision.selected_agent_version
+        and record.invocation_id != decision.classifier_invocation_id
+    )
+    return _project_invocation_chain(
+        store=store,
+        records=direct,
+        root_parent_event=routing_event,
         root_parent_invocation_id=None,
         base_ingested_at_ms=base_ingested_at_ms,
     )
@@ -305,5 +343,6 @@ def _empty_report() -> ChildTraceProjectionReport:
 __all__ = [
     "ChildTraceProjectionReport",
     "project_classifier_invocation",
+    "project_routed_root_invocations",
     "project_specialist_owned_child_invocations",
 ]

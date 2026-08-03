@@ -21,6 +21,16 @@ _READ_BUDGET = TaskBudget(
     max_retries=1,
     max_parallel_branches=1,
 )
+_LIVE_PROVIDER_STAGING_BUDGET = TaskBudget(
+    max_model_calls=1,
+    max_tool_calls=0,
+    max_input_tokens=128,
+    max_output_tokens=16,
+    max_estimated_cost_microusd=20_000,
+    max_elapsed_ms=60_000,
+    max_retries=0,
+    max_parallel_branches=1,
+)
 _PLANNING_BUDGET = TaskBudget(
     max_model_calls=2,
     max_tool_calls=8,
@@ -33,6 +43,11 @@ _PLANNING_BUDGET = TaskBudget(
 )
 _READ_MODEL_POLICY = ModelPolicy(
     allowed_tiers=(ModelTier.FAST, ModelTier.GENERAL),
+    minimum_tier=ModelTier.FAST,
+    maximum_model_calls=1,
+)
+_LIVE_PROVIDER_STAGING_MODEL_POLICY = ModelPolicy(
+    allowed_tiers=(ModelTier.FAST,),
     minimum_tier=ModelTier.FAST,
     maximum_model_calls=1,
 )
@@ -49,6 +64,22 @@ def default_specialist_registry() -> SpecialistRegistry:
 
 def default_specialist_definitions() -> tuple[SpecialistDefinition, ...]:
     return (
+        SpecialistDefinition(
+            agent_id="system.live-provider-staging",
+            version="1.0.0",
+            display_name="Protected Live Provider Staging Agent",
+            task_kinds=frozenset({TaskKind.LIVE_PROVIDER_STAGING}),
+            locale_prefixes=frozenset({"en"}),
+            input_contract="simorgh.task.v1",
+            output_contract="simorgh.live-provider-staging.v1",
+            tool_allowlist=frozenset(),
+            connector_allowlist=frozenset(),
+            model_policy=_LIVE_PROVIDER_STAGING_MODEL_POLICY,
+            budget_ceiling=_LIVE_PROVIDER_STAGING_BUDGET,
+            side_effect_policy=SideEffectPolicy.NONE,
+            routing_rules=(),
+            routing_priority=5,
+        ),
         SpecialistDefinition(
             agent_id="github.read",
             version="1.0.0",

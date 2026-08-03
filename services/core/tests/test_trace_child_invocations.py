@@ -17,6 +17,7 @@ from simorgh_core.agents.task_state import AgentTaskPhase, AgentTaskRecord
 from simorgh_core.agents.task_store import AgentTaskStoreEntryV1
 from simorgh_core.agents.trace_child_invocations import (
     project_classifier_invocation,
+    project_routed_root_invocations,
     project_specialist_owned_child_invocations,
 )
 from simorgh_core.agents.trace_contracts import (
@@ -42,11 +43,18 @@ def _task_entry(
     request_id: UUID,
     *,
     classifier_invocation_id: UUID | None = None,
+    selected_agent_id: str = "development.planner",
+    selected_agent_version: str = "1.0.0",
 ) -> AgentTaskStoreEntryV1:
     decision = type(
         "Decision",
         (),
-        {"classifier_invocation_id": classifier_invocation_id},
+        {
+            "classifier_invocation_id": classifier_invocation_id,
+            "state": RoutingState.ROUTED,
+            "selected_agent_id": selected_agent_id,
+            "selected_agent_version": selected_agent_version,
+        },
     )()
     return AgentTaskStoreEntryV1.model_construct(
         request_id=request_id,
@@ -205,6 +213,94 @@ def test_classifier_model_is_linked_to_task_claim_and_usage_is_terminal() -> Non
     assert model_events[0].stage == TraceStage.MODEL
     assert model_events[1].usage == usage
     assert private_marker not in str(view.model_dump(mode="json"))
+
+
+def test_direct_routed_model_is_linked_to_routing_and_unrelated_root_is_ignored() -> None:
+    request_id = uuid4()
+    selected_id = uuid4()
+    unrelated_id = uuid4()
+    trace_store = InMemoryTraceStore()
+    task_event = _task_claim(trace_store, request_id)
+    decision_id = uuid4()
+    routing = trace_store.append(
+        new_trace_event_candidate(
+            request_id=request_id,
+            event_kind=DurableTraceEventKind.ROUTING_DECIDED,
+            stage=TraceStage.ROUTING,
+            source_authority_kind=TraceSourceAuthorityKind.ROUTING_DECISION,
+            source_authority_id=decision_id,
+            source_authority_sha256=_SHA_B,
+            parent_event_id=task_event.event_id,
+            causation_event_id=task_event.event_id,
+            details=TraceRoutingDetails(
+                routing_fingerprint=_SHA_B,
+                state=RoutingState.ROUTED,
+                method=RoutingMethod.EXPLICIT_TASK_KIND,
+                selected_agent_id="system.live-provider-staging",
+                selected_agent_version="1.0.0",
+            ),
+            occurred_at_ms=1_100,
+        ),
+        ingested_at_ms=2_100,
+    ).record
+    invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 1_500)
+    invocation_store.begin(
+        invocation_id=selected_id,
+        request_id=request_id,
+        agent_id="system.live-provider-staging",
+        agent_version="1.0.0",
+        operation="avalai-live-canary",
+        input_fingerprint=_SHA_A,
+        kind=InvocationKind.MODEL,
+        effect=InvocationEffect.READ_ONLY,
+        provider_id="avalai",
+        model_id="gpt-5.4-mini",
+    )
+    unrelated = invocation_store.begin(
+        invocation_id=unrelated_id,
+        request_id=request_id,
+        agent_id="another.agent",
+        agent_version="1.0.0",
+        operation="unrelated-model",
+        input_fingerprint=_SHA_B,
+        kind=InvocationKind.MODEL,
+        effect=InvocationEffect.READ_ONLY,
+        provider_id="avalai",
+        model_id="gpt-5.4-mini",
+    ).record
+    usage = UsageVector(model_calls=1, input_tokens=8, output_tokens=2)
+    invocation_store.reserve(invocation_id=selected_id, usage=usage)
+    invocation_store.complete(
+        invocation_id=selected_id,
+        result_payload={"text_sha256": _SHA_C},
+        committed_usage=usage,
+    )
+    selected = invocation_store.get(selected_id)
+
+    report = project_routed_root_invocations(
+        store=trace_store,
+        task_entry=_task_entry(
+            request_id,
+            selected_agent_id="system.live-provider-staging",
+        ),
+        routing_event=routing,
+        invocation_records=(selected, unrelated),
+        base_ingested_at_ms=3_000,
+    )
+    selected_events = tuple(
+        event
+        for event in trace_store.view(request_id).events
+        if event.invocation_id == selected_id
+    )
+
+    assert report.projected_event_count == 2
+    assert selected_events[0].parent_event_id == routing.event_id
+    assert selected_events[0].stage == TraceStage.MODEL
+    assert selected_events[1].usage == usage
+    assert all(
+        event.invocation_id != unrelated_id
+        for event in trace_store.view(request_id).events
+    )
 
 
 def test_specialist_owned_tool_is_linked_by_unique_cancellation_owner() -> None:

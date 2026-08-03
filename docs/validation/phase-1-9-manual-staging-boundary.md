@@ -17,7 +17,10 @@ The boundary consists of:
 
 ## Native composition
 
-The CLI enters the existing Core lifespan and therefore reuses the native:
+The CLI first persists and routes a fixed read-only `TaskEnvelope` with the
+explicit `live_provider_staging` task kind to the internal
+`system.live-provider-staging` specialist. It then enters the existing Core
+lifespan and reuses the native:
 
 ```text
 InvocationStore
@@ -28,6 +31,9 @@ LiveProviderStagingService
 ```
 
 It does not create a parallel invocation, budget, Trace or result authority.
+Trace reconciliation projects a root model/tool invocation only when its agent
+and version exactly match the durable routing decision, it has no parent or
+specialist cancellation owner, and it is not the router classifier invocation.
 The fixed Core-authored canary remains inside the existing staging contracts.
 The selected model is restricted to the reviewed repository allowlist and the
 policy retains `max_model_calls=1`, `max_retries=0`, no tools, no streaming and

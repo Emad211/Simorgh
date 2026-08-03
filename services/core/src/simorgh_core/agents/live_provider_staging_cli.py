@@ -172,11 +172,11 @@ def reviewed_live_provider_staging_task(
     return TaskEnvelope(
         request_id=request_id,
         received_at_ms=received_at_ms,
-        deadline_at_ms=received_at_ms + policy.max_elapsed_ms,
+        deadline_at_ms=None,
         locale="en-US",
         input_text=_FIXED_TASK_INPUT,
         requested_outcome=_FIXED_TASK_OUTCOME,
-        explicit_task_kind=TaskKind.DEVELOPMENT_PLANNING,
+        explicit_task_kind=TaskKind.LIVE_PROVIDER_STAGING,
         risk_class=RiskClass.READ_ONLY,
         freshness=FreshnessClass.EXECUTION_BOUND,
         latency=LatencyClass.BATCH,
@@ -220,7 +220,6 @@ async def execute_manual_live_provider_staging(
     monotonic_millis: Callable[[], int] | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     id_factory: Callable[[], UUID] = uuid4,
-    propagate_internal_errors: bool = False,
 ) -> LiveProviderStagingArtifact:
     now = wall_clock_millis or (lambda: int(time.time() * 1_000))
     monotonic = monotonic_millis or (lambda: int(time.monotonic() * 1_000))
@@ -271,8 +270,6 @@ async def execute_manual_live_provider_staging(
             except LiveProviderPreflightError:
                 failure_code = LiveProviderStagingArtifactFailureCode.PREFLIGHT_FAILED
             except BaseException:
-                if propagate_internal_errors:
-                    raise
                 failure_code = LiveProviderStagingArtifactFailureCode.EXECUTION_FAILED
             else:
                 first_calls = _call_counts(counted_provider, counted_user_api)
@@ -287,8 +284,6 @@ async def execute_manual_live_provider_staging(
                         trace_store=traces,
                     )
                 except Exception:
-                    if propagate_internal_errors:
-                        raise
                     failure_code = LiveProviderStagingArtifactFailureCode.TRACE_INVALID
                 else:
                     before_replay = _call_counts(
@@ -301,8 +296,6 @@ async def execute_manual_live_provider_staging(
                             request.invocation_id
                         ).committed_usage
                     except BaseException:
-                        if propagate_internal_errors:
-                            raise
                         failure_code = (
                             LiveProviderStagingArtifactFailureCode.REPLAY_FAILED
                         )
@@ -329,8 +322,6 @@ async def execute_manual_live_provider_staging(
                                 LiveProviderStagingArtifactFailureCode.RESULT_INCOMPLETE
                             )
     except BaseException:
-        if propagate_internal_errors:
-            raise
         failure_code = LiveProviderStagingArtifactFailureCode.EXECUTION_FAILED
 
     if not first_calls_captured:
