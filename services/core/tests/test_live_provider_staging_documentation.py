@@ -16,6 +16,9 @@ _WORKER = Path(".github/workflows/live-provider-staging.yml")
 _REVIEWED_WORKER_SHA = "47b65f359fd844067346d987f9102f6eeab911d9"
 _BOOTSTRAP_MAIN_SHA = "3bcb41437e3b8d2f497516ef9a214de5becf45e9"
 _DISPATCHER_BLOB_SHA = "a5fe7be975ee41dd0be222ab1c606f8b4bab87d7"
+_AUDITED_PR_HEAD = "096890150c7cf129eab19ebf4ac0bdf05e631e2f"
+_AUDITED_MERGE_PREVIEW = "caf563792dfbcf65da6a32965d9479824bd9541a"
+_AUDITED_CI_RUN_ID = "30781540524"
 
 
 def _read(path: Path) -> str:
@@ -101,23 +104,41 @@ def test_runbook_matches_reviewed_policy_and_topology() -> None:
     assert "gh run cancel <RUN_ID>" in text
 
 
-def test_readiness_records_bootstrap_but_fails_closed_externally() -> None:
+def test_readiness_records_repository_evidence_and_external_unknowns() -> None:
     text = _read(_READINESS)
 
     assert "Overall readiness: **NOT READY FOR LIVE DISPATCH**" in text
+    assert "Approval package status: **NOT PREPARED" in text
     assert "Bootstrap pull request: #72 — merged" in text
     assert _BOOTSTRAP_MAIN_SHA in text
     assert _REVIEWED_WORKER_SHA in text
     assert _DISPATCHER_BLOB_SHA in text
+    assert _AUDITED_PR_HEAD in text
+    assert _AUDITED_MERGE_PREVIEW in text
+    assert _AUDITED_CI_RUN_ID in text
     assert "Dispatcher on default branch | VERIFIED" in text
     assert "Dispatcher workflow enabled/visible | UNVERIFIED" in text
     assert "Environment object exists | UNVERIFIED" in text
     assert "Required reviewers configured | UNVERIFIED" in text
+    assert "Self-review prevention enabled | UNVERIFIED" in text
+    assert "Deployment restriction allows only `main` | UNVERIFIED" in text
     assert "Environment secret exists | UNVERIFIED" in text
     assert "Explicit user spend approval | NOT GRANTED" in text
     assert "No live workflow may be dispatched from this state." in text
-    assert "Live workflow dispatches observed or initiated by this audit: `0`" in text
+    assert "Live dispatcher/worker runs initiated by this audit: `0`" in text
     assert "Real AvalAI/User API calls initiated by this audit: `0`" in text
+
+
+def test_readiness_does_not_infer_unavailable_connector_settings() -> None:
+    text = _read(_READINESS)
+
+    assert "does **not** expose read operations" in text
+    assert "workflow metadata/state" in text
+    assert "repository deployment environments" in text
+    assert "required reviewer configuration" in text
+    assert "environment-secret names or update timestamps" in text
+    assert "absence of an endpoint is not evidence" in text
+    assert "The secret value was neither requested nor read." in text
 
 
 def test_live_acceptance_checklist_locks_two_shas_and_limits() -> None:
@@ -155,6 +176,21 @@ def test_live_acceptance_checklist_locks_two_shas_and_limits() -> None:
     assert "Reconciliation disposition is `exact`" in text
     assert "`pending`, `unavailable`, `mismatch`, `unknown`" in text
     assert "do not issue another model request" in text
+
+
+def test_checklist_keeps_approval_package_blocked() -> None:
+    text = _read(_CHECKLIST)
+
+    assert "non_live_prerequisites_complete: false" in text
+    assert "approval_package_status: NOT PREPARED" in text
+    assert "dispatcher_enabled_visible: UNVERIFIED" in text
+    assert "environment_exists: UNVERIFIED" in text
+    assert "required_reviewer: UNVERIFIED" in text
+    assert "self_review_prevention: UNVERIFIED" in text
+    assert "deployment_ref_rule: UNVERIFIED" in text
+    assert "environment_secret_present: UNVERIFIED" in text
+    assert "environment_secret_updated_at: UNVERIFIED" in text
+    assert "explicit user approval is `NOT GRANTED`" in text
 
 
 def test_pre_secret_worker_runs_documentation_contract_tests() -> None:
