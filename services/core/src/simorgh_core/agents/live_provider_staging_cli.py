@@ -42,6 +42,9 @@ from simorgh_core.agents.live_provider_staging_trace import (
     LiveProviderStagingTraceEvidence,
     live_provider_staging_trace_evidence,
 )
+from simorgh_core.agents.trace_projecting_invocation_store import (
+    TraceProjectingInvocationStore,
+)
 from simorgh_core.agents.trace_store_registry import trace_store_registry
 from simorgh_core.app import app, lifespan
 from simorgh_core.config import Settings, get_settings
@@ -199,7 +202,8 @@ async def execute_manual_live_provider_staging(
 
     try:
         async with lifespan(app):
-            invocations = invocation_store_registry.current()
+            raw_invocations = invocation_store_registry.current()
+            invocations = TraceProjectingInvocationStore(raw_invocations)
             results = live_provider_staging_result_store_registry.current()
             traces = trace_store_registry.current()
             service = LiveProviderStagingService(
@@ -225,12 +229,12 @@ async def execute_manual_live_provider_staging(
                 first_calls = _call_counts(counted_provider, counted_user_api)
                 first_calls_captured = True
                 try:
-                    usage_before = invocations.get(
+                    usage_before = raw_invocations.get(
                         request.invocation_id
                     ).committed_usage
                     trace_evidence = live_provider_staging_trace_evidence(
                         result,
-                        invocation_store=invocations,
+                        invocation_store=raw_invocations,
                         trace_store=traces,
                     )
                 except Exception:
@@ -244,7 +248,7 @@ async def execute_manual_live_provider_staging(
                     )
                     try:
                         replay = await service.run(request)
-                        usage_after = invocations.get(
+                        usage_after = raw_invocations.get(
                             request.invocation_id
                         ).committed_usage
                     except BaseException:
