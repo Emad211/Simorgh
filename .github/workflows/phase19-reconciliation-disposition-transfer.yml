@@ -41,6 +41,22 @@ jobs:
           test "$actual" = "$expected"
 
           python tools/apply_phase19_reconciliation_disposition.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("services/core/tests/test_live_provider_staging_reconciliation.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''    payload["reconciliation_codes"] = []
+              payload.pop("reconciliation_disposition")
+          '''
+          new = '''    payload["reconciliation_codes"] = []
+              payload["disposition"] = LiveProviderStagingDisposition.COMPLETED.value
+              payload.pop("reconciliation_disposition")
+          '''
+          if text.count(old) != 1:
+              raise RuntimeError("request mismatch fixture anchor changed")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
           ruff check . --exclude tools/apply_phase19_reconciliation_disposition.py --fix
           ruff check . --exclude tools/apply_phase19_reconciliation_disposition.py
           mypy services/core/src
