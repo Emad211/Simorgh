@@ -14,8 +14,8 @@
   `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
 - Trace-link implementation Head:
   `40ac5c755cff50c60d4dda0f9ec7520d2f048961`
-- Last exact owner-authored validation Head before this increment:
-  `416af29624e48328c4ec28b2518587ab7ec41cc5`
+- Exact owner-authored validation Head for this increment:
+  `578d7d5d2c40a08db0496c19ba70684eea0bc869`
 - Cancellation/transport-uncertainty product Head:
   `7d11af47a0801b4593b6cf031bfaa49b247c0bb7`
 - Completed substeps:
@@ -159,9 +159,39 @@ Jobs created: zero
 ```
 
 This is a GitHub workflow-authorization state, not a Core or Android failure.
-This owner-authored Handoff update must trigger ordinary CI against the product
-tree above. Do not start the next production substep until both Core and Android
-jobs on that owner-authored Head are green.
+The same product tree was validated by the owner-authored Handoff commit below.
+
+Exact owner-authored validation:
+
+```text
+Validated Head: 578d7d5d2c40a08db0496c19ba70684eea0bc869
+Workflow: CI
+Run ID: 30773820004
+Run number: 990
+Conclusion: success
+core-quality: success
+android-quality: success
+Ruff: all checks passed
+strict MyPy: no issues in 81 source files
+Core: 539 passed, 2 dependency warnings
+focused cancellation/uncertainty tests: 5 passed
+Android assembleDebug: passed
+Android testDebugUnitTest: passed
+Android lintDebug: passed
+Android build: BUILD SUCCESSFUL, 53 actionable tasks
+Debug APK upload: passed
+```
+
+Artifacts from run `30773820004`:
+
+- `core-quality-diagnostics` — ID `8841368301`,
+  SHA-256 `2060270e624ba1397da7855c18eff872e38f89e6a361054118fe5c5132548df1`
+- `core-test-report` — ID `8841368508`,
+  SHA-256 `17a650bb9e000b937059dae631f1b78680442e455204a84ed3cc799bfd306449`
+- `android-build-diagnostics` — ID `8841373086`,
+  SHA-256 `2049a51763c4a03f1eac7cd405f0b5551d5565c94c41800dc617613ac28390a4`
+- `simorgh-android-debug` — ID `8841373524`,
+  SHA-256 `8b5522e2b3df0e44669feb612181670c9fceeaebf6f23b8a97fefe7d0ead3444`
 
 Previous exact Trace-link validation remains:
 
@@ -241,9 +271,9 @@ Also read every PR #70 comment, review, changed file and check created after
 
 ## Exact continuation point
 
-First resolve the current branch Head and verify its ordinary CI. This Handoff
-update is documentation-only; if either Core or Android is not green, inspect
-and fix only that exact failure before changing production code.
+First resolve the current branch Head and verify its ordinary CI. This final
+Handoff evidence update is documentation-only; if either Core or Android is not
+green, inspect and fix only that exact failure before changing production code.
 
 Then implement one narrow Phase 1.9 increment that adds a typed, canonical
 reconciliation disposition to every staging result:
