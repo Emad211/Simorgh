@@ -6,19 +6,25 @@
 - Default branch: `main`
 - Pull request: #70
 - Issue: #65
+- Bootstrap pull request: #72 — merged
+- Bootstrap merge commit on `main`:
+  `3bcb41437e3b8d2f497516ef9a214de5becf45e9`
+- Reviewed reusable worker commit:
+  `47b65f359fd844067346d987f9102f6eeab911d9`
+- Dispatcher blob SHA: `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`
 - Live workflow dispatches observed or initiated by this audit: `0`
 - Credentials read or configured by this audit: `0`
 - Real AvalAI/User API calls initiated by this audit: `0`
 - Overall readiness: **NOT READY FOR LIVE DISPATCH**
 
-Resolve the current branch Head and ordinary CI before using this audit. This
-file never self-authorizes a live run.
+The default-branch topology blocker is resolved. This audit still does not prove
+that the workflow is enabled in Actions, that the protected environment is
+configured, or that any credential exists.
 
 ## Audit method
 
 Repository, PR, issue, changed-file and CI evidence were read through connected
-GitHub repository tools. Official GitHub Actions documentation was used to
-confirm:
+GitHub tools. Official GitHub Actions documentation was used to confirm:
 
 - `workflow_dispatch` requires the workflow file on the default branch;
 - reusable workflows can be referenced by exact SHA;
@@ -28,31 +34,28 @@ confirm:
 - required reviewers, self-review prevention and branch/tag restrictions remain
   external GitHub settings.
 
-The connector surface did not expose environment protection rules or secret
-metadata. No unavailable setting was inferred from YAML.
+The connector did not expose workflow enabled/disabled state, environment
+protection rules or secret metadata. No unavailable setting was inferred.
 
-## Selected bootstrap topology
+## Implemented topology
 
 ```text
-main
+main @ 3bcb41437e3b8d2f497516ef9a214de5becf45e9
   .github/workflows/live-provider-staging-dispatch.yml
+  blob a5fe7be975ee41dd0be222ab1c606f8b4bab87d7
   trigger: workflow_dispatch only
   input: approved_dispatcher_sha only
   hardcoded worker SHA and model
   no secrets passed
     |
     v
-exact reviewed worker commit
+worker @ 47b65f359fd844067346d987f9102f6eeab911d9
   .github/workflows/live-provider-staging.yml
   trigger: workflow_call only
   validates caller repository/ref/workflow path
   protected environment: live-provider-staging
   environment secret: AVALAI_API_KEY
 ```
-
-The dispatcher must reach `main` through a separate bootstrap PR containing only
-that file. The worker remains in PR #70 and is referenced by a full immutable
-commit SHA.
 
 ## Verified repository evidence
 
@@ -61,42 +64,39 @@ commit SHA.
 | Repository access | VERIFIED | Repository is public and authenticated operator has admin access. |
 | Default branch | VERIFIED | `main` |
 | Phase branch | VERIFIED | `core/live-provider-staging` |
-| PR state | VERIFIED | PR #70 is open, Draft and mergeable. |
-| Issue state | VERIFIED | Issue #65 is open. |
-| Previous exact-head CI | VERIFIED | Handoff Head `e62538d16e67dfee50fe01595a4d21a9e5be307b`, run #1040, Core and Android success. |
-| Default-branch worker absence | VERIFIED | `.github/workflows/live-provider-staging.yml` returned 404 on `main` before bootstrap. |
+| PR #70 state | VERIFIED | Open, Draft and mergeable before final documentation update. |
+| Issue #65 state | VERIFIED | Open. |
+| Review audit | VERIFIED | No PR #70 comments, review submissions or inline threads at audit time. |
+| Previous Handoff CI | VERIFIED | `e62538d16e67dfee50fe01595a4d21a9e5be307b`, run #1040, Core/Android success. |
+| Reusable worker CI | VERIFIED | `47b65f359fd844067346d987f9102f6eeab911d9`, run #1047 (`30780786562`), Core/Android success. |
+| Dispatcher candidate CI | VERIFIED | PR #70 Head `adfae44756de11e1e4372dbf2838402f01681b5b`, run #1049 (`30780907144`), Core/Android success. |
+| Bootstrap PR product diff | VERIFIED | PR #72 contained one added file only: dispatcher, 49 lines. |
+| Bootstrap PR CI | VERIFIED | Head `7f8ad3bc7c3eaac1286adf577823a9cd99a2a3c2`, run #1050 (`30781058656`), Core/Android success. |
+| Bootstrap merge | VERIFIED | PR #72 merged to `main` at `3bcb41437e3b8d2f497516ef9a214de5becf45e9`. |
+| Dispatcher on default branch | VERIFIED | File fetch from `main` succeeded. |
+| Dispatcher blob identity | VERIFIED | `main`, bootstrap branch and PR #70 copy use blob `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`. |
+| Dispatcher trigger | VERIFIED | `workflow_dispatch` only. |
+| Dispatcher input | VERIFIED | `approved_dispatcher_sha` only. |
+| Dispatcher repository/ref binding | VERIFIED | Requires `Emad211/Simorgh`, `refs/heads/main` and approval SHA equal to `github.sha`. |
+| Exact worker pin | VERIFIED | Same worker SHA in `uses`, `reviewed_commit_sha` and review constant. |
+| Dispatcher model binding | VERIFIED | Hardcoded `gpt-5.4-mini`, no model input. |
+| Dispatcher secret forwarding | VERIFIED | No `secrets` or `secrets: inherit`. |
 | Worker trigger | VERIFIED | `workflow_call` only; no direct dispatch, push, PR or schedule. |
-| Worker caller restriction | VERIFIED | Same repository, `refs/heads/main` and exact dispatcher workflow-ref checks. |
-| Worker environment | VERIFIED | `live-provider-staging` appears only on `live-canary`. |
-| Secret reference placement | VERIFIED | `AVALAI_API_KEY` appears once in the protected worker step. |
-| Worker repository permissions | VERIFIED | `contents: read`. |
-| Worker concurrency | VERIFIED | One non-cancelling `live-provider-staging` group. |
-| Worker commit binding | VERIFIED | Exact lowercase SHA and checkout-HEAD equality. |
-| Model binding | VERIFIED | Worker requires `gpt-5.4-mini`. |
+| Worker caller restriction | VERIFIED | Same repository, `main` and exact dispatcher workflow-ref checks. |
+| Worker environment | VERIFIED | `live-provider-staging` appears on `live-canary`. |
+| Secret reference placement | VERIFIED | `AVALAI_API_KEY` appears once in protected worker step. |
+| Worker permissions | VERIFIED | `contents: read`. |
+| Worker concurrency | VERIFIED | Non-cancelling `live-provider-staging` group. |
+| Worker commit/model binding | VERIFIED | Exact checkout SHA and `gpt-5.4-mini`. |
 | Pre-secret gates | VERIFIED | Ruff, strict MyPy and fake tests precede protected job. |
-| Ordinary CI isolation | VERIFIED | Ordinary CI does not invoke live CLI or reference the key. |
-| Live execution | NOT EXECUTED | No live workflow was dispatched. |
-
-## Bootstrap evidence still required
-
-| Prerequisite | Status | Required proof |
-|---|---|---|
-| Exact worker commit frozen | PENDING | Full SHA with green Core and Android CI. |
-| Dispatcher exact-SHA pin | PENDING | Same worker SHA in `uses` and `reviewed_commit_sha`. |
-| Dispatcher fixed model | PENDING | Hardcoded `gpt-5.4-mini`, no model input. |
-| Dispatcher has no secret forwarding | PENDING | No `secrets` or `secrets: inherit`. |
-| Bootstrap PR product diff | PENDING | Dispatcher file only. |
-| Bootstrap PR CI | PENDING | Core and Android success. |
-| Dispatcher merged to `main` | PENDING | Merge commit and file fetch from `main`. |
-| Main/reviewed dispatcher blob equality | PENDING | Identical content/blob evidence. |
-| Manual workflow enabled/visible | UNVERIFIED | Actions UI/API evidence without dispatch. |
-
-Until the dispatcher is merged, the default-branch blocker remains active.
+| Ordinary CI isolation | VERIFIED | Ordinary CI does not invoke live CLI or reference key. |
+| Live execution | NOT EXECUTED | No dispatcher or worker live run was started. |
 
 ## Unverified external prerequisites
 
 | Prerequisite | Status | Required proof before approval |
 |---|---|---|
+| Dispatcher workflow enabled/visible | UNVERIFIED | Actions UI or workflow API status; do not dispatch. |
 | Environment object exists | UNVERIFIED | Independent UI/API inspection showing exact name. |
 | Required reviewers configured | UNVERIFIED | Reviewer list and policy from environment settings. |
 | Self-review prevention enabled | UNVERIFIED | Environment protection setting. |
@@ -109,23 +109,29 @@ Until the dispatcher is merged, the default-branch blocker remains active.
 | Independent deployment approval | UNVERIFIED | Pending environment approval on exact run. |
 | Explicit user spend approval | NOT GRANTED | Both SHAs/ref/model/ceilings/timestamp. |
 
-## Blocking findings
+## Resolved finding
 
-### B1 — dispatcher bootstrap is not yet on `main`
+### R1 — default-branch `workflow_dispatch` topology
+
+Status: **RESOLVED IN REPOSITORY STATE**
+
+PR #72 merged the minimal dispatcher to `main`. The dispatcher is byte-identical
+to the statically tested PR #70 copy and pins the reviewed worker by exact SHA.
+It has no automatic trigger and passes no secrets.
+
+This resolution proves file placement and integrity only. It is not evidence that
+the workflow is enabled, that environment protections exist or that live
+execution is authorized.
+
+## Remaining blocking findings
+
+### B1 — workflow enabled/visibility state is not observable
 
 Status: **BLOCKING**
 
-The selected topology is documented and the reusable worker boundary exists, but
-the minimal dispatcher has not yet been merged to the default branch. A separate
-zero-live-call bootstrap PR and green CI are required.
-
-Forbidden workarounds remain:
-
-- adding push, pull-request or schedule triggers;
-- accepting worker SHA or model as dispatch inputs;
-- using a branch/tag worker reference;
-- forwarding repository/organization secrets;
-- running a standalone provider script.
+The connector can fetch the workflow file from `main` but cannot prove GitHub
+Actions currently reports it as enabled or exposes the Run workflow button.
+Verify this without pressing the button.
 
 ### B2 — environment protections are not observable
 
@@ -145,9 +151,9 @@ environment-scoped or provider-valid. The secret value must never be retrieved.
 
 Status: **BLOCKING**
 
-Approval to implement the bootstrap is not approval to execute a canary. Live
-approval must identify exact dispatcher and worker SHAs, `refs/heads/main`, model
-and maximum spend.
+Bootstrap implementation/merge is not permission to execute. Approval must bind
+current `main` dispatcher SHA, pinned worker SHA, `refs/heads/main`, model and
+maximum spend.
 
 ### B5 — no exact live transaction evidence exists
 
@@ -159,9 +165,11 @@ exists. Pending or unavailable reconciliation cannot satisfy issue #65.
 ## Readiness conclusion
 
 ```text
-reusable worker design: REVIEWED CANDIDATE
-ordinary fake CI: PREVIOUS HEAD GREEN; NEW HEAD REQUIRES VALIDATION
-default-branch dispatcher: PENDING BOOTSTRAP PR
+reusable worker: VERIFIED AND PINNED
+default-branch dispatcher: VERIFIED PRESENT AND BYTE-IDENTICAL
+bootstrap ordinary CI: GREEN
+current PR #70 final Head CI: REQUIRES RERUN AFTER DOCUMENTATION UPDATE
+dispatcher enabled/visible: UNVERIFIED
 protected environment: UNVERIFIED
 credential readiness: UNVERIFIED
 explicit spend approval: NOT GRANTED
@@ -173,10 +181,10 @@ No live workflow may be dispatched from this state.
 
 ## Permitted next actions
 
-1. Freeze the exact reusable worker commit and pass full Core/Android CI.
-2. Add the exact pinned dispatcher to PR #70 and static-test it.
-3. Create a separate dispatcher-only bootstrap PR against `main`.
-4. Pass ordinary CI, verify byte identity and merge the bootstrap without
-   dispatching it.
-5. Re-audit external environment prerequisites.
-6. Request separate live approval only after all blockers are evidenced.
+1. Verify dispatcher enabled/visible state without starting a run.
+2. Configure and independently verify environment, reviewer, self-review policy,
+   `main` deployment restriction and environment secret metadata.
+3. Re-run full Core and Android CI on final PR #70 Head.
+4. Populate the acceptance checklist with current evidence.
+5. Ask the user for separate explicit live approval only after all non-live
+   prerequisites are satisfied.
