@@ -38,9 +38,11 @@ jobs:
         shell: bash
         env:
           REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [[ "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REVIEWED_COMMIT_SHA" = "$DISPATCH_SHA"
           test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
@@ -86,9 +88,11 @@ jobs:
         shell: bash
         env:
           REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [[ "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REVIEWED_COMMIT_SHA" = "$DISPATCH_SHA"
           test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
