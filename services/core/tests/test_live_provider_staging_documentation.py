@@ -12,7 +12,6 @@ _READINESS = Path(
     "docs/validation/phase-1-9-protected-environment-readiness.md"
 )
 _CHECKLIST = Path("docs/validation/phase-1-9-live-acceptance-checklist.md")
-_README = Path("docs/README.md")
 _WORKFLOW = Path(".github/workflows/live-provider-staging.yml")
 
 
@@ -20,13 +19,15 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_live_staging_documents_are_indexed() -> None:
-    text = _read(_README)
+def test_live_staging_documents_cross_link() -> None:
+    adr = _read(_ADR)
+    runbook = _read(_RUNBOOK)
 
-    assert "LIVE_PROVIDER_STAGING_RUNBOOK.md" in text
-    assert "0022-explicitly-budgeted-live-provider-staging.md" in text
-    assert "phase-1-9-protected-environment-readiness.md" in text
-    assert "phase-1-9-live-acceptance-checklist.md" in text
+    assert "docs/LIVE_PROVIDER_STAGING_RUNBOOK.md" in adr
+    assert "phase-1-9-protected-environment-readiness.md" in adr
+    assert "phase-1-9-live-acceptance-checklist.md" in adr
+    assert "ADR 0022" in runbook
+    assert "phase-1-9-live-acceptance-checklist.md" in runbook
 
 
 def test_adr_preserves_manual_no_retry_authority_boundary() -> None:
@@ -100,8 +101,13 @@ def test_readiness_audit_fails_closed_on_external_configuration() -> None:
     assert "Environment secret exists | UNVERIFIED" in text
     assert "Explicit user spend approval | NOT GRANTED" in text
     assert "No live workflow may be dispatched from this state." in text
-    assert "Live workflow dispatches observed or initiated by this audit: `0`" in text
-    assert "Real AvalAI/User API calls initiated by this audit: `0`" in text
+    assert (
+        "Live workflow dispatches observed or initiated by this audit: `0`"
+        in text
+    )
+    assert (
+        "Real AvalAI/User API calls initiated by this audit: `0`" in text
+    )
 
 
 def test_live_acceptance_checklist_locks_limits_and_rejection_states() -> None:
@@ -110,7 +116,7 @@ def test_live_acceptance_checklist_locks_limits_and_rejection_states() -> None:
 
     expected = (
         f"max_model_calls: {policy.max_model_calls}",
-        f"max_retries: 0",
+        "max_retries: 0",
         f"max_input_tokens: {policy.max_input_tokens}",
         f"max_output_tokens: {policy.max_output_tokens}",
         (
