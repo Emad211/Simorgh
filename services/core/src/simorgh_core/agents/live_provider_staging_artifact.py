@@ -137,21 +137,19 @@ class LiveProviderStagingArtifact(BaseModel):
 
     @model_validator(mode="after")
     def validate_artifact(self) -> Self:
-        if self.result is not None:
-            if (
-                self.result.staging_run_id != self.staging_run_id
-                or self.result.request_id != self.request_id
-                or self.result.invocation_id != self.invocation_id
-            ):
-                raise ValueError("staging artifact result identity is inconsistent")
-        if self.trace_evidence is not None:
-            if (
-                self.trace_evidence.trace_id
-                != (self.result.trace_id if self.result is not None else None)
-                or self.trace_evidence.request_id != self.request_id
-                or self.trace_evidence.invocation_id != self.invocation_id
-            ):
-                raise ValueError("staging artifact Trace evidence is inconsistent")
+        if self.result is not None and (
+            self.result.staging_run_id != self.staging_run_id
+            or self.result.request_id != self.request_id
+            or self.result.invocation_id != self.invocation_id
+        ):
+            raise ValueError("staging artifact result identity is inconsistent")
+        if self.trace_evidence is not None and (
+            self.trace_evidence.trace_id
+            != (self.result.trace_id if self.result is not None else None)
+            or self.trace_evidence.request_id != self.request_id
+            or self.trace_evidence.invocation_id != self.invocation_id
+        ):
+            raise ValueError("staging artifact Trace evidence is inconsistent")
 
         if self.disposition == LiveProviderStagingArtifactDisposition.PASSED:
             if self.failure_code != LiveProviderStagingArtifactFailureCode.NONE:
