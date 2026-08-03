@@ -67,6 +67,7 @@ jobs:
             services/core/tests/test_live_provider_staging.py \
             services/core/tests/test_live_provider_staging_artifact.py \
             services/core/tests/test_live_provider_staging_cli.py \
+            services/core/tests/test_live_provider_staging_documentation.py \
             services/core/tests/test_live_provider_staging_workflow.py \
             -q
 
