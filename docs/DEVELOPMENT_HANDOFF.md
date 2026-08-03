@@ -8,30 +8,34 @@
 - Working branch: `core/live-provider-staging`
 - Merge base: `a76b5aee006a1ac9dfe54080d02cb54fceef8bde`
 - Pull request: #70 — `Core: establish budgeted AvalAI staging policy and User API boundary`
+- Pull request state: open, Draft and currently mergeable
 - Issue: #65 — `Phase 1 Step 1.9: explicitly budgeted AvalAI live-provider staging`
 - Phase: 1.9 — Live Provider Staging
 - Lifecycle implementation Head:
   `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
 - Trace-link implementation Head:
   `40ac5c755cff50c60d4dda0f9ec7520d2f048961`
-- Exact owner-authored validation Head for this increment:
-  `578d7d5d2c40a08db0496c19ba70684eea0bc869`
-- Cancellation/transport-uncertainty product Head:
+- Cancellation/transport-uncertainty implementation Head:
   `7d11af47a0801b4593b6cf031bfaa49b247c0bb7`
+- Reconciliation-disposition product Head:
+  `50b1484d9113951f15a1fc060d58f13896f52a9e`
+- Last fully validated owner-authored Head before this increment:
+  `874b675c16c1d1c71af4a4d58a8f7eac4738bbdd`
 - Completed substeps:
   - disabled-by-default AvalAI policy and sanitized User API boundary;
   - exactly-one-call fake canary composition;
   - immutable SQLite staging-result authority;
   - Core configuration, registry and lifespan ownership;
   - deterministic staging-result linkage to Invocation and Trace evidence;
-  - durable sanitized cancellation and provider-transport uncertainty results.
-- Next substep: make reconciliation disposition explicit as `exact`, `pending`,
-  `unavailable` or `mismatch` without changing provider-call behavior.
+  - durable sanitized cancellation and provider-transport uncertainty results;
+  - typed canonical reconciliation disposition.
+- Next substep after exact-head CI: protected manual staging workflow and
+  sanitized validation artifact, without executing the real canary yet.
 
 The current Handoff commit is the branch `HEAD`; resolve its SHA from Git before
-starting the next step. Do not insert an assumed self-referential SHA. The
-immutable product SHA above and the exact CI run recorded below are the evidence
-for this increment.
+starting the next execution. Do not place an assumed self-referential SHA in this
+file. The immutable product SHA above and the exact CI evidence below are the
+source of truth for this increment.
 
 ## Architecture and invariants
 
@@ -42,208 +46,193 @@ projection and cannot authorize execution or rewrite Invocation truth.
 The Phase 1.9 implementation preserves these invariants:
 
 - live staging is disabled by default;
-- a staging run permits at most one model request;
+- one staging run permits at most one model request;
 - no automatic retry, provider failover, streaming or tool use exists;
-- exact replay checks durable staging authority before credit, model catalog,
-  provider or User API entry;
-- replay with the same staging/invocation identity adds zero model call, zero
-  User API call and zero usage;
+- exact replay checks durable staging-result authority before credit, model
+  catalog, provider or User API entry;
+- replay with the same staging and invocation identity adds zero model call,
+  zero User API call and zero usage;
 - InvocationStore state and committed usage remain source authority;
 - Trace-linked staging reads fail closed if Invocation or terminal Trace evidence
   is missing, inconsistent or corrupt;
+- billing reconciliation evidence cannot rewrite Invocation truth;
 - cancellation never proves non-entry unless typed authority records that proof;
 - reserved read-only work with proof of non-entry becomes `cancelled` with zero
   committed usage;
 - cancellation or transport failure after possible provider entry becomes
   `unknown` with the conservative reservation committed once;
-- a completed provider invocation stays `completed` if cancellation occurs only
-  during transaction reconciliation;
-- a cancellation outcome is durably claimed before `CancelledError` is
-  re-raised;
-- a staging result is returned only after its Invocation is terminal;
+- a completed provider invocation remains `completed` if cancellation happens
+  only during transaction lookup;
 - raw prompt, model output, exception text, provider/User API body, header,
-  credential, IP address and private account fields are never persisted.
+  credential, IP address and private account fields are never persisted;
+- ordinary CI remains fake and zero-external.
 
-## Completed cancellation and transport-uncertainty increment
+## Completed canonical reconciliation-disposition increment
 
-### Typed result semantics
+### Typed projection
 
-`LiveProviderReconciliationCode` now includes:
+Every `LiveProviderStagingResult` now carries exactly one canonical typed value:
 
 ```text
-provider_invocation_cancelled
+exact
+pending
+unavailable
+mismatch
 ```
 
-The result contract enforces:
+The projection is deterministically derived from transaction presence and the
+canonical detailed `reconciliation_codes` tuple:
 
-- `cancelled` Invocation state requires the cancellation code and zero usage;
-- `unknown` Invocation state requires `provider_invocation_unknown`;
-- the uncertainty code is valid only with `unknown` state;
-- the cancellation code is valid only with `cancelled`, `unknown` or
-  `completed` Invocation state;
-- all reconciliation codes remain unique and canonically sorted.
+- `exact` requires a retained exact transaction and no reconciliation code;
+- `pending` requires no transaction and exactly `transaction_pending`;
+- `unavailable` covers provider cancellation, provider failure, provider
+  uncertainty, missing/invalid provider request identity and unavailable User
+  API lookup;
+- `mismatch` takes precedence when output, request identity, model, provider,
+  status, stream, usage or cost evidence conflicts.
 
-### Runtime persistence
+Mixed pending/unavailable evidence, transaction-plus-unavailable evidence,
+duplicate codes, unclassified codes and missing evidence fail closed.
+
+### Canonical identity and contract enforcement
+
+- `reconciliation_disposition` is included in the staging-result canonical
+  SHA-256 and stable result identity.
+- Internal candidate construction may omit the derived field, but any supplied
+  value must equal the deterministic projection.
+- A changed disposition with a recomputed storage payload hash still fails typed
+  validation and SQLite load treats it as corruption.
+- Detailed reconciliation codes remain authoritative diagnostic evidence and
+  are not replaced by the projection.
+- Added `transaction_request_mismatch` as a typed detailed code.
+- A transaction whose identity differs from the provider request ID is retained
+  only as an explicit `mismatch`; it is no longer an untyped validation failure.
+
+### Runtime composition
 
 `LiveProviderStagingService` now:
 
-- catches cancellation raised while the model gateway may be inside provider
-  execution;
-- reloads the durable terminal Invocation before constructing a result;
-- records `cancelled` when adapter authority proves external non-entry;
-- records `cancelled + unknown` when provider entry is possible;
-- preserves the existing `unknown` transport-failure result and conservative
-  committed usage;
-- catches cancellation during transaction lookup after model completion and
-  records an incomplete staging result while preserving completed Invocation
-  truth and sanitized provider/output fingerprints;
-- claims the immutable staging result synchronously before re-raising
-  cancellation;
-- refuses to persist a non-terminal Invocation or a model Invocation carrying
-  `unknown_side_effect`.
+- passes the captured provider request identity into exact transaction
+  reconciliation;
+- records request/model/provider/status/stream/usage/cost mismatches as detailed
+  codes;
+- derives the canonical reconciliation disposition before claiming the immutable
+  result;
+- preserves all existing one-call, cancellation, uncertainty and replay
+  semantics.
 
-### Durable replay and restart
-
-The new acceptance coverage proves:
-
-- a normal canary still completes;
-- proof-of-non-entry cancellation stores zero usage and no external provider
-  entry;
-- cancellation after possible provider entry stores `unknown` and commits the
-  reservation once;
-- cancellation during transaction lookup preserves completed Invocation state;
-- provider transport uncertainty survives SQLite close/reopen;
-- exact replay after cancellation or transport uncertainty performs zero second
-  provider call, zero model-catalog call, zero credit/transaction call and zero
-  usage mutation;
-- private transport markers are absent from serialized staging results.
+No provider-call path, transaction-polling policy, retry behavior, credential
+boundary, Trace authority or Invocation transition changed in this increment.
 
 ## Files changed by this increment
 
 The exact diff from previous Handoff Head
-`e6089f16caf3f189e98bb1ce7cfa4e0aafeaf78c` to product Head
-`7d11af47a0801b4593b6cf031bfaa49b247c0bb7` contains only:
+`874b675c16c1d1c71af4a4d58a8f7eac4738bbdd` to product Head
+`50b1484d9113951f15a1fc060d58f13896f52a9e` contains only:
 
 - `docs/validation/phase-1-9-user-api-contract-candidate.md`
 - `services/core/src/simorgh_core/agents/live_provider_staging.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_contracts.py`
-- `services/core/tests/test_live_provider_staging_uncertainty.py`
+- `services/core/tests/test_live_provider_staging.py`
+- `services/core/tests/test_live_provider_staging_reconciliation.py`
 
 No transfer workflow, patcher, generated database, WAL/SHM file, process-lock
 file, credential or other temporary artifact remains in the product diff.
 
 ## Validation state
 
+An initial transfer run reached 550 passing tests and one test-only expectation
+failure. It published no product commit. The fixture was corrected so the test
+reaches the intended request-identity invariant.
+
 Deterministic transfer and Core product gate:
 
 ```text
-Product Head: 7d11af47a0801b4593b6cf031bfaa49b247c0bb7
-Workflow: Phase 1.9 Staging Uncertainty Transfer
-Run ID: 30773677111
-Run number: 1
+Product Head: 50b1484d9113951f15a1fc060d58f13896f52a9e
+Workflow: Phase 1.9 Reconciliation Disposition Transfer
+Run ID: 30774528624
+Run number: 2
 Conclusion: success
 Ruff: all checks passed
 strict MyPy: no issues in 81 source files
-Core: 539 passed, 2 dependency warnings, 11.01s
-focused cancellation/uncertainty tests: 5 passed
+Core: 551 passed, 2 dependency warnings, 11.87s
+focused reconciliation-disposition tests: 12 passed
 provider/User API/connector paid calls: zero
 ```
 
 The ordinary CI created directly from the bot-authored product commit is:
 
 ```text
-Run ID: 30773713271
-Run number: 989
+Run ID: 30774559050
+Run number: 996
 Conclusion: action_required
 Jobs created: zero
 ```
 
-This is a GitHub workflow-authorization state, not a Core or Android failure.
-The same product tree was validated by the owner-authored Handoff commit below.
+This is a GitHub workflow-authorization state, not a Core or Android product
+failure. This owner-authored Handoff commit must trigger ordinary CI against the
+same product tree. Do not begin the next production substep until both Core and
+Android jobs on that exact owner-authored Head are green.
 
-Exact owner-authored validation:
-
-```text
-Validated Head: 578d7d5d2c40a08db0496c19ba70684eea0bc869
-Workflow: CI
-Run ID: 30773820004
-Run number: 990
-Conclusion: success
-core-quality: success
-android-quality: success
-Ruff: all checks passed
-strict MyPy: no issues in 81 source files
-Core: 539 passed, 2 dependency warnings
-focused cancellation/uncertainty tests: 5 passed
-Android assembleDebug: passed
-Android testDebugUnitTest: passed
-Android lintDebug: passed
-Android build: BUILD SUCCESSFUL, 53 actionable tasks
-Debug APK upload: passed
-```
-
-Artifacts from run `30773820004`:
-
-- `core-quality-diagnostics` — ID `8841368301`,
-  SHA-256 `2060270e624ba1397da7855c18eff872e38f89e6a361054118fe5c5132548df1`
-- `core-test-report` — ID `8841368508`,
-  SHA-256 `17a650bb9e000b937059dae631f1b78680442e455204a84ed3cc799bfd306449`
-- `android-build-diagnostics` — ID `8841373086`,
-  SHA-256 `2049a51763c4a03f1eac7cd405f0b5551d5565c94c41800dc617613ac28390a4`
-- `simorgh-android-debug` — ID `8841373524`,
-  SHA-256 `8b5522e2b3df0e44669feb612181670c9fceeaebf6f23b8a97fefe7d0ead3444`
-
-Previous exact Trace-link validation remains:
+Previous exact owner-authored validation remains:
 
 ```text
-Validated Head: 416af29624e48328c4ec28b2518587ab7ec41cc5
-CI run ID: 30772631461
-CI run number: 984
-Core: success — 534 passed
+Validated Head: 874b675c16c1d1c71af4a4d58a8f7eac4738bbdd
+CI run ID: 30773944113
+CI run number: 991
+Core: success — 539 passed
 Android: success — assembleDebug, JVM tests, lint and APK upload
 ```
 
+## Test coverage added or extended
+
+The increment covers:
+
+- deterministic `exact`, `pending`, `unavailable` and `mismatch` derivation;
+- rejection of missing evidence and conflicting pending/unavailable evidence;
+- canonical hash participation and changed-projection rejection;
+- request-identity mismatch typing;
+- model, provider, usage and cost mismatch aggregation;
+- service-level exact, pending, lookup-unavailable, mismatch and transport
+  uncertainty projections;
+- SQLite close/reopen and exact replay;
+- SQLite rejection of rehashed disposition corruption;
+- preservation of the detailed code tuple and zero-call replay behavior.
+
 ## Security and failure semantics
 
-- Cancellation exception content is discarded; only typed codes and terminal
-  authority are stored.
-- Provider transport exception content is discarded.
-- A failed staging-store claim prevents cancellation propagation from being
-  reported as successfully persisted; the store failure remains visible and no
-  false durable result is asserted.
-- `cancelled` with non-zero usage, `unknown` without uncertainty, and mismatched
-  code/state combinations fail typed validation.
-- Existing Trace linkage revalidates terminal state and committed usage on every
-  claim, replay, lookup and restart load.
-- No secret, credential, real AvalAI request or paid call was introduced or
-  executed.
-
-## Remaining risks and non-goals
-
-The completed increment intentionally does not solve:
-
-- cancellation before durable Invocation reservation; no staging result is
-  claimed because no terminal Invocation authority exists;
-- an explicit reconciliation-disposition field separating `exact`, `pending`,
-  `unavailable` and `mismatch`;
-- protected `workflow_dispatch` staging and secret injection;
-- a real one-call AvalAI canary;
-- operator approval UX and sanitized downloadable live report;
-- production/autonomous enablement;
-- Phase 1.10 workflows.
-
-The current reconciliation codes still express multiple conditions as a tuple.
-The next increment must introduce one authoritative disposition projection
-without weakening or replacing the detailed codes.
+- The disposition is a projection, not execution or billing authority.
+- Exact cost remains transaction evidence for staging reconciliation only.
+- Local committed usage remains Invocation/request-budget authority.
+- `mismatch` has precedence over unavailable evidence so a known conflict cannot
+  be hidden as mere absence.
+- `pending` cannot be combined with unavailable evidence.
+- Request identity mismatch is explicit and privacy-safe.
+- No raw transaction body or private provider field is introduced.
+- No credential, real AvalAI request, paid call or live environment was used.
 
 ## Remaining Phase 1.9 work
 
-1. Make reconciliation disposition explicit (`exact`, `pending`,
-   `unavailable`, `mismatch`).
-2. Add the protected manual one-call staging workflow and sanitized artifact.
-3. Execute one approved canary, reconcile exact transaction cost and prove
-   replay creates no second request or charge.
-4. Complete operational documentation, review audit and merge PR #70.
+1. Add the protected manual one-call staging workflow, dedicated CLI/composition
+   entry and schema-validated sanitized JSON artifact.
+2. Execute one explicitly approved real canary, reconcile exact transaction cost
+   and prove replay creates no second request or charge.
+3. Complete ADR and operational documentation, perform review audit and merge
+   PR #70.
+
+## Explicit non-goals still in force
+
+- no live provider in ordinary CI;
+- no production or autonomous live-model enablement;
+- no public model endpoint;
+- no automatic or scheduled live test;
+- no provider/model/domain failover;
+- no streaming, multimodal, tools or batch validation;
+- no raw prompt/output/provider/User API body persistence;
+- no Android mutation;
+- no Phase 1.10 workflow;
+- no Voice, Notification, Scheduling, Channels, Delegation, MCP, Memory,
+  Personal Work Graph or self-improvement.
 
 ## Mandatory reads for the next execution
 
@@ -258,40 +247,48 @@ without weakening or replacing the detailed codes.
 - `services/core/src/simorgh_core/agents/live_provider_staging_store.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_trace.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_store_registry.py`
+- `services/core/src/simorgh_core/agents/model_gateway.py`
+- `services/core/src/simorgh_core/providers/avalai.py`
 - `services/core/src/simorgh_core/providers/avalai_user_api.py`
+- `services/core/src/simorgh_core/config.py`
+- `services/core/src/simorgh_core/app.py`
 - `services/core/tests/test_live_provider_staging.py`
 - `services/core/tests/test_live_provider_staging_contracts.py`
 - `services/core/tests/test_live_provider_staging_store.py`
 - `services/core/tests/test_live_provider_staging_trace.py`
 - `services/core/tests/test_live_provider_staging_uncertainty.py`
+- `services/core/tests/test_live_provider_staging_reconciliation.py`
 - `.github/workflows/ci.yml`
 
 Also read every PR #70 comment, review, changed file and check created after
-`7d11af47a0801b4593b6cf031bfaa49b247c0bb7`.
+`50b1484d9113951f15a1fc060d58f13896f52a9e`.
 
 ## Exact continuation point
 
-First resolve the current branch Head and verify its ordinary CI. This final
-Handoff evidence update is documentation-only; if either Core or Android is not
-green, inspect and fix only that exact failure before changing production code.
+First resolve the current branch Head and verify the ordinary CI triggered by
+this Handoff update. If either Core or Android is not green, inspect and fix only
+that exact failure before changing production code.
 
-Then implement one narrow Phase 1.9 increment that adds a typed, canonical
-reconciliation disposition to every staging result:
+Once exact-head CI is green, implement one narrow Phase 1.9 increment for the
+manual staging execution boundary without making the real paid canary request:
 
-```text
-exact
-pending
-unavailable
-mismatch
-```
+- add a dedicated staging CLI/composition entry that uses the existing policy,
+  BudgetedModelGateway, InvocationStore, Trace and staging-result authority;
+- add a strict versioned sanitized JSON artifact contract and deterministic
+  writer/verifier;
+- add a dedicated `workflow_dispatch` workflow only;
+- bind live steps to the protected `live-provider-staging` environment;
+- reference `AVALAI_API_KEY` only in the protected live step environment;
+- enforce one concurrency group, `max_model_calls=1`, fixed Core-authored canary,
+  reviewed model/base URLs and no provider retry/failover;
+- run Ruff, strict MyPy and fake targeted tests before the protected secret step;
+- scan and reject prompt/output, credentials, headers, IP addresses, API-key
+  suffixes, cookies, raw responses and environment dumps from the artifact;
+- add static workflow tests proving there is no push, pull_request or schedule
+  trigger and ordinary CI cannot invoke live staging.
 
-Derive it deterministically from existing transaction evidence and detailed
-reconciliation codes. Preserve the detailed code tuple, immutable result hash,
-Invocation/Trace authority, one-call ceiling, zero-call replay and current
-cancellation/transport semantics. Add positive, pending, lookup-unavailable,
-identity/usage/cost mismatch, corruption, SQLite restart and replay tests.
-
-Do not add the protected live workflow, use credentials, make a real provider
-request, alter provider retry behavior or begin Phase 1.10 in the same
-increment. Update this Handoff with exact product SHA and CI evidence when that
-single step is complete.
+The workflow may be committed and statically validated, but do not dispatch it,
+use a credential or execute a real AvalAI request in that same increment. Update
+this Handoff with exact product SHA and full Core/Android CI evidence when the
+single boundary is complete.
