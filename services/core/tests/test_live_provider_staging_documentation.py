@@ -72,7 +72,7 @@ def test_runbook_matches_reviewed_policy_and_workflow() -> None:
         (
             "| Transaction lookup | "
             f"`{policy.transaction_poll_attempts}` attempts, "
-            f"`{policy.transaction_poll_interval_ms}` ms` interval |"
+            f"`{policy.transaction_poll_interval_ms} ms` interval |"
         ),
         f"| User API timeout | `{policy.user_api_timeout_ms} ms` |",
         (
