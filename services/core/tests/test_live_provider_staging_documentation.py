@@ -16,9 +16,9 @@ _WORKER = Path(".github/workflows/live-provider-staging.yml")
 _REVIEWED_WORKER_SHA = "47b65f359fd844067346d987f9102f6eeab911d9"
 _BOOTSTRAP_MAIN_SHA = "3bcb41437e3b8d2f497516ef9a214de5becf45e9"
 _DISPATCHER_BLOB_SHA = "a5fe7be975ee41dd0be222ab1c606f8b4bab87d7"
-_AUDITED_PR_HEAD = "096890150c7cf129eab19ebf4ac0bdf05e631e2f"
-_AUDITED_MERGE_PREVIEW = "caf563792dfbcf65da6a32965d9479824bd9541a"
-_AUDITED_CI_RUN_ID = "30781540524"
+_AUDITED_PR_HEAD = "901e858e3be6d92d9a64e1617fdcf972dec4c2c9"
+_AUDITED_MERGE_PREVIEW = "6cb97ab7263bb17f11699159e28b49795d2a99ec"
+_AUDITED_CI_RUN_ID = "30803363635"
 
 
 def _read(path: Path) -> str:
@@ -134,10 +134,10 @@ def test_readiness_does_not_infer_unavailable_connector_settings() -> None:
 
     assert "does **not** expose read operations" in text
     assert "workflow metadata/state" in text
-    assert "repository deployment environments" in text
+    assert "repository deployment Environment objects" in text
     assert "required reviewer configuration" in text
-    assert "environment-secret names or update timestamps" in text
-    assert "absence of an endpoint is not evidence" in text
+    assert "Environment-secret names or update timestamps" in text
+    assert "Absence of a Connector endpoint is not evidence" in text
     assert "The secret value was neither requested nor read." in text
 
 
