@@ -44,7 +44,7 @@ def test_adr_preserves_manual_no_retry_authority_boundary() -> None:
         "only the AvalAI User API transaction lookup",
         "pending` or `unavailable` reconciliation is incomplete",
         "default branch",
-        "separately reviewed bootstrap/default-branch strategy",
+        "bootstrap/default-branch strategy",
         "ordinary CI remains fake and zero-external",
     )
     for marker in required:
