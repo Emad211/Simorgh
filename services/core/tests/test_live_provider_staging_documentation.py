@@ -13,6 +13,9 @@ _READINESS = Path(
 )
 _CHECKLIST = Path("docs/validation/phase-1-9-live-acceptance-checklist.md")
 _WORKER = Path(".github/workflows/live-provider-staging.yml")
+_REVIEWED_WORKER_SHA = "47b65f359fd844067346d987f9102f6eeab911d9"
+_BOOTSTRAP_MAIN_SHA = "3bcb41437e3b8d2f497516ef9a214de5becf45e9"
+_DISPATCHER_BLOB_SHA = "a5fe7be975ee41dd0be222ab1c606f8b4bab87d7"
 
 
 def _read(path: Path) -> str:
@@ -98,11 +101,16 @@ def test_runbook_matches_reviewed_policy_and_topology() -> None:
     assert "gh run cancel <RUN_ID>" in text
 
 
-def test_readiness_audit_fails_closed_before_bootstrap_and_environment() -> None:
+def test_readiness_records_bootstrap_but_fails_closed_externally() -> None:
     text = _read(_READINESS)
 
     assert "Overall readiness: **NOT READY FOR LIVE DISPATCH**" in text
-    assert "Dispatcher merged to `main` | PENDING" in text
+    assert "Bootstrap pull request: #72 — merged" in text
+    assert _BOOTSTRAP_MAIN_SHA in text
+    assert _REVIEWED_WORKER_SHA in text
+    assert _DISPATCHER_BLOB_SHA in text
+    assert "Dispatcher on default branch | VERIFIED" in text
+    assert "Dispatcher workflow enabled/visible | UNVERIFIED" in text
     assert "Environment object exists | UNVERIFIED" in text
     assert "Required reviewers configured | UNVERIFIED" in text
     assert "Environment secret exists | UNVERIFIED" in text
