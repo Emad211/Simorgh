@@ -130,7 +130,7 @@ def test_readiness_records_repository_evidence_and_external_unknowns() -> None:
 
 
 def test_readiness_does_not_infer_unavailable_connector_settings() -> None:
-    text = _read(_READINESS)
+    text = " ".join(_read(_READINESS).split())
 
     assert "does **not** expose read operations" in text
     assert "workflow metadata/state" in text
