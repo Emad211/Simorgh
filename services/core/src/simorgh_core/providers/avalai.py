@@ -61,3 +61,6 @@ class AvalAIProvider:
     async def list_models(self) -> list[str]:
         page = await self._client.models.list()
         return sorted(model.id for model in page.data)
+
+    async def close(self) -> None:
+        await self._client.close()
