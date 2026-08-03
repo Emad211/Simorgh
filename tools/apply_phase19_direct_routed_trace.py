@@ -5,11 +5,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def replace_once(path: str, old: str, new: str) -> None:
+def replace_exact(path: str, old: str, new: str, *, count: int = 1) -> None:
     target = ROOT / path
     text = target.read_text(encoding="utf-8")
-    if text.count(old) != 1:
-        raise RuntimeError(f"expected one exact anchor in {path}")
+    if text.count(old) != count:
+        raise RuntimeError(f"expected {count} exact anchor(s) in {path}")
     target.write_text(text.replace(old, new), encoding="utf-8")
 
 
@@ -22,7 +22,7 @@ child_tests = "services/core/tests/test_trace_child_invocations.py"
 cli_tests = "services/core/tests/test_live_provider_staging_cli.py"
 validation = "docs/validation/phase-1-9-manual-staging-boundary.md"
 
-replace_once(
+replace_exact(
     contracts,
     '''class TaskKind(StrEnum):
     REPOSITORY_RESEARCH = "repository_research"
@@ -35,7 +35,7 @@ replace_once(
 ''',
 )
 
-replace_once(
+replace_exact(
     defaults,
     '''_PLANNING_BUDGET = TaskBudget(
     max_model_calls=2,
@@ -54,7 +54,7 @@ _PLANNING_BUDGET = TaskBudget(
     max_model_calls=2,
 ''',
 )
-replace_once(
+replace_exact(
     defaults,
     '''_PLANNING_MODEL_POLICY = ModelPolicy(
     allowed_tiers=(ModelTier.FAST, ModelTier.GENERAL, ModelTier.REASONING),
@@ -68,7 +68,7 @@ _PLANNING_MODEL_POLICY = ModelPolicy(
     allowed_tiers=(ModelTier.FAST, ModelTier.GENERAL, ModelTier.REASONING),
 ''',
 )
-replace_once(
+replace_exact(
     defaults,
     '''def default_specialist_definitions() -> tuple[SpecialistDefinition, ...]:
     return (
@@ -98,14 +98,14 @@ replace_once(
 ''',
 )
 
-replace_once(
+replace_exact(
     cli,
     '''        explicit_task_kind=TaskKind.DEVELOPMENT_PLANNING,
 ''',
     '''        explicit_task_kind=TaskKind.LIVE_PROVIDER_STAGING,
 ''',
 )
-replace_once(
+replace_exact(
     cli,
     '''    id_factory: Callable[[], UUID] = uuid4,
     propagate_internal_errors: bool = False,
@@ -115,7 +115,7 @@ replace_once(
 ) -> LiveProviderStagingArtifact:
 ''',
 )
-replace_once(
+replace_exact(
     cli,
     '''            except BaseException:
                 if propagate_internal_errors:
@@ -126,7 +126,7 @@ replace_once(
                 failure_code = LiveProviderStagingArtifactFailureCode.EXECUTION_FAILED
 ''',
 )
-replace_once(
+replace_exact(
     cli,
     '''                except Exception:
                     if propagate_internal_errors:
@@ -137,7 +137,7 @@ replace_once(
                     failure_code = LiveProviderStagingArtifactFailureCode.TRACE_INVALID
 ''',
 )
-replace_once(
+replace_exact(
     cli,
     '''                    except BaseException:
                         if propagate_internal_errors:
@@ -148,7 +148,7 @@ replace_once(
                         failure_code = (
 ''',
 )
-replace_once(
+replace_exact(
     cli,
     '''    except BaseException:
         if propagate_internal_errors:
@@ -159,31 +159,24 @@ replace_once(
         failure_code = LiveProviderStagingArtifactFailureCode.EXECUTION_FAILED
 ''',
 )
-replace_once(
+replace_exact(
     cli_tests,
     '''        id_factory=ids.__next__,
         propagate_internal_errors=True,
 ''',
     '''        id_factory=ids.__next__,
 ''',
-)
-replace_once(
-    cli_tests,
-    '''        id_factory=ids.__next__,
-        propagate_internal_errors=True,
-''',
-    '''        id_factory=ids.__next__,
-''',
+    count=2,
 )
 
-replace_once(
+replace_exact(
     children,
     '''from simorgh_core.agents.contracts import InvocationState
 ''',
     '''from simorgh_core.agents.contracts import InvocationState, RoutingState
 ''',
 )
-replace_once(
+replace_exact(
     children,
     '''def project_specialist_owned_child_invocations(
 ''',
@@ -228,7 +221,7 @@ replace_once(
 def project_specialist_owned_child_invocations(
 ''',
 )
-replace_once(
+replace_exact(
     children,
     '''    "project_classifier_invocation",
     "project_specialist_owned_child_invocations",
@@ -239,7 +232,7 @@ replace_once(
 ''',
 )
 
-replace_once(
+replace_exact(
     reconciliation,
     '''    ChildTraceProjectionReport,
     project_classifier_invocation,
@@ -251,7 +244,7 @@ replace_once(
     project_specialist_owned_child_invocations,
 ''',
 )
-replace_once(
+replace_exact(
     reconciliation,
     '''    context_events, contexts_by_invocation = _project_contexts(
 ''',
@@ -268,7 +261,7 @@ replace_once(
 ''',
 )
 
-replace_once(
+replace_exact(
     child_tests,
     '''    project_classifier_invocation,
     project_specialist_owned_child_invocations,
@@ -278,7 +271,7 @@ replace_once(
     project_specialist_owned_child_invocations,
 ''',
 )
-replace_once(
+replace_exact(
     child_tests,
     '''def _task_entry(
     request_id: UUID,
@@ -310,7 +303,7 @@ replace_once(
     )()
 ''',
 )
-replace_once(
+replace_exact(
     child_tests,
     '''def test_specialist_owned_tool_is_linked_by_unique_cancellation_owner() -> None:
 ''',
@@ -343,7 +336,7 @@ replace_once(
         ingested_at_ms=2_100,
     ).record
     invocation_store = InMemoryInvocationStore(wall_clock_millis=lambda: 1_500)
-    selected = invocation_store.begin(
+    invocation_store.begin(
         invocation_id=selected_id,
         request_id=request_id,
         agent_id="system.live-provider-staging",
@@ -354,7 +347,7 @@ replace_once(
         effect=InvocationEffect.READ_ONLY,
         provider_id="avalai",
         model_id="gpt-5.4-mini",
-    ).record
+    )
     unrelated = invocation_store.begin(
         invocation_id=unrelated_id,
         request_id=request_id,
@@ -406,7 +399,7 @@ def test_specialist_owned_tool_is_linked_by_unique_cancellation_owner() -> None:
 ''',
 )
 
-replace_once(
+replace_exact(
     validation,
     '''The CLI enters the existing Core lifespan and therefore reuses the native:
 ''',
@@ -416,7 +409,7 @@ explicit `live_provider_staging` task kind to the internal
 lifespan and reuses the native:
 ''',
 )
-replace_once(
+replace_exact(
     validation,
     '''It does not create a parallel invocation, budget, Trace or result authority.
 ''',
