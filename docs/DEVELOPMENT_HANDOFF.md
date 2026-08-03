@@ -3,26 +3,29 @@
 ## Current snapshot
 
 - Date: 2026-08-03
+- Audit time: `2026-08-03T13:11+03:30`
 - Repository: `Emad211/Simorgh`
 - Default/base branch: `main`
-- Current audited `main` commit:
+- Audited `main` commit:
   `3bcb41437e3b8d2f497516ef9a214de5becf45e9`
 - Working branch: `core/live-provider-staging`
 - Pull request: #70 — `Core: establish budgeted AvalAI staging policy and User API boundary`
-- Pull request state: open, Draft and mergeable
+- Pull request state at audit start: open, Draft and mergeable
 - Issue: #65 — `Phase 1 Step 1.9: explicitly budgeted AvalAI live-provider staging`
 - Issue state: open
 - Bootstrap pull request: #72 — merged
 - Phase: 1.9 — Live Provider Staging
+- Default-branch dispatcher blob:
+  `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`
 - Reviewed reusable-worker commit:
   `47b65f359fd844067346d987f9102f6eeab911d9`
-- Dispatcher blob SHA:
-  `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`
-- Latest product/evidence Head before this Handoff:
-  `59b46fc4e3a58607c3933c5b3cd920ac836a58ce`
-- Exact PR merge-preview commit validated by CI:
-  `b45382d985b9afd1e5f32e1e4a585a371ca9ac60`
-- Current operational readiness: **NOT READY FOR LIVE DISPATCH**
+- Non-live settings-audit product Head:
+  `ae2bc640226da8a117174f70530483c67b03a2c4`
+- Product merge-preview validated by CI:
+  `6d08d271e5c0f242b288e43fd442a7a772ada549`
+- Product CI: run `30803084979`, number `1058`, success
+- Operational readiness: **NOT READY FOR LIVE DISPATCH**
+- Approval package: **NOT PREPARED**
 - Live dispatcher/worker runs initiated by this work: `0`
 - Deployment approvals performed by this work: `0`
 - Credentials configured, read or used by this work: `0`
@@ -30,7 +33,7 @@
 - Real AvalAI User API requests initiated by this work: `0`
 
 The current Handoff commit is the working-branch `HEAD`; resolve its SHA before
-starting the next execution. Do not invent a self-referential SHA.
+starting the next execution. Do not write an assumed self-referential SHA.
 
 ## Governing invariants
 
@@ -38,364 +41,250 @@ Simorgh remains authoritative for Task and Invocation identity, durable state,
 budget, usage, replay, privacy and execution. Trace is immutable audit evidence;
 it cannot authorize execution or rewrite Invocation truth.
 
-Phase 1.9 preserves these constraints:
+Phase 1.9 continues to require:
 
 - ordinary Core runtime and ordinary CI are fake and zero-external;
-- only a manual default-branch dispatcher may enter the live staging topology;
-- one accepted staging run permits at most one model request;
-- no automatic retry, provider/model/domain failover, streaming or tools;
-- fixed Core-authored canary only; no user, conversation or repository content;
+- only the manual dispatcher on `main` may enter the live staging topology;
+- exactly one provider model request is permitted;
+- no automatic retry, provider/model/domain failover, streaming, tools or
+  connector calls;
+- the canary is fixed and Core-authored;
 - worst-case usage is reserved before provider entry;
-- uncertain provider entry remains durable `unknown` and never authorizes a
+- uncertain provider entry remains durable `unknown` and cannot authorize a
   replacement request;
 - exact replay adds zero provider, catalog, credit or transaction calls and zero
   committed usage;
-- only same-provider-request-ID User API polling is permitted after model entry;
-- pending or unavailable transaction reconciliation is incomplete, never zero
-  cost and never Phase 1.9 acceptance;
-- exact provider transaction data is billing evidence only;
+- after model entry only the same provider request ID may be queried through the
+  bounded User API reconciliation path;
+- pending or unavailable reconciliation is incomplete and never zero cost;
+- exact transaction evidence is billing evidence only;
 - prompt/output text, credentials, authorization headers, cookies, IP addresses,
   API-key suffixes, safety identifiers, raw HTTP bodies and environment dumps
-  never enter durable stores, logs or uploaded artifacts;
-- live execution requires separately verified environment protection and a new
-  explicit user approval bound to exact dispatcher SHA, worker SHA, ref, model
-  and hard maximum spend.
+  never enter stores, logs or uploaded artifacts;
+- live execution requires independently proved GitHub Environment protection and
+  a separate explicit user approval bound to exact dispatcher SHA, worker SHA,
+  ref, model and hard spend ceilings.
 
-## Completed zero-live-call topology increment
-
-### Selected topology
-
-ADR 0022 now selects a two-file fail-closed topology:
+## Implemented live-staging topology
 
 ```text
-main
+main @ 3bcb41437e3b8d2f497516ef9a214de5becf45e9
   .github/workflows/live-provider-staging-dispatch.yml
   trigger: workflow_dispatch only
   input: approved_dispatcher_sha only
   worker SHA: hardcoded
   model: hardcoded
-  secrets forwarded: none
+  forwarded secrets: none
     |
     v
-exact reviewed worker commit
+worker @ 47b65f359fd844067346d987f9102f6eeab911d9
   .github/workflows/live-provider-staging.yml
   trigger: workflow_call only
-  caller repository/ref/workflow validated
-  exact worker checkout validated
-  fake pre-secret gates
-  protected environment live-provider-staging
-  environment secret AVALAI_API_KEY
-  one governed canary and exact replay
+  validates caller repository/ref/workflow path
+  validates exact worker SHA and fixed model
+  runs fake quality gates before Environment access
+  live job names environment live-provider-staging
+  AVALAI_API_KEY is referenced only in the protected step
 ```
 
-The dispatcher exists on `main`; the complete Phase 1.9 worker remains pinned to
-an immutable reviewed commit rather than a branch or tag.
+The dispatcher, worker, policy, durable Invocation/Trace/staging-result
+composition, sanitized artifact and no-retry uncertainty semantics were completed
+in earlier Phase 1.9 increments. This increment changed no runtime or live
+workflow behavior.
 
-### Default-branch dispatcher
+## Completed non-live GitHub settings audit
 
-`.github/workflows/live-provider-staging-dispatch.yml`:
+### Repository and CI state
 
-- has `workflow_dispatch` only;
-- exposes one required string input: `approved_dispatcher_sha`;
-- requires repository `Emad211/Simorgh`;
-- requires ref `refs/heads/main`;
-- requires `approved_dispatcher_sha == github.sha`;
-- hardcodes worker SHA
-  `47b65f359fd844067346d987f9102f6eeab911d9`;
-- places that same SHA in the reusable-workflow `uses` reference and
-  `reviewed_commit_sha` input;
-- hardcodes model `gpt-5.4-mini`;
-- has read-only contents permission;
-- uses non-cancelling dispatcher concurrency;
-- contains no provider key reference, `secrets` field or `secrets: inherit`;
-- cannot accept worker SHA, model, provider, prompt or budget at dispatch time.
+The following were proved through connected GitHub repository operations:
 
-The reviewed dispatcher blob SHA is
-`a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`.
+- dispatcher file exists on `main`;
+- dispatcher blob on `main`, bootstrap branch and PR #70 is
+  `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`;
+- dispatcher is `workflow_dispatch` only and exposes only
+  `approved_dispatcher_sha`;
+- worker and model are hardcoded;
+- dispatcher forwards no secret and has no `secrets: inherit`;
+- worker is `workflow_call` only and validates the expected repository, `main`,
+  dispatcher path, exact worker SHA and fixed model;
+- PR #70 had zero conversation comments, zero submitted reviews and zero inline
+  review threads at the audit point;
+- Issue #65 remained open;
+- the exact merge-preview passed full Core and Android CI.
 
-### Reusable worker
+### Connector capability audit
 
-`.github/workflows/live-provider-staging.yml`:
+The complete GitHub Connector surface available in this execution was inspected.
+It exposed repository files, commits, pull requests, issues, reviews, CI runs,
+jobs, logs and artifacts. It did **not** expose read operations for:
 
-- has `workflow_call` only;
-- has no direct manual, push, pull-request or schedule trigger;
-- validates caller repository `Emad211/Simorgh`;
-- validates caller ref `refs/heads/main`;
-- validates caller workflow ref
-  `Emad211/Simorgh/.github/workflows/live-provider-staging-dispatch.yml@refs/heads/main`;
-- validates model `gpt-5.4-mini`;
-- checks out and verifies the exact reviewed worker commit;
-- runs Ruff, strict MyPy and fake staging suites before the credential boundary;
-- binds only `live-canary` to environment `live-provider-staging`;
-- references environment secret `AVALAI_API_KEY` exactly once;
-- retains one-call, no-retry, no-failover, exact reconciliation and sanitized
-  artifact controls.
+- workflow metadata/state such as `active` or `disabled_manually`;
+- deployment Environment objects;
+- required reviewer rules;
+- prevention of self-review;
+- Environment deployment branch/tag policies;
+- Environment secret names or update timestamps.
 
-### Bootstrap PR #72
+No unavailable setting was inferred. Lack of a Connector endpoint is not evidence
+that a GitHub setting is absent. The provider secret value was neither requested
+nor read.
 
-A separate branch `ops/live-provider-staging-bootstrap` was created from `main`.
-PR #72 contained exactly one product path:
+### Verified settings
 
 ```text
-.github/workflows/live-provider-staging-dispatch.yml
+default branch: VERIFIED main
+dispatcher file on main: VERIFIED
+dispatcher blob identity: VERIFIED
+dispatcher trigger/input: VERIFIED
+dispatcher worker SHA/model pinning: VERIFIED
+dispatcher secret forwarding: VERIFIED absent
+worker caller/SHA/model checks: VERIFIED
+worker environment name in YAML: VERIFIED
+worker secret reference placement: VERIFIED
+ordinary CI isolation: VERIFIED
+full merge-preview Core/Android CI: VERIFIED
 ```
 
-Evidence:
-
-- bootstrap Head: `7f8ad3bc7c3eaac1286adf577823a9cd99a2a3c2`;
-- changed files: `1`;
-- additions: `49`;
-- deletions: `0`;
-- dispatcher blob: `a5fe7be975ee41dd0be222ab1c606f8b4bab87d7`;
-- CI run `30781058656`, run number `1050`, success;
-- merge commit on `main`:
-  `3bcb41437e3b8d2f497516ef9a214de5becf45e9`.
-
-After merge, fetching the dispatcher from `main` returned the same blob SHA as
-the PR #70 and bootstrap copies. The bootstrap was merged without dispatching the
-workflow, approving a deployment, configuring/reading a key or contacting
-AvalAI.
-
-### ADR, runbook, readiness and checklist
-
-Updated documents:
-
-- `docs/adr/0022-explicitly-budgeted-live-provider-staging.md`
-- `docs/LIVE_PROVIDER_STAGING_RUNBOOK.md`
-- `docs/validation/phase-1-9-protected-environment-readiness.md`
-- `docs/validation/phase-1-9-live-acceptance-checklist.md`
-
-They now cover:
-
-- exact two-SHA approval identity;
-- bootstrap PR and blob-equality procedure;
-- default-branch dispatcher and exact reusable-worker pin;
-- environment setup, independent reviewer, self-review prevention and `main`
-  deployment restriction;
-- environment-scoped secret handling with no secret forwarding;
-- manual dispatcher procedure and worker/environment gate sequence;
-- exact artifact verification and result interpretation;
-- duplicate-charge, unknown Invocation, cancellation, cost mismatch, credential
-  exposure and privacy incident response;
-- credential rotation and dispatcher emergency disablement;
-- exact acceptance and post-run evidence fields.
-
-Emergency controls now target the dispatcher:
+### Unverified external settings
 
 ```text
-gh workflow disable live-provider-staging-dispatch.yml
-gh run cancel <RUN_ID>
+dispatcher enabled and visible in Actions: UNVERIFIED
+Environment live-provider-staging exists: UNVERIFIED
+independent required reviewer configured: UNVERIFIED
+prevention of self-review enabled: UNVERIFIED
+deployment restriction allows only main: UNVERIFIED
+Environment secret AVALAI_API_KEY exists: UNVERIFIED
+Environment secret update timestamp: UNVERIFIED
+no weaker repository/organization secret fallback: UNVERIFIED
+credential provider validity/restriction: UNVERIFIED
+provider credit and current model availability: UNVERIFIED
+independent deployment approval: UNVERIFIED
+explicit user spend approval: NOT GRANTED
 ```
 
-Disabling or cancelling does not prove provider non-entry and never authorizes a
-replacement model request.
+## Approval-package decision
 
-## Static test coverage
-
-`services/core/tests/test_live_provider_staging_workflow.py` now proves:
-
-- dispatcher is `workflow_dispatch` only and `main`-bound;
-- only `approved_dispatcher_sha` is exposed;
-- exact worker SHA appears consistently in the reviewed constant, `uses` and
-  worker input;
-- model is fixed;
-- no secret is forwarded or referenced by the dispatcher;
-- worker is `workflow_call` only;
-- worker validates caller repository/ref/workflow, checkout SHA and model;
-- environment secret remains after fake gates;
-- actions/dependencies remain pinned;
-- ordinary CI remains isolated.
-
-`services/core/tests/test_live_provider_staging_documentation.py` proves:
-
-- ADR, runbook, readiness and checklist agree on topology and limits;
-- merged bootstrap commit, worker SHA and dispatcher blob are recorded;
-- readiness remains fail-closed for unavailable external settings;
-- two-SHA approval and rejection states remain explicit;
-- documentation tests execute before the worker secret boundary.
-
-The full Core suite increased from 570 to 573 tests.
-
-## Validation evidence
-
-### Frozen reusable worker
+The approval package was not prepared because the non-live prerequisites above
+were not all proved. The values below are retained only as a candidate identity
+for the next audit; they are not authorization:
 
 ```text
-Worker commit: 47b65f359fd844067346d987f9102f6eeab911d9
-Workflow: CI
-Run ID: 30780786562
-Run number: 1047
-Conclusion: success
-core-quality: success
-android-quality: success
-real provider/User API calls: zero
-live dispatches: zero
+dispatcher_sha_on_main: 3bcb41437e3b8d2f497516ef9a214de5becf45e9
+worker_sha: 47b65f359fd844067346d987f9102f6eeab911d9
+ref: refs/heads/main
+model: gpt-5.4-mini
+max_model_calls: 1
+max_input_tokens: 128
+max_output_tokens: 16
+max_estimated_cost_microusd: 20000
+max_exact_cost: 0.01 UNIT
+minimum_credit_floor: 0.10 UNIT
 ```
 
-Artifacts:
-
-- `core-quality-diagnostics` — ID `8843562393`,
-  SHA-256 `4f7d6e459faff2d99e2fe3232c7b8173daa73ff51c37794328e0cb7930d9ca0a`
-- `core-test-report` — ID `8843562647`,
-  SHA-256 `1d8973e3e6d4b236ac10c53160cfde9af40aa2b76fcd178bcf65c33c5efe4eec`
-- `android-build-diagnostics` — ID `8843569679`,
-  SHA-256 `110b9b62e93d64fe885e551f12bd84d95980a77b997a7f3d09d711d687aa068b`
-- `simorgh-android-debug` — ID `8843570185`,
-  SHA-256 `576a9aaa83e2b99e5c982494ed990176d0faf1ac5debae310dcef29cefb3ccb1`
-
-### Bootstrap PR #72
-
-```text
-Bootstrap Head: 7f8ad3bc7c3eaac1286adf577823a9cd99a2a3c2
-Workflow: CI
-Run ID: 30781058656
-Run number: 1050
-Conclusion: success
-core-quality: success
-android-quality: success
-changed product files: 1
-real provider/User API calls: zero
-live dispatches: zero
-```
-
-Artifacts:
-
-- `core-quality-diagnostics` — ID `8843653822`,
-  SHA-256 `d14eb11b3e2cf13c0fa2879bce134f09111d0ab27b8737e75751fd864c82ff41`
-- `core-test-report` — ID `8843654069`,
-  SHA-256 `35903cd49bd7a1dfef8bc46e232a97b442acbf8646a7ac0e60aa6d251465791d`
-- `android-build-diagnostics` — ID `8843659984`,
-  SHA-256 `6f0b4af292b9b386dc8e93cf4b620863e4f6f7349e1c64dc6fc34f51180f7f56`
-- `simorgh-android-debug` — ID `8843660242`,
-  SHA-256 `102791cca3617e74a4a655a94536288097e0884a53e8fd1a619dbaae20fb6d16`
-
-### Final PR #70 merge preview before Handoff
-
-GitHub built merge-preview commit
-`b45382d985b9afd1e5f32e1e4a585a371ca9ac60` from product Head
-`59b46fc4e3a58607c3933c5b3cd920ac836a58ce` and current `main`
-`3bcb41437e3b8d2f497516ef9a214de5becf45e9`.
-
-```text
-Workflow: CI
-Run ID: 30781246040
-Run number: 1053
-Conclusion: success
-Ruff: all checks passed
-strict MyPy: no issues in 83 source files
-Core: 573 passed, 2 dependency warnings, 12.12s
-Android assembleDebug: passed
-Android testDebugUnitTest: passed
-Android lintDebug: passed
-Debug APK upload: passed
-real provider/User API calls: zero
-live dispatches: zero
-```
-
-Artifacts:
-
-- `core-quality-diagnostics` — ID `8843722877`,
-  SHA-256 `cbd39fae6076adfa52fb622362c8d7dcf1df22313ec08f62c4d24ad640a907f7`
-- `core-test-report` — ID `8843723033`,
-  SHA-256 `fb9c0fe0ff265e3624d02937505c56c073ed251fdbdefc44432341ee2c39190b`
-- `android-build-diagnostics` — ID `8843727010`,
-  SHA-256 `12039e6fa056a5649784b7bc36c5f9cc08276fd2c50e5ff2485f49c9164b9c8a`
-- `simorgh-android-debug` — ID `8843727477`,
-  SHA-256 `f7e7d3bac1638f409d627b2b9b38e4add6dd900b31038280065aa6ec80667eba`
-
-The working branch was 118 commits ahead and two commits behind `main` after the
-bootstrap merge because the bootstrap history was created separately. The
-content-equivalent dispatcher is already present on both sides, PR #70 remains
-mergeable, and CI #1053 validated GitHub's exact current-main merge preview. Do
-not claim the branch history is synchronized; re-audit ahead/behind and the merge
-preview before any final PR merge.
+Every value must be re-resolved after any repository or GitHub configuration
+change. Implementation work, CI or this candidate identity does not constitute
+permission to dispatch.
 
 ## Files changed by this increment
 
 From previous Handoff Head
-`e62538d16e67dfee50fe01595a4d21a9e5be307b` to product/evidence Head
-`59b46fc4e3a58607c3933c5b3cd920ac836a58ce`, this increment changes eight paths:
+`096890150c7cf129eab19ebf4ac0bdf05e631e2f` to audit product Head
+`ae2bc640226da8a117174f70530483c67b03a2c4`, the product increment changes only:
 
-- `.github/workflows/live-provider-staging-dispatch.yml`
-- `.github/workflows/live-provider-staging.yml`
-- `docs/LIVE_PROVIDER_STAGING_RUNBOOK.md`
-- `docs/adr/0022-explicitly-budgeted-live-provider-staging.md`
-- `docs/validation/phase-1-9-live-acceptance-checklist.md`
 - `docs/validation/phase-1-9-protected-environment-readiness.md`
+- `docs/validation/phase-1-9-live-acceptance-checklist.md`
 - `services/core/tests/test_live_provider_staging_documentation.py`
-- `services/core/tests/test_live_provider_staging_workflow.py`
 
-This Handoff update changes only `docs/DEVELOPMENT_HANDOFF.md` in addition. No
-provider runtime, model gateway, budget policy, credential, generated database,
-WAL/SHM, Android runtime or live artifact was changed by this topology increment.
+This Handoff update adds only `docs/DEVELOPMENT_HANDOFF.md`.
 
-## Resolved blocker
+No provider runtime, model policy, workflow trigger, Environment name, secret
+reference, dependency, Android source, generated database, WAL/SHM or credential
+was changed.
 
-The structural default-branch `workflow_dispatch` blocker is resolved:
+## Static test coverage
 
-- dispatcher exists on `main`;
-- it is byte-identical to the reviewed PR #70 copy;
-- it pins an exact green worker commit;
-- it has no automatic trigger or secret forwarding.
+Two additional documentation-contract tests were added, bringing the full Core
+suite to 575 tests. The documentation suite now proves:
 
-This does **not** make the system operationally ready or authorize execution.
+- exact repository, worker, dispatcher, PR, merge-preview and CI identities are
+  retained in readiness evidence;
+- unavailable Connector settings remain explicitly `UNVERIFIED`;
+- the audit records that no secret value was requested or read;
+- checklist state remains `non_live_prerequisites_complete: false`;
+- approval package remains `NOT PREPARED`;
+- no Environment/reviewer/secret field can silently become approved through a
+  documentation edit;
+- all previous topology, policy, no-retry, privacy and pre-secret gates remain
+  locked.
 
-## Unverified prerequisites and remaining risks
+The first candidate run (#1057) reached 574 passing tests and one formatting-only
+Markdown assertion failure. Ruff, MyPy and Android were otherwise unaffected.
+The assertion was changed to compare normalized whitespace.
 
-1. **Dispatcher enabled/visible state:** the current connector can fetch the file
-   from `main` but cannot prove Actions reports the workflow as enabled or shows
-   the Run workflow button. Verify without starting a run.
-2. **Environment object:** existence of `live-provider-staging` is unverified.
-3. **Required reviewer:** reviewer list and independent approval policy are
-   unverified.
-4. **Self-review prevention:** setting is unverified.
-5. **Deployment restriction:** selected branch/tag policy allowing only `main` is
-   unverified.
-6. **Environment secret metadata:** presence and update time for
-   `AVALAI_API_KEY` are unverified; never retrieve its value.
-7. **Secret scope:** absence of a weaker relied-upon repository/organization
-   duplicate is unverified.
-8. **Provider credential validity/restriction:** unverified.
-9. **Provider account credit/model availability:** may only be proven in an
-   explicitly approved preflight.
-10. **Explicit approval:** implementation and bootstrap merge are not permission
-    to spend. No exact two-SHA/ref/model/cost approval has been granted.
-11. **No live evidence:** no provider request ID, exact transaction or sanitized
-    live artifact exists.
-12. **Exact acceptance:** pending/unavailable reconciliation remains incomplete.
-13. **Branch history divergence:** re-audit current main/head/merge preview before
-    final merge; do not rely on old ahead/behind counts.
-14. **GitHub plan/settings:** environment protection behavior must be verified in
-    the actual repository settings.
+## Validation evidence
 
-## Remaining Phase 1.9 sequence
+Exact audit product validation:
 
-1. Verify dispatcher enabled/visible state without dispatching it.
-2. Configure or independently verify environment `live-provider-staging`:
-   required reviewer, self-review prevention, `main`-only deployment restriction
-   and environment secret name/update metadata.
-3. Confirm no live run is queued, active, awaiting approval or unresolved.
-4. Populate Section A/B evidence in the live-acceptance checklist without marking
-   any unverified statement as true.
-5. Re-resolve current `main` dispatcher SHA and confirm it still contains the
-   reviewed dispatcher blob and worker pin.
-6. Present an explicit approval packet to the user containing:
-   - current dispatcher SHA on `main`;
-   - worker SHA `47b65f359fd844067346d987f9102f6eeab911d9`;
-   - ref `refs/heads/main`;
-   - model `gpt-5.4-mini`;
-   - maximum one model call;
-   - 128 input tokens;
-   - 16 output tokens;
-   - 20,000 micro-USD estimated ceiling;
-   - `0.01 UNIT` exact-cost ceiling;
-   - `0.10 UNIT` remaining-credit floor.
-7. Do not dispatch until the user separately and explicitly approves that exact
-   packet.
-8. After approval, execute once, require exact transaction reconciliation,
-   verify sanitized artifact and prove zero-call replay.
-9. Re-audit PR comments/reviews/checks and merge PR #70 only after complete live
-   acceptance.
+```text
+Product Head: ae2bc640226da8a117174f70530483c67b03a2c4
+Merge preview: 6d08d271e5c0f242b288e43fd442a7a772ada549
+Workflow: CI
+Run ID: 30803084979
+Run number: 1058
+Conclusion: success
+core-quality: success
+android-quality: success
+Ruff: all checks passed
+strict MyPy: no issues in 83 source files
+Core: 575 passed, 2 dependency warnings, 12.85s
+Android assembleDebug: passed
+Android testDebugUnitTest: passed
+Android lintDebug: passed
+Debug APK upload: passed
+live workflow dispatches: zero
+credential access: zero
+real AvalAI/User API calls: zero
+```
+
+Artifacts from run `30803084979`:
+
+- `core-quality-diagnostics` — ID `8851630583`,
+  SHA-256 `f9d97aa1978d3d043c57d25e80f9368edc89e9bbd991add176f089d64f4c4aa2`
+- `core-test-report` — ID `8851631134`,
+  SHA-256 `1ecc66854bdeceb7211bb65dc7671e6d94fa7e9a14d1ec8892371b2983c77953`
+- `android-build-diagnostics` — ID `8851641252`,
+  SHA-256 `b9cff75a807bd7bbf4f2d4ceb52bb90c719134b124a3ff207018e9dc07705edd`
+- `simorgh-android-debug` — ID `8851642241`,
+  SHA-256 `d5436ac5a7bdefbfca47f0cab705e6d6861ddf0ca50fd99e5d2480d763b7c7a3`
+
+## Current blockers
+
+1. Workflow state (`active`/disabled and visible in Actions) is not available
+   through the connected tool surface.
+2. Environment existence and protection settings are not available.
+3. Environment-secret name/update metadata is not available.
+4. Credential validity, provider credit and model availability remain live
+   preflight facts and are not proved.
+5. No exact live approval has been granted.
+6. No canary, provider request ID, exact transaction or sanitized live artifact
+   exists.
+7. PR #70 remains Draft and Phase 1.9 merge acceptance is incomplete.
+
+## Remaining Phase 1.9 work
+
+1. Use an authenticated GitHub UI/API surface that can read workflow state,
+   Environment protection and Environment-secret metadata without retrieving the
+   secret value.
+2. Record only proved settings; keep unavailable settings `UNVERIFIED`.
+3. Re-resolve current `main`, dispatcher blob, worker SHA and merge-preview after
+   any setting or repository change.
+4. Prepare the exact approval package only when every non-live prerequisite is
+   proved.
+5. Obtain separate explicit user approval for dispatcher SHA, worker SHA,
+   `refs/heads/main`, `gpt-5.4-mini` and all hard ceilings.
+6. Dispatch once, require independent Environment approval, reconcile exact
+   transaction evidence and prove zero-call/zero-charge replay.
+7. Record sanitized evidence, complete review audit and merge PR #70.
 
 ## Mandatory reads for the next execution
 
@@ -408,53 +297,52 @@ This does **not** make the system operationally ready or authorize execution.
 - `docs/LIVE_PROVIDER_STAGING_RUNBOOK.md`
 - `docs/validation/phase-1-9-protected-environment-readiness.md`
 - `docs/validation/phase-1-9-live-acceptance-checklist.md`
-- `.github/workflows/live-provider-staging-dispatch.yml` from both `main` and PR
-  #70;
-- `.github/workflows/live-provider-staging.yml` at worker commit
-  `47b65f359fd844067346d987f9102f6eeab911d9`;
-- `.github/constraints/live-provider-staging.txt`;
-- `services/core/src/simorgh_core/agents/live_provider_staging.py`;
-- `services/core/src/simorgh_core/agents/live_provider_staging_contracts.py`;
-- `services/core/src/simorgh_core/agents/live_provider_staging_artifact.py`;
-- `services/core/src/simorgh_core/agents/live_provider_staging_cli.py`;
-- `services/core/src/simorgh_core/agents/live_provider_staging_trace.py`;
-- `services/core/src/simorgh_core/agents/model_gateway.py`;
-- `services/core/src/simorgh_core/providers/avalai.py`;
-- `services/core/src/simorgh_core/providers/avalai_user_api.py`;
-- `services/core/tests/test_live_provider_staging_documentation.py`;
-- `services/core/tests/test_live_provider_staging_workflow.py`;
-- `.github/workflows/ci.yml`.
+- `docs/validation/phase-1-9-manual-staging-boundary.md`
+- `.github/workflows/live-provider-staging-dispatch.yml`
+- `.github/workflows/live-provider-staging.yml`
+- `.github/workflows/ci.yml`
+- `.github/constraints/live-provider-staging.txt`
+- `services/core/src/simorgh_core/agents/live_provider_staging.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_contracts.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_artifact.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_cli.py`
+- `services/core/src/simorgh_core/agents/live_provider_staging_trace.py`
+- `services/core/src/simorgh_core/agents/model_gateway.py`
+- `services/core/src/simorgh_core/providers/avalai.py`
+- `services/core/src/simorgh_core/providers/avalai_user_api.py`
+- `services/core/tests/test_live_provider_staging_artifact.py`
+- `services/core/tests/test_live_provider_staging_cli.py`
+- `services/core/tests/test_live_provider_staging_documentation.py`
+- `services/core/tests/test_live_provider_staging_workflow.py`
 
-Also inspect all PR #70 comments, review submissions, inline review threads,
-changed files and checks created after product/evidence Head
-`59b46fc4e3a58607c3933c5b3cd920ac836a58ce`, plus any change to `main` after
-`3bcb41437e3b8d2f497516ef9a214de5becf45e9`.
+Also inspect all PR #70 comments, submitted reviews, inline review threads,
+changed files and checks created after audit product Head
+`ae2bc640226da8a117174f70530483c67b03a2c4`.
 
 ## Exact continuation point
 
-First resolve the current working-branch Head and verify the full Core and
-Android CI triggered by this Handoff update. If either gate is not green, fix
-only that exact failure.
+First resolve current `main`, branch Head, PR #70 merge-preview, Issue #65, CI,
+comments, reviews and review threads. Verify full Core and Android CI triggered by
+this Handoff update. Fix only an exact failure before proceeding.
 
-Then perform one narrow **non-dispatch operational-readiness verification**:
+Then perform one narrow **non-live GitHub configuration evidence increment**:
 
-- resolve current `main`, PR #70 Head, merge preview, Issue #65 and all current
-  checks/reviews;
-- confirm the dispatcher file remains present on `main`, byte-identical to the
-  reviewed blob and pinned to the reviewed worker commit;
-- verify, without pressing Run workflow, whether the dispatcher is enabled and
-  visible in Actions;
-- inspect environment `live-provider-staging` settings without reading any secret
-  value;
-- verify required reviewer, self-review prevention, `main`-only deployment
-  restriction and `AVALAI_API_KEY` name/update metadata;
-- record unavailable evidence as `UNVERIFIED`, never infer it;
-- populate the checklist with only proven repository/environment evidence;
-- if all non-live prerequisites are proven, prepare the exact approval packet for
-  the user but do not dispatch it;
-- update this Handoff with exact SHA, CI, settings evidence, remaining blockers
-  and the next continuation point.
+- use an authenticated GitHub UI/API surface that exposes workflow state and
+  deployment Environment metadata;
+- verify the dispatcher is enabled and visible without starting it;
+- verify Environment `live-provider-staging` exists;
+- verify at least one independent required reviewer;
+- verify prevention of self-review;
+- verify deployment restrictions allow only `main`;
+- verify Environment secret name `AVALAI_API_KEY` and its update timestamp without
+  reading or reproducing the value;
+- verify no weaker repository/organization secret fallback is relied upon when
+  the available surface permits that determination;
+- update readiness and checklist with only directly proved facts;
+- leave every unavailable fact `UNVERIFIED`;
+- prepare the exact approval package only if all non-live prerequisites pass.
 
-Do not dispatch the workflow, approve a deployment, configure/read/use a
-credential, call AvalAI/User API, infer environment settings, or treat this
-implementation request as live-spend approval.
+Do not press Run workflow, dispatch a workflow, approve a deployment, configure,
+read or rotate a credential, call AvalAI/User API, or interpret implementation
+work as live authorization. Run full Core and Android gates and update this
+Handoff with exact evidence.
