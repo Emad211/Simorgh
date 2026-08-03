@@ -1,0 +1,49 @@
+name: Phase 1.9 Live Provider Staging Dispatcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_dispatcher_sha:
+        description: Exact approved current main commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-provider-staging-dispatch
+  cancel-in-progress: false
+
+jobs:
+  validate-dispatcher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify immutable default-branch dispatcher
+        shell: bash
+        env:
+          APPROVED_DISPATCHER_SHA: ${{ inputs.approved_dispatcher_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+          REVIEWED_WORKER_SHA: 47b65f359fd844067346d987f9102f6eeab911d9
+          REVIEWED_MODEL_ID: gpt-5.4-mini
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_DISPATCHER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REVIEWED_WORKER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$DISPATCH_REPOSITORY" = "Emad211/Simorgh"
+          test "$DISPATCH_REF" = "refs/heads/main"
+          test "$APPROVED_DISPATCHER_SHA" = "$DISPATCH_SHA"
+          test "$REVIEWED_MODEL_ID" = "gpt-5.4-mini"
+
+  call-reviewed-worker:
+    needs: validate-dispatcher
+    permissions:
+      contents: read
+    uses: Emad211/Simorgh/.github/workflows/live-provider-staging.yml@47b65f359fd844067346d987f9102f6eeab911d9
+    with:
+      reviewed_commit_sha: 47b65f359fd844067346d987f9102f6eeab911d9
+      model_id: gpt-5.4-mini
