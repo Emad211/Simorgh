@@ -40,6 +40,36 @@ jobs:
           expected=$'.github/workflows/phase19-direct-routed-trace-transfer.yml\ntools/apply_phase19_direct_routed_trace.py'
           test "$actual" = "$expected"
 
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tools/apply_phase19_direct_routed_trace.py")
+          text = path.read_text(encoding="utf-8")
+          block = '''replace_once(
+              cli_tests,
+              ''' + "'''" + '''        id_factory=ids.__next__,
+              propagate_internal_errors=True,
+          ''' + "'''" + ''',
+              ''' + "'''" + '''        id_factory=ids.__next__,
+          ''' + "'''" + ''',
+          )
+          '''
+          if text.count(block) != 2:
+              raise RuntimeError("debug-hook removal anchors changed")
+          replacement = '''target = ROOT / cli_tests
+          text = target.read_text(encoding="utf-8")
+          old = ''' + "'''" + '''        id_factory=ids.__next__,
+              propagate_internal_errors=True,
+          ''' + "'''" + '''
+          new = ''' + "'''" + '''        id_factory=ids.__next__,
+          ''' + "'''" + '''
+          if text.count(old) != 2:
+              raise RuntimeError("expected two debug-hook anchors in CLI tests")
+          target.write_text(text.replace(old, new), encoding="utf-8")
+          '''
+          path.write_text(text.replace(block + block, replacement), encoding="utf-8")
+          PY
+
           python tools/apply_phase19_direct_routed_trace.py
           ruff check . --exclude tools/apply_phase19_direct_routed_trace.py --fix
           ruff check . --exclude tools/apply_phase19_direct_routed_trace.py
