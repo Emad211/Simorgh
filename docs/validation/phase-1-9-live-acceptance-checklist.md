@@ -1,10 +1,36 @@
 # Phase 1.9 live-acceptance checklist
 
-Status: **NOT READY — do not dispatch**
+Status: **NOT READY — DO NOT DISPATCH**
 
-This checklist authorizes at most one manually approved AvalAI canary after all
-blocking readiness items are satisfied. Checking a box is an operator assertion
-backed by current evidence. Do not pre-check external GitHub/provider settings.
+This checklist can authorize at most one manually approved AvalAI canary only
+after every non-live prerequisite is proved and the user separately approves the
+exact identity and hard spend limits. Repository implementation, CI, bootstrap
+merge and this checklist are not live authorization.
+
+## Current non-live evidence snapshot
+
+```text
+audit_timestamp: 2026-08-03T13:11+03:30
+dispatcher_main_sha: 3bcb41437e3b8d2f497516ef9a214de5becf45e9
+dispatcher_blob_sha: a5fe7be975ee41dd0be222ab1c606f8b4bab87d7
+worker_sha: 47b65f359fd844067346d987f9102f6eeab911d9
+pr_head_sha: 096890150c7cf129eab19ebf4ac0bdf05e631e2f
+merge_preview_sha: caf563792dfbcf65da6a32965d9479824bd9541a
+ci_run_id: 30781540524
+ci_run_number: 1054
+ci_result: success
+core_tests: 573 passed
+non_live_prerequisites_complete: false
+approval_package_status: NOT PREPARED
+live_dispatches: 0
+credentials_read_or_used: 0
+real_provider_calls: 0
+real_user_api_calls: 0
+```
+
+Repository and CI identity are verified. Workflow enabled/visibility state,
+Environment protection and environment-secret metadata remain `UNVERIFIED`
+because the available Connector does not expose those read endpoints.
 
 ## Fixed reviewed topology and limits
 
@@ -41,19 +67,21 @@ user_api_max_response_bytes: 256000
 artifact_retention_days: 30
 ```
 
-Any changed path, SHA or value requires a new reviewed commit, full CI and
-explicit approval.
+Any changed path, SHA or limit requires a new reviewed commit, full CI, a fresh
+non-live audit and new explicit approval.
 
-## A. Bootstrap and repository evidence
+## A. Repository and bootstrap evidence
 
-- [ ] Record the exact lowercase 40-character dispatcher SHA currently on
-  `main`:
+Current repository evidence has been recorded, but the operator must recheck it
+immediately before requesting live approval.
+
+- [ ] Record the current lowercase 40-character dispatcher SHA on `main`:
 
   ```text
   approved_dispatcher_sha: _____________________________________
   ```
 
-- [ ] Record the exact lowercase 40-character reusable worker SHA:
+- [ ] Record the reviewed reusable worker SHA:
 
   ```text
   approved_worker_sha: _________________________________________
@@ -66,66 +94,72 @@ explicit approval.
   ```
 
 - [ ] `git rev-parse main` equals `approved_dispatcher_sha`.
-- [ ] The dispatcher file is present on `main` and GitHub exposes **Run
-  workflow** without starting a run.
-- [ ] The dispatcher was merged through a separate bootstrap PR whose product
-  diff contains only the dispatcher file.
+- [ ] Dispatcher file exists on `main` with the reviewed blob SHA.
+- [ ] The bootstrap PR product diff contains only the dispatcher file.
 - [ ] Bootstrap Core and Android CI are green.
-- [ ] The dispatcher file on `main` is byte-identical to the reviewed PR #70
-  copy.
-- [ ] Dispatcher `jobs.<id>.uses` references the worker using
-  `@approved_worker_sha`.
+- [ ] Dispatcher `jobs.<id>.uses` references `@approved_worker_sha`.
 - [ ] Dispatcher `with.reviewed_commit_sha` equals `approved_worker_sha`.
 - [ ] Dispatcher hardcodes `model_id: gpt-5.4-mini`.
 - [ ] Dispatcher exposes no worker SHA, model, provider, prompt or budget input.
 - [ ] Dispatcher contains no `secrets` or `secrets: inherit` entry.
-- [ ] Dispatcher validates repository `Emad211/Simorgh`, ref
+- [ ] Dispatcher verifies repository `Emad211/Simorgh`, ref
   `refs/heads/main` and `approved_dispatcher_sha == github.sha`.
 - [ ] Worker is `workflow_call` only and validates caller repository/ref/workflow
   path, exact checkout SHA and fixed model.
 - [ ] PR #70 changed-file audit is complete.
 - [ ] PR comments, review submissions and inline threads are empty or resolved.
-- [ ] Core and Android CI are green on the exact worker tree.
-- [ ] No unreviewed change exists after either CI run.
+- [ ] Core and Android CI are green on the exact merge-preview.
+- [ ] No unreviewed repository change exists after the recorded CI.
 - [ ] Ordinary CI remains zero-external and does not reference
   `AVALAI_API_KEY`.
 
-**Current audit result:** Section A remains incomplete until bootstrap merge and
-final exact-SHA evidence are recorded.
+**Current audit result:** repository and CI evidence is verified as recorded in
+`phase-1-9-protected-environment-readiness.md`, but Section A must be re-resolved
+if `main`, PR #70, the worker or policy changes.
 
-## B. Protected GitHub environment
+## B. Workflow and protected Environment metadata
 
+No item in this section is currently proved by the available Connector.
+
+- [ ] Dispatcher is enabled and visible in GitHub Actions without starting it.
 - [ ] Environment `live-provider-staging` exists.
 - [ ] At least one independent required reviewer is configured.
 - [ ] Prevention of self-review is enabled when available.
 - [ ] Deployment branches/tags use a selected allowlist.
-- [ ] The allowlist permits only `main` for this topology.
-- [ ] Environment secret `AVALAI_API_KEY` is present and current.
+- [ ] The deployment allowlist permits only `main` for this topology.
+- [ ] Environment secret `AVALAI_API_KEY` exists.
+- [ ] Record the environment-secret update timestamp without reading its value.
 - [ ] The key is not supplied by a repository file, workflow input or Android.
 - [ ] No repository/organization secret is relied upon as fallback.
-- [ ] The dispatcher workflow is enabled in GitHub Actions.
 - [ ] No other live-provider run is queued, awaiting approval, active or
   unresolved.
 
 Evidence record:
 
 ```text
+dispatcher_enabled_visible: UNVERIFIED
+environment_exists: UNVERIFIED
 environment_verified_by: ______________________________________
 environment_verified_at_utc: __________________________________
-required_reviewer: _____________________________________________
-self_review_prevention: enabled / unavailable / not_enabled
-deployment_ref_rule: main only / _______________________________
+required_reviewer: UNVERIFIED
+independent_reviewer_identity: _________________________________
+self_review_prevention: UNVERIFIED
+deployment_ref_rule: UNVERIFIED
 environment_secret_name: AVALAI_API_KEY
-environment_secret_updated_at: _________________________________
-dispatcher_enabled_verified: yes / no
+environment_secret_present: UNVERIFIED
+environment_secret_updated_at: UNVERIFIED
+weaker_secret_fallback_absent: UNVERIFIED
 ```
 
-Do not record or screenshot the secret value.
+Never record, retrieve, print or screenshot the secret value.
+
+**Current audit result:** Section B is incomplete. Approval package status remains
+`NOT PREPARED`.
 
 ## C. Explicit user approval
 
-Approval must be given after Sections A and B are complete and must state every
-exact value below.
+This section must remain empty until Sections A and B are current and complete.
+Approval must state every exact value below after the final non-live audit.
 
 ```text
 approved_by_user: ______________________________________________
@@ -139,14 +173,19 @@ approved_max_input_tokens: 128
 approved_max_output_tokens: 16
 approved_max_estimated_cost_microusd: 20000
 approved_max_exact_cost_unit: 0.01 UNIT
+approved_minimum_credit_floor_unit: 0.10 UNIT
 ```
 
 - [ ] Approval explicitly permits one live AvalAI model request.
 - [ ] Approval is not inferred from implementation, CI, bootstrap merge, an old
-  message or different SHA.
+  message or a different SHA.
 - [ ] Required environment reviewer is not relying solely on self-approval.
 
+**Current audit result:** explicit user approval is `NOT GRANTED`.
+
 ## D. Dispatcher form verification
+
+Do not open this section for execution until Sections A–C pass.
 
 - [ ] Open **Actions -> Phase 1.9 Live Provider Staging Dispatcher -> Run
   workflow**.
@@ -155,7 +194,7 @@ approved_max_exact_cost_unit: 0.01 UNIT
 - [ ] Confirm the form exposes no worker SHA or model field.
 - [ ] Re-read the pinned worker SHA from the current dispatcher and compare it to
   Section C.
-- [ ] Confirm no second run is active.
+- [ ] Confirm no second run is active or unresolved.
 - [ ] Start the dispatcher once.
 
 Run record:
@@ -169,21 +208,20 @@ environment_reviewer: __________________________________________
 environment_approval_time_utc: _________________________________
 ```
 
-## E. Pre-secret, reusable-worker and environment gates
+## E. Pre-secret, worker and Environment gates
 
 - [ ] Dispatcher repository/ref/SHA validation passes.
-- [ ] Reusable worker was loaded from `approved_worker_sha`.
+- [ ] Reusable worker is loaded from `approved_worker_sha`.
 - [ ] Worker caller workflow-ref validation passes.
 - [ ] Worker exact SHA checkout validation passes.
 - [ ] Worker fixed-model validation passes.
 - [ ] Ruff passes.
 - [ ] Strict MyPy passes.
 - [ ] Targeted fake staging tests pass.
-- [ ] The live worker job waits for the protected environment.
-- [ ] Independent reviewer compares both SHAs and limits to this checklist.
+- [ ] Live worker waits for the protected environment.
+- [ ] Independent reviewer compares both SHAs and all limits to this checklist.
 - [ ] Reviewer rejects if SHA, ref, model or workflow differs.
-- [ ] `AVALAI_API_KEY` remains unavailable to dispatcher and pre-secret worker
-  job.
+- [ ] `AVALAI_API_KEY` remains unavailable to the dispatcher and pre-secret job.
 
 Any failure before environment approval must result in zero provider calls.
 
@@ -196,8 +234,8 @@ Acceptance requires every item below:
 - [ ] Invocation state is `completed`.
 - [ ] Reconciliation disposition is `exact`.
 - [ ] Provider request ID is present and valid.
-- [ ] Exact transaction ID equals retained provider request ID.
-- [ ] Provider is `openai` in reviewed AvalAI transaction projection.
+- [ ] Exact transaction ID equals the retained provider request ID.
+- [ ] Provider is `openai` in the reviewed AvalAI transaction projection.
 - [ ] Model is exactly `gpt-5.4-mini`.
 - [ ] Transaction status is successful.
 - [ ] Transaction is non-streaming.
@@ -238,7 +276,7 @@ Required response:
 
 ```text
 disable dispatcher
-cancel/reject pending work when safe
+cancel or reject pending work when safe
 preserve durable Invocation and Trace evidence
 do not issue another model request
 query only the same provider request ID through the User API
