@@ -177,7 +177,8 @@ async def test_manual_composition_uses_native_authorities_and_proves_zero_call_r
         id_factory=ids.__next__,
     )
 
-    assert artifact.disposition == LiveProviderStagingArtifactDisposition.PASSED
+    evidence = artifact.model_dump(mode="json")
+    assert artifact.disposition == LiveProviderStagingArtifactDisposition.PASSED, evidence
     assert artifact.failure_code == LiveProviderStagingArtifactFailureCode.NONE
     assert artifact.result is not None
     assert artifact.result.reconciliation_disposition == (
@@ -197,7 +198,7 @@ async def test_manual_composition_uses_native_authorities_and_proves_zero_call_r
     assert provider.list_calls == 1
     assert user_api.credit_calls == 1
     assert user_api.lookup_calls == 1
-    serialized = str(artifact.model_dump(mode="json"))
+    serialized = str(evidence)
     assert LIVE_PROVIDER_CANARY_OUTPUT not in serialized
 
 
@@ -225,10 +226,11 @@ async def test_manual_composition_emits_failed_artifact_without_model_retry(
         id_factory=ids.__next__,
     )
 
+    evidence = artifact.model_dump(mode="json")
     assert artifact.disposition == LiveProviderStagingArtifactDisposition.FAILED
     assert artifact.failure_code == (
         LiveProviderStagingArtifactFailureCode.RESULT_INCOMPLETE
-    )
+    ), evidence
     assert artifact.result is not None
     assert artifact.result.reconciliation_disposition == (
         LiveProviderReconciliationDisposition.UNAVAILABLE
