@@ -63,6 +63,7 @@ def test_live_workflow_runs_quality_before_secret_and_verifies_artifact() -> Non
     assert "mypy services/core/src" in text
     assert "test_live_provider_staging_artifact.py" in text
     assert "test_live_provider_staging_cli.py" in text
+    assert "test_live_provider_staging_documentation.py" in text
     assert "test_live_provider_staging_workflow.py" in text
     assert "live_provider_staging_cli run" in text
     assert "live_provider_staging_cli verify" in text
