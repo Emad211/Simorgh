@@ -46,7 +46,9 @@ def test_live_workflow_checks_exact_commit_and_fixed_reviewed_model() -> None:
     policy = reviewed_live_provider_staging_policy("gpt-5.4-mini")
 
     assert "^[0-9a-f]{40}$" in text
+    assert text.count('test "$REVIEWED_COMMIT_SHA" = "$DISPATCH_SHA"') == 2
     assert text.count('test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"') == 2
+    assert text.count("DISPATCH_SHA: ${{ github.sha }}") == 2
     assert "options:\n          - gpt-5.4-mini" in text
     assert policy.max_model_calls == 1
     assert policy.allowed_model_ids == ("gpt-5.4-mini",)
