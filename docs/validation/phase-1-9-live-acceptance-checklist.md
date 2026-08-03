@@ -10,27 +10,29 @@ merge and this checklist are not live authorization.
 ## Current non-live evidence snapshot
 
 ```text
-audit_timestamp: 2026-08-03T13:11+03:30
+audit_timestamp: 2026-08-03T14:49+03:30
 dispatcher_main_sha: 3bcb41437e3b8d2f497516ef9a214de5becf45e9
 dispatcher_blob_sha: a5fe7be975ee41dd0be222ab1c606f8b4bab87d7
 worker_sha: 47b65f359fd844067346d987f9102f6eeab911d9
-pr_head_sha: 096890150c7cf129eab19ebf4ac0bdf05e631e2f
-merge_preview_sha: caf563792dfbcf65da6a32965d9479824bd9541a
-ci_run_id: 30781540524
-ci_run_number: 1054
+pr_head_sha: 901e858e3be6d92d9a64e1617fdcf972dec4c2c9
+merge_preview_sha: 6cb97ab7263bb17f11699159e28b49795d2a99ec
+ci_run_id: 30803363635
+ci_run_number: 1059
 ci_result: success
-core_tests: 573 passed
+core_tests: 575 passed
 non_live_prerequisites_complete: false
 approval_package_status: NOT PREPARED
 live_dispatches: 0
+deployment_approvals: 0
 credentials_read_or_used: 0
 real_provider_calls: 0
 real_user_api_calls: 0
 ```
 
-Repository and CI identity are verified. Workflow enabled/visibility state,
-Environment protection and environment-secret metadata remain `UNVERIFIED`
-because the available Connector does not expose those read endpoints.
+Repository, authenticated access and CI identity are verified. Workflow
+state/visibility, Environment protection and Environment-secret metadata remain
+`UNVERIFIED` because the authenticated Connector exposes no read endpoints for
+those settings.
 
 ## Fixed reviewed topology and limits
 
@@ -119,7 +121,7 @@ if `main`, PR #70, the worker or policy changes.
 
 ## B. Workflow and protected Environment metadata
 
-No item in this section is currently proved by the available Connector.
+No item in this section is currently proved by the authenticated Connector.
 
 - [ ] Dispatcher is enabled and visible in GitHub Actions without starting it.
 - [ ] Environment `live-provider-staging` exists.
@@ -128,7 +130,7 @@ No item in this section is currently proved by the available Connector.
 - [ ] Deployment branches/tags use a selected allowlist.
 - [ ] The deployment allowlist permits only `main` for this topology.
 - [ ] Environment secret `AVALAI_API_KEY` exists.
-- [ ] Record the environment-secret update timestamp without reading its value.
+- [ ] Record the Environment-secret update timestamp without reading its value.
 - [ ] The key is not supplied by a repository file, workflow input or Android.
 - [ ] No repository/organization secret is relied upon as fallback.
 - [ ] No other live-provider run is queued, awaiting approval, active or
@@ -179,7 +181,7 @@ approved_minimum_credit_floor_unit: 0.10 UNIT
 - [ ] Approval explicitly permits one live AvalAI model request.
 - [ ] Approval is not inferred from implementation, CI, bootstrap merge, an old
   message or a different SHA.
-- [ ] Required environment reviewer is not relying solely on self-approval.
+- [ ] Required Environment reviewer is not relying solely on self-approval.
 
 **Current audit result:** explicit user approval is `NOT GRANTED`.
 
@@ -218,12 +220,12 @@ environment_approval_time_utc: _________________________________
 - [ ] Ruff passes.
 - [ ] Strict MyPy passes.
 - [ ] Targeted fake staging tests pass.
-- [ ] Live worker waits for the protected environment.
+- [ ] Live worker waits for the protected Environment.
 - [ ] Independent reviewer compares both SHAs and all limits to this checklist.
 - [ ] Reviewer rejects if SHA, ref, model or workflow differs.
 - [ ] `AVALAI_API_KEY` remains unavailable to the dispatcher and pre-secret job.
 
-Any failure before environment approval must result in zero provider calls.
+Any failure before Environment approval must result in zero provider calls.
 
 ## F. Required live artifact evidence
 
@@ -270,7 +272,7 @@ Stop acceptance and do not issue another model request when any condition occurs
 - [ ] artifact privacy/hash/schema verification fails;
 - [ ] duplicate charge is suspected;
 - [ ] credential leakage is suspected;
-- [ ] environment protection was bypassed or improperly self-approved.
+- [ ] Environment protection was bypassed or improperly self-approved.
 
 Required response:
 
