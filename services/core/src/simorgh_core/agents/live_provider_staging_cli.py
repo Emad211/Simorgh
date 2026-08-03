@@ -9,7 +9,17 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from simorgh_core.agents.contracts import UsageVector
+from simorgh_core.agents.api import agent_task_control_plane
+from simorgh_core.agents.contracts import (
+    ExecutionMode,
+    FreshnessClass,
+    LatencyClass,
+    RiskClass,
+    TaskBudget,
+    TaskEnvelope,
+    TaskKind,
+    UsageVector,
+)
 from simorgh_core.agents.invocation_store import invocation_store_registry
 from simorgh_core.agents.live_provider_staging import (
     LiveProviderPreflightError,
@@ -42,9 +52,6 @@ from simorgh_core.agents.live_provider_staging_trace import (
     LiveProviderStagingTraceEvidence,
     live_provider_staging_trace_evidence,
 )
-from simorgh_core.agents.trace_projecting_invocation_store import (
-    TraceProjectingInvocationStore,
-)
 from simorgh_core.agents.trace_store_registry import trace_store_registry
 from simorgh_core.app import app, lifespan
 from simorgh_core.config import Settings, get_settings
@@ -60,6 +67,10 @@ from simorgh_core.providers.base import ModelOutput, ModelProvider
 _REVIEWED_MODEL_IDS = ("gpt-5.4-mini",)
 _CONSERVATIVE_INPUT_PRICE_MICROUSD_PER_MILLION = 100_000_000
 _CONSERVATIVE_OUTPUT_PRICE_MICROUSD_PER_MILLION = 100_000_000
+_FIXED_TASK_INPUT = "Execute the reviewed Phase 1.9 live-provider staging canary."
+_FIXED_TASK_OUTCOME = (
+    "Produce sanitized one-call staging evidence and zero-call replay proof."
+)
 
 
 class CountingModelProvider:
@@ -152,6 +163,38 @@ def reviewed_live_provider_staging_pricing(
     )
 
 
+def reviewed_live_provider_staging_task(
+    *,
+    request_id: UUID,
+    received_at_ms: int,
+    policy: LiveProviderStagingPolicy,
+) -> TaskEnvelope:
+    return TaskEnvelope(
+        request_id=request_id,
+        received_at_ms=received_at_ms,
+        deadline_at_ms=received_at_ms + policy.max_elapsed_ms,
+        locale="en-US",
+        input_text=_FIXED_TASK_INPUT,
+        requested_outcome=_FIXED_TASK_OUTCOME,
+        explicit_task_kind=TaskKind.DEVELOPMENT_PLANNING,
+        risk_class=RiskClass.READ_ONLY,
+        freshness=FreshnessClass.EXECUTION_BOUND,
+        latency=LatencyClass.BATCH,
+        execution_mode=ExecutionMode.READ_ONLY,
+        allowed_data_sources=frozenset({"avalai"}),
+        budget=TaskBudget(
+            max_model_calls=1,
+            max_tool_calls=0,
+            max_input_tokens=policy.max_input_tokens,
+            max_output_tokens=policy.max_output_tokens,
+            max_estimated_cost_microusd=policy.max_estimated_cost_microusd,
+            max_elapsed_ms=policy.max_elapsed_ms,
+            max_retries=0,
+            max_parallel_branches=1,
+        ),
+    )
+
+
 def _call_counts(
     provider: CountingModelProvider,
     user_api: CountingAvalAIUserAPI,
@@ -202,10 +245,16 @@ async def execute_manual_live_provider_staging(
 
     try:
         async with lifespan(app):
-            raw_invocations = invocation_store_registry.current()
-            invocations = TraceProjectingInvocationStore(raw_invocations)
+            invocations = invocation_store_registry.current()
             results = live_provider_staging_result_store_registry.current()
             traces = trace_store_registry.current()
+            await agent_task_control_plane.submit(
+                reviewed_live_provider_staging_task(
+                    request_id=request.request_id,
+                    received_at_ms=now(),
+                    policy=policy,
+                )
+            )
             service = LiveProviderStagingService(
                 policy=policy,
                 pricing=pricing,
@@ -229,12 +278,12 @@ async def execute_manual_live_provider_staging(
                 first_calls = _call_counts(counted_provider, counted_user_api)
                 first_calls_captured = True
                 try:
-                    usage_before = raw_invocations.get(
+                    usage_before = invocations.get(
                         request.invocation_id
                     ).committed_usage
                     trace_evidence = live_provider_staging_trace_evidence(
                         result,
-                        invocation_store=raw_invocations,
+                        invocation_store=invocations,
                         trace_store=traces,
                     )
                 except Exception:
@@ -248,7 +297,7 @@ async def execute_manual_live_provider_staging(
                     )
                     try:
                         replay = await service.run(request)
-                        usage_after = raw_invocations.get(
+                        usage_after = invocations.get(
                             request.invocation_id
                         ).committed_usage
                     except BaseException:
@@ -429,4 +478,5 @@ __all__ = [
     "main",
     "reviewed_live_provider_staging_policy",
     "reviewed_live_provider_staging_pricing",
+    "reviewed_live_provider_staging_task",
 ]
