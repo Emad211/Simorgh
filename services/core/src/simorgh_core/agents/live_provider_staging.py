@@ -138,6 +138,7 @@ class LiveProviderStagingService:
         )
         gateway_result: BudgetedModelResult | None = None
         gateway_failed = False
+        gateway_cancelled: asyncio.CancelledError | None = None
         try:
             gateway_result = await self._gateway.generate(
                 request=BudgetedModelRequest(
@@ -155,25 +156,46 @@ class LiveProviderStagingService:
                 ),
                 budget=budget,
             )
-        except asyncio.CancelledError:
-            raise
+        except asyncio.CancelledError as exc:
+            gateway_cancelled = exc
         except (BudgetError, ModelGatewayError):
             gateway_failed = True
 
         invocation = self._require_invocation(request.invocation_id)
+        if not invocation.terminal:
+            raise LiveProviderStagingExecutionError(
+                "staging invocation did not reach durable terminal state"
+            )
         codes: set[LiveProviderReconciliationCode] = set()
         provider_request_id: UUID | None = None
         output_sha256: str | None = None
         output_characters: int | None = None
         transaction: AvalAITransactionSummary | None = None
 
-        if gateway_failed:
-            if invocation.state in {
-                InvocationState.UNKNOWN,
-                InvocationState.UNKNOWN_SIDE_EFFECT,
-            }:
+        if gateway_cancelled is not None:
+            codes.add(
+                LiveProviderReconciliationCode.PROVIDER_INVOCATION_CANCELLED
+            )
+            if invocation.state == InvocationState.UNKNOWN:
                 codes.add(
                     LiveProviderReconciliationCode.PROVIDER_INVOCATION_UNKNOWN
+                )
+            elif invocation.state != InvocationState.CANCELLED:
+                raise LiveProviderStagingExecutionError(
+                    "cancelled staging invocation has inconsistent terminal state"
+                )
+        elif gateway_failed:
+            if invocation.state == InvocationState.CANCELLED:
+                codes.add(
+                    LiveProviderReconciliationCode.PROVIDER_INVOCATION_CANCELLED
+                )
+            elif invocation.state == InvocationState.UNKNOWN:
+                codes.add(
+                    LiveProviderReconciliationCode.PROVIDER_INVOCATION_UNKNOWN
+                )
+            elif invocation.state == InvocationState.UNKNOWN_SIDE_EFFECT:
+                raise LiveProviderStagingExecutionError(
+                    "model staging invocation cannot be unknown-side-effect"
                 )
             else:
                 codes.add(
@@ -191,10 +213,16 @@ class LiveProviderStagingService:
                 codes=codes,
             )
             if provider_request_id is not None:
-                transaction = await self._lookup_transaction(
-                    provider_request_id,
-                    codes=codes,
-                )
+                try:
+                    transaction = await self._lookup_transaction(
+                        provider_request_id,
+                        codes=codes,
+                    )
+                except asyncio.CancelledError as exc:
+                    gateway_cancelled = exc
+                    codes.add(
+                        LiveProviderReconciliationCode.PROVIDER_INVOCATION_CANCELLED
+                    )
                 if transaction is not None:
                     _reconcile_transaction(
                         transaction=transaction,
@@ -230,11 +258,14 @@ class LiveProviderStagingService:
             completed_at_ms=completed_at_ms,
         )
         claim = self._results.claim(record)
-        return claim.record.model_copy(
+        persisted = claim.record.model_copy(
             update={
                 "replayed": claim.kind == LiveProviderStagingClaimKind.REPLAY,
             }
         )
+        if gateway_cancelled is not None:
+            raise gateway_cancelled from None
+        return persisted
 
     def _load_existing_result(
         self,

@@ -49,6 +49,7 @@ class LiveProviderStagingDisposition(StrEnum):
 
 class LiveProviderReconciliationCode(StrEnum):
     OUTPUT_CONTRACT_INVALID = "output_contract_invalid"
+    PROVIDER_INVOCATION_CANCELLED = "provider_invocation_cancelled"
     PROVIDER_INVOCATION_FAILED = "provider_invocation_failed"
     PROVIDER_INVOCATION_UNKNOWN = "provider_invocation_unknown"
     PROVIDER_REQUEST_ID_MISSING = "provider_request_id_missing"
@@ -291,6 +292,39 @@ class LiveProviderStagingResult(BaseModel):
                 raise ValueError("completed staging result requires output fingerprint")
         elif not self.reconciliation_codes:
             raise ValueError("incomplete staging result requires a typed code")
+        cancellation_recorded = (
+            LiveProviderReconciliationCode.PROVIDER_INVOCATION_CANCELLED
+            in self.reconciliation_codes
+        )
+        uncertainty_recorded = (
+            LiveProviderReconciliationCode.PROVIDER_INVOCATION_UNKNOWN
+            in self.reconciliation_codes
+        )
+        if self.invocation_state == InvocationState.CANCELLED:
+            if not cancellation_recorded:
+                raise ValueError(
+                    "cancelled staging result requires cancellation code"
+                )
+            if self.committed_usage != UsageVector():
+                raise ValueError(
+                    "cancelled-before-entry staging result requires zero usage"
+                )
+        if cancellation_recorded and self.invocation_state not in {
+            InvocationState.CANCELLED,
+            InvocationState.COMPLETED,
+            InvocationState.UNKNOWN,
+        }:
+            raise ValueError(
+                "staging cancellation code conflicts with invocation state"
+            )
+        if self.invocation_state == InvocationState.UNKNOWN and not uncertainty_recorded:
+            raise ValueError(
+                "unknown staging invocation requires uncertainty code"
+            )
+        if uncertainty_recorded and self.invocation_state != InvocationState.UNKNOWN:
+            raise ValueError(
+                "staging uncertainty code conflicts with invocation state"
+            )
         if self.provider_request_id is not None and self.provider_request_id.version != 7:
             raise ValueError("staging provider request identity must be UUIDv7")
         if (

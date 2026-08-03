@@ -183,3 +183,50 @@ staging result from outliving its required audit Trace. This increment adds no
 new Trace event kind, does not make Trace execution authority and stores no raw
 prompt, output, provider body, header, credential, IP address or private User API
 field.
+
+## Durable cancellation and provider-transport uncertainty
+
+The staging service now persists a sanitized immutable incomplete result for
+terminal cancellation and provider transport uncertainty rather than losing the
+staging audit record.
+
+The preserved state matrix is:
+
+```text
+reserved invocation with typed proof of non-entry
+  -> invocation cancelled
+  -> zero committed usage
+  -> provider_invocation_cancelled
+  -> zero external provider entry
+
+cancellation while the provider request may have entered
+  -> invocation unknown
+  -> conservative reserved usage committed once
+  -> provider_invocation_cancelled + provider_invocation_unknown
+  -> result persisted before cancellation is re-raised
+
+provider transport exception after reservation
+  -> invocation unknown
+  -> conservative reserved usage committed once
+  -> provider_invocation_unknown
+  -> no retry
+
+cancellation during transaction lookup after provider completion
+  -> invocation remains completed
+  -> provider request/output fingerprints retained
+  -> provider_invocation_cancelled
+  -> no second model request
+```
+
+Exact staging replay still checks the durable result before credit, model
+catalog, provider or User API entry. SQLite close/reopen replay therefore adds no
+model call, User API call or usage. Cancellation and transport exception text,
+prompt/output text, headers, credentials and raw provider/User API bodies remain
+excluded from the stored result.
+
+Focused acceptance covers a successful canary, cancellation before external
+provider entry, cancellation after possible provider entry, cancellation during
+transaction lookup, transport uncertainty, SQLite restart and exact zero-external
+replay. The transfer gate runs Ruff, strict MyPy and the complete Core suite
+before product publication; ordinary exact-head CI must additionally pass the
+unchanged Android build, JVM tests, lint and Debug APK upload.
