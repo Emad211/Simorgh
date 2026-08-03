@@ -31,7 +31,7 @@ def test_live_staging_documents_cross_link() -> None:
 
 
 def test_adr_preserves_manual_no_retry_authority_boundary() -> None:
-    text = _read(_ADR)
+    text = " ".join(_read(_ADR).split())
 
     required = (
         "Status: Accepted",
