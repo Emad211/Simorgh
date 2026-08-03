@@ -28,6 +28,7 @@ from simorgh_core.agents.trace_cancellation_projection import (
 from simorgh_core.agents.trace_child_invocations import (
     ChildTraceProjectionReport,
     project_classifier_invocation,
+    project_routed_root_invocations,
     project_specialist_owned_child_invocations,
 )
 from simorgh_core.agents.trace_contracts import (
@@ -375,6 +376,15 @@ def _reconcile_request(
             reason_code=reason_code,
         )
         return
+
+    direct_report = project_routed_root_invocations(
+        store=store,
+        task_entry=entry,
+        routing_event=routing,
+        invocation_records=invocations,
+        base_ingested_at_ms=counter.current_ingestion_time(),
+    )
+    counter.absorb(direct_report)
 
     context_events, contexts_by_invocation = _project_contexts(
         store=store,

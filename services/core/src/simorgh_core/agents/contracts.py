@@ -14,6 +14,7 @@ _RESOURCE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:[._:/-][a-z0-9]+)*$"
 
 class TaskKind(StrEnum):
     REPOSITORY_RESEARCH = "repository_research"
+    LIVE_PROVIDER_STAGING = "live_provider_staging"
     DEVELOPMENT_PLANNING = "development_planning"
     SEO_PLANNING = "seo_planning"
     MARKETING_PLANNING = "marketing_planning"

@@ -71,6 +71,11 @@ class Settings(BaseSettings):
         ge=0,
         le=1_000_000,
     )
+    simorgh_live_provider_staging_result_store_path: str = Field(
+        default=".simorgh/live-provider-staging-results.sqlite3",
+        min_length=1,
+        max_length=4_096,
+    )
 
     avalai_api_key: SecretStr | None = None
     avalai_base_url: str = "https://api.avalai.ir/v1"
