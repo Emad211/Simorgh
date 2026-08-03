@@ -1,19 +1,16 @@
-name: Phase 1.9 Live Provider Staging
+name: Phase 1.9 Live Provider Staging Worker
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       reviewed_commit_sha:
-        description: Exact reviewed 40-character commit SHA to execute
+        description: Exact reviewed 40-character worker commit SHA to execute
         required: true
         type: string
       model_id:
-        description: Reviewed staging model
+        description: Exact reviewed staging model
         required: true
-        default: gpt-5.4-mini
-        type: choice
-        options:
-          - gpt-5.4-mini
+        type: string
 
 permissions:
   contents: read
@@ -28,21 +25,27 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Check out exact reviewed commit
+      - name: Check out exact reviewed worker commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.reviewed_commit_sha }}
           persist-credentials: false
 
-      - name: Verify immutable reviewed commit
+      - name: Verify immutable dispatcher and worker identity
         shell: bash
         env:
           REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
-          DISPATCH_SHA: ${{ github.sha }}
+          MODEL_ID: ${{ inputs.model_id }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
           [[ "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$REVIEWED_COMMIT_SHA" = "$DISPATCH_SHA"
+          test "$CALLER_REPOSITORY" = "Emad211/Simorgh"
+          test "$CALLER_REF" = "refs/heads/main"
+          test "$CALLER_WORKFLOW_REF" = "Emad211/Simorgh/.github/workflows/live-provider-staging-dispatch.yml@refs/heads/main"
+          test "$MODEL_ID" = "gpt-5.4-mini"
           test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
@@ -79,21 +82,27 @@ jobs:
       name: live-provider-staging
 
     steps:
-      - name: Check out exact reviewed commit
+      - name: Check out exact reviewed worker commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.reviewed_commit_sha }}
           persist-credentials: false
 
-      - name: Verify immutable reviewed commit
+      - name: Reverify immutable dispatcher and worker identity
         shell: bash
         env:
           REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
-          DISPATCH_SHA: ${{ github.sha }}
+          MODEL_ID: ${{ inputs.model_id }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
           [[ "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$REVIEWED_COMMIT_SHA" = "$DISPATCH_SHA"
+          test "$CALLER_REPOSITORY" = "Emad211/Simorgh"
+          test "$CALLER_REF" = "refs/heads/main"
+          test "$CALLER_WORKFLOW_REF" = "Emad211/Simorgh/.github/workflows/live-provider-staging-dispatch.yml@refs/heads/main"
+          test "$MODEL_ID" = "gpt-5.4-mini"
           test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT_SHA"
 
       - name: Set up Python
