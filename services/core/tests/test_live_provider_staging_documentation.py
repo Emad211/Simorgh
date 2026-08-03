@@ -38,7 +38,7 @@ def test_adr_preserves_manual_no_retry_authority_boundary() -> None:
         "workflow_dispatch",
         "live-provider-staging",
         "AVALAI_API_KEY",
-        "exact lowercase 40-character commit SHA",
+        "lowercase 40-character commit SHA",
         "exactly one model call",
         "zero retries",
         "only the AvalAI User API transaction lookup",
@@ -86,7 +86,7 @@ def test_runbook_matches_reviewed_policy_and_workflow() -> None:
     assert policy.api_base_url in text
     assert policy.user_api_base_url in text
     assert policy.selected_model_id in text
-    assert "do not retry the model" in text.casefold()
+    assert "do not start another model request" in text.casefold()
     assert "gh workflow disable live-provider-staging.yml" in text
     assert "gh run cancel <RUN_ID>" in text
 
