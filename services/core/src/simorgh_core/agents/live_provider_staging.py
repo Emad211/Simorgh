@@ -26,6 +26,7 @@ from simorgh_core.agents.live_provider_staging_contracts import (
     LiveProviderStagingPolicy,
     LiveProviderStagingRequest,
     LiveProviderStagingResult,
+    live_provider_reconciliation_disposition_for,
     live_provider_staging_result_id_for,
     live_provider_staging_result_sha256,
     live_provider_staging_terminal_event_id_for,
@@ -226,6 +227,7 @@ class LiveProviderStagingService:
                 if transaction is not None:
                     _reconcile_transaction(
                         transaction=transaction,
+                        provider_request_id=provider_request_id,
                         gateway_result=gateway_result,
                         pricing=self._pricing,
                         policy=self._policy,
@@ -440,11 +442,14 @@ def _provider_request_uuid(
 def _reconcile_transaction(
     *,
     transaction: AvalAITransactionSummary,
+    provider_request_id: UUID,
     gateway_result: BudgetedModelResult,
     pricing: LiveProviderModelPricing,
     policy: LiveProviderStagingPolicy,
     codes: set[LiveProviderReconciliationCode],
 ) -> None:
+    if transaction.transaction_id != provider_request_id:
+        codes.add(LiveProviderReconciliationCode.TRANSACTION_REQUEST_MISMATCH)
     if transaction.model != pricing.model_id:
         codes.add(LiveProviderReconciliationCode.TRANSACTION_MODEL_MISMATCH)
     if transaction.provider != pricing.transaction_provider_id:
@@ -519,6 +524,12 @@ def _new_result(
         output_sha256=output_sha256,
         output_characters=output_characters,
         transaction=transaction,
+        reconciliation_disposition=(
+            live_provider_reconciliation_disposition_for(
+                transaction_present=transaction is not None,
+                codes=codes,
+            )
+        ),
         reconciliation_codes=codes,
         started_at_ms=started_at_ms,
         completed_at_ms=completed_at_ms,

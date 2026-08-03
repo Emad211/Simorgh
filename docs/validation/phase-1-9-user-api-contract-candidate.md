@@ -230,3 +230,31 @@ transaction lookup, transport uncertainty, SQLite restart and exact zero-externa
 replay. The transfer gate runs Ruff, strict MyPy and the complete Core suite
 before product publication; ordinary exact-head CI must additionally pass the
 unchanged Android build, JVM tests, lint and Debug APK upload.
+
+## Canonical reconciliation disposition
+
+Every sanitized staging result now carries one typed canonical projection:
+
+```text
+exact
+pending
+unavailable
+mismatch
+```
+
+The projection is derived only from retained transaction presence and the
+canonical detailed reconciliation-code tuple. `exact` requires a retained exact
+transaction and no code. `pending` requires only bounded transaction-pending
+evidence. `unavailable` covers provider cancellation/failure/uncertainty,
+missing or invalid provider request identity and unavailable User API lookup.
+`mismatch` has precedence when output, request, model, provider, status, stream,
+usage or cost evidence conflicts.
+
+The projection is included in the staging result canonical SHA-256. A caller may
+omit the derived field while constructing an internal candidate, but supplying a
+changed value fails typed validation. Transaction request-identity mismatch is
+now a detailed typed code rather than an unstructured validation failure.
+SQLite restart/replay retains the projection, and a rehashed payload whose
+projection disagrees with its detailed evidence is rejected as corruption.
+This increment changes no provider-call, polling, retry, cancellation, Trace,
+credential or live-workflow behavior.

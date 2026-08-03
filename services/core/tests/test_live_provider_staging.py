@@ -18,6 +18,7 @@ from simorgh_core.agents.live_provider_staging_contracts import (
     LIVE_PROVIDER_CANARY_OUTPUT,
     LiveProviderModelPricing,
     LiveProviderReconciliationCode,
+    LiveProviderReconciliationDisposition,
     LiveProviderStagingDisposition,
     LiveProviderStagingPolicy,
     LiveProviderStagingRequest,
@@ -267,6 +268,9 @@ async def test_successful_canary_uses_one_budgeted_call_and_sanitized_result() -
     result = await service.run(request)
 
     assert result.disposition == LiveProviderStagingDisposition.COMPLETED
+    assert result.reconciliation_disposition == (
+        LiveProviderReconciliationDisposition.EXACT
+    )
     assert result.reconciliation_codes == ()
     assert result.provider_request_id == _TRANSACTION_ID
     assert result.transaction is not None
@@ -409,6 +413,9 @@ async def test_transaction_pending_and_lookup_error_are_incomplete_without_retry
     pending = await pending_service.run(request)
 
     assert pending.disposition == LiveProviderStagingDisposition.INCOMPLETE
+    assert pending.reconciliation_disposition == (
+        LiveProviderReconciliationDisposition.PENDING
+    )
     assert pending.reconciliation_codes == (
         LiveProviderReconciliationCode.TRANSACTION_PENDING,
     )
@@ -427,6 +434,9 @@ async def test_transaction_pending_and_lookup_error_are_incomplete_without_retry
         user_api=failing_api,
     )
     unavailable = await failing_service.run(_request())
+    assert unavailable.reconciliation_disposition == (
+        LiveProviderReconciliationDisposition.UNAVAILABLE
+    )
     assert unavailable.reconciliation_codes == (
         LiveProviderReconciliationCode.TRANSACTION_LOOKUP_UNAVAILABLE,
     )
@@ -492,6 +502,9 @@ async def test_transaction_identity_usage_and_cost_mismatch_are_typed() -> None:
     result = await service.run(request)
 
     assert result.disposition == LiveProviderStagingDisposition.INCOMPLETE
+    assert result.reconciliation_disposition == (
+        LiveProviderReconciliationDisposition.MISMATCH
+    )
     assert result.reconciliation_codes == (
         LiveProviderReconciliationCode.TRANSACTION_COST_EXCEEDED,
         LiveProviderReconciliationCode.TRANSACTION_MODEL_MISMATCH,
@@ -511,6 +524,9 @@ async def test_provider_transport_uncertainty_is_recorded_without_retry() -> Non
     result = await service.run(request)
 
     assert result.disposition == LiveProviderStagingDisposition.INCOMPLETE
+    assert result.reconciliation_disposition == (
+        LiveProviderReconciliationDisposition.UNAVAILABLE
+    )
     assert result.reconciliation_codes == (
         LiveProviderReconciliationCode.PROVIDER_INVOCATION_UNKNOWN,
     )

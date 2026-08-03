@@ -271,6 +271,7 @@ def test_request_identity_mismatch_is_typed_and_canonical() -> None:
 
     payload = mismatch.model_dump(mode="json")
     payload["reconciliation_codes"] = []
+    payload["disposition"] = LiveProviderStagingDisposition.COMPLETED.value
     payload.pop("reconciliation_disposition")
     changed_hash = live_provider_staging_result_sha256(payload)
     payload["canonical_sha256"] = changed_hash

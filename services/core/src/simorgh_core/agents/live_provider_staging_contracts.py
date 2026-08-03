@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal, Self
@@ -47,6 +48,13 @@ class LiveProviderStagingDisposition(StrEnum):
     INCOMPLETE = "incomplete"
 
 
+class LiveProviderReconciliationDisposition(StrEnum):
+    EXACT = "exact"
+    PENDING = "pending"
+    UNAVAILABLE = "unavailable"
+    MISMATCH = "mismatch"
+
+
 class LiveProviderReconciliationCode(StrEnum):
     OUTPUT_CONTRACT_INVALID = "output_contract_invalid"
     PROVIDER_INVOCATION_CANCELLED = "provider_invocation_cancelled"
@@ -56,6 +64,7 @@ class LiveProviderReconciliationCode(StrEnum):
     PROVIDER_REQUEST_ID_INVALID = "provider_request_id_invalid"
     TRANSACTION_LOOKUP_UNAVAILABLE = "transaction_lookup_unavailable"
     TRANSACTION_PENDING = "transaction_pending"
+    TRANSACTION_REQUEST_MISMATCH = "transaction_request_mismatch"
     TRANSACTION_MODEL_MISMATCH = "transaction_model_mismatch"
     TRANSACTION_PROVIDER_MISMATCH = "transaction_provider_mismatch"
     TRANSACTION_STATUS_INVALID = "transaction_status_invalid"
@@ -246,12 +255,30 @@ class LiveProviderStagingResult(BaseModel):
     )
     output_characters: int | None = Field(default=None, ge=0, le=1_000)
     transaction: AvalAITransactionSummary | None = None
+    reconciliation_disposition: LiveProviderReconciliationDisposition
     reconciliation_codes: tuple[LiveProviderReconciliationCode, ...] = Field(
         default=(),
         max_length=16,
     )
     started_at_ms: int = Field(ge=0)
     completed_at_ms: int = Field(ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_reconciliation_disposition(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "reconciliation_disposition" not in payload:
+            payload["reconciliation_disposition"] = (
+                live_provider_reconciliation_disposition_for(
+                    transaction_present=payload.get("transaction") is not None,
+                    codes=_reconciliation_codes_from_payload(
+                        payload.get("reconciliation_codes", ())
+                    ),
+                ).value
+            )
+        return payload
 
     @field_validator("reconciliation_codes")
     @classmethod
@@ -292,6 +319,16 @@ class LiveProviderStagingResult(BaseModel):
                 raise ValueError("completed staging result requires output fingerprint")
         elif not self.reconciliation_codes:
             raise ValueError("incomplete staging result requires a typed code")
+        expected_reconciliation_disposition = (
+            live_provider_reconciliation_disposition_for(
+                transaction_present=self.transaction is not None,
+                codes=self.reconciliation_codes,
+            )
+        )
+        if self.reconciliation_disposition != expected_reconciliation_disposition:
+            raise ValueError(
+                "staging reconciliation disposition does not match evidence"
+            )
         cancellation_recorded = (
             LiveProviderReconciliationCode.PROVIDER_INVOCATION_CANCELLED
             in self.reconciliation_codes
@@ -327,11 +364,18 @@ class LiveProviderStagingResult(BaseModel):
             )
         if self.provider_request_id is not None and self.provider_request_id.version != 7:
             raise ValueError("staging provider request identity must be UUIDv7")
-        if (
+        request_mismatch_recorded = (
+            LiveProviderReconciliationCode.TRANSACTION_REQUEST_MISMATCH
+            in self.reconciliation_codes
+        )
+        transaction_identity_mismatch = (
             self.transaction is not None
             and self.provider_request_id != self.transaction.transaction_id
-        ):
-            raise ValueError("staging transaction identity does not match provider request")
+        )
+        if request_mismatch_recorded != transaction_identity_mismatch:
+            raise ValueError(
+                "staging transaction request identity mismatch is not typed"
+            )
         if self.canonical_sha256 != live_provider_staging_result_sha256(self):
             raise ValueError("staging result hash does not match authoritative content")
         expected_id = live_provider_staging_result_id_for(
@@ -341,6 +385,82 @@ class LiveProviderStagingResult(BaseModel):
         if self.staging_result_id != expected_id:
             raise ValueError("staging result ID does not match canonical identity")
         return self
+
+
+_RECONCILIATION_MISMATCH_CODES = frozenset(
+    {
+        LiveProviderReconciliationCode.OUTPUT_CONTRACT_INVALID,
+        LiveProviderReconciliationCode.TRANSACTION_REQUEST_MISMATCH,
+        LiveProviderReconciliationCode.TRANSACTION_MODEL_MISMATCH,
+        LiveProviderReconciliationCode.TRANSACTION_PROVIDER_MISMATCH,
+        LiveProviderReconciliationCode.TRANSACTION_STATUS_INVALID,
+        LiveProviderReconciliationCode.TRANSACTION_STREAM_INVALID,
+        LiveProviderReconciliationCode.TRANSACTION_USAGE_MISMATCH,
+        LiveProviderReconciliationCode.TRANSACTION_COST_EXCEEDED,
+    }
+)
+_RECONCILIATION_UNAVAILABLE_CODES = frozenset(
+    {
+        LiveProviderReconciliationCode.PROVIDER_INVOCATION_CANCELLED,
+        LiveProviderReconciliationCode.PROVIDER_INVOCATION_FAILED,
+        LiveProviderReconciliationCode.PROVIDER_INVOCATION_UNKNOWN,
+        LiveProviderReconciliationCode.PROVIDER_REQUEST_ID_MISSING,
+        LiveProviderReconciliationCode.PROVIDER_REQUEST_ID_INVALID,
+        LiveProviderReconciliationCode.TRANSACTION_LOOKUP_UNAVAILABLE,
+    }
+)
+
+
+def live_provider_reconciliation_disposition_for(
+    *,
+    transaction_present: bool,
+    codes: Sequence[LiveProviderReconciliationCode],
+) -> LiveProviderReconciliationDisposition:
+    normalized_codes = tuple(codes)
+    code_set = frozenset(normalized_codes)
+    if len(code_set) != len(normalized_codes):
+        raise ValueError("reconciliation disposition requires unique codes")
+    classified_codes = (
+        _RECONCILIATION_MISMATCH_CODES
+        | _RECONCILIATION_UNAVAILABLE_CODES
+        | {LiveProviderReconciliationCode.TRANSACTION_PENDING}
+    )
+    if not code_set.issubset(classified_codes):
+        raise ValueError("reconciliation disposition has an unclassified code")
+    if code_set & _RECONCILIATION_MISMATCH_CODES:
+        return LiveProviderReconciliationDisposition.MISMATCH
+    if transaction_present:
+        if code_set:
+            raise ValueError("exact transaction conflicts with reconciliation codes")
+        return LiveProviderReconciliationDisposition.EXACT
+    if code_set == {LiveProviderReconciliationCode.TRANSACTION_PENDING}:
+        return LiveProviderReconciliationDisposition.PENDING
+    if LiveProviderReconciliationCode.TRANSACTION_PENDING in code_set:
+        raise ValueError("pending evidence conflicts with unavailable evidence")
+    if code_set and code_set.issubset(_RECONCILIATION_UNAVAILABLE_CODES):
+        return LiveProviderReconciliationDisposition.UNAVAILABLE
+    raise ValueError("reconciliation disposition requires transaction evidence or code")
+
+
+def _reconciliation_codes_from_payload(
+    value: object,
+) -> tuple[LiveProviderReconciliationCode, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("staging reconciliation codes must be a sequence")
+    normalized: list[LiveProviderReconciliationCode] = []
+    for item in value:
+        if isinstance(item, LiveProviderReconciliationCode):
+            normalized.append(item)
+        elif isinstance(item, str):
+            try:
+                normalized.append(LiveProviderReconciliationCode(item))
+            except ValueError:
+                raise ValueError(
+                    "staging reconciliation code is unsupported"
+                ) from None
+        else:
+            raise ValueError("staging reconciliation code is invalid")
+    return tuple(normalized)
 
 
 def live_provider_staging_trace_id_for(request_id: UUID) -> UUID:
@@ -369,6 +489,15 @@ def live_provider_staging_result_payload(
         if isinstance(value, LiveProviderStagingResult)
         else dict(value)
     )
+    if "reconciliation_disposition" not in payload:
+        payload["reconciliation_disposition"] = (
+            live_provider_reconciliation_disposition_for(
+                transaction_present=payload.get("transaction") is not None,
+                codes=_reconciliation_codes_from_payload(
+                    payload.get("reconciliation_codes", ())
+                ),
+            ).value
+        )
     for field in (
         "staging_result_id",
         "canonical_sha256",
@@ -410,11 +539,13 @@ __all__ = [
     "LiveProviderModelPricing",
     "LiveProviderPreflight",
     "LiveProviderReconciliationCode",
+    "LiveProviderReconciliationDisposition",
     "LiveProviderStagingContractError",
     "LiveProviderStagingDisposition",
     "LiveProviderStagingPolicy",
     "LiveProviderStagingRequest",
     "LiveProviderStagingResult",
+    "live_provider_reconciliation_disposition_for",
     "live_provider_staging_result_id_for",
     "live_provider_staging_result_payload",
     "live_provider_staging_result_sha256",
