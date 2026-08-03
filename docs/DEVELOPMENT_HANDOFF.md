@@ -11,103 +11,81 @@
 - Pull request state: open, Draft and mergeable
 - Issue: #65 — `Phase 1 Step 1.9: explicitly budgeted AvalAI live-provider staging`
 - Phase: 1.9 — Live Provider Staging
-- Lifecycle implementation Head:
-  `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
-- Trace-link implementation Head:
-  `40ac5c755cff50c60d4dda0f9ec7520d2f048961`
-- Cancellation/transport-uncertainty implementation Head:
+- Lifecycle implementation: `395eaecd7617b260f1b0bd57a2f364a030aa74f5`
+- Trace-link implementation: `40ac5c755cff50c60d4dda0f9ec7520d2f048961`
+- Cancellation/uncertainty implementation:
   `7d11af47a0801b4593b6cf031bfaa49b247c0bb7`
-- Reconciliation-disposition implementation Head:
+- Reconciliation-disposition implementation:
   `50b1484d9113951f15a1fc060d58f13896f52a9e`
 - Protected manual staging-boundary product Head:
   `8ff42c2fb94c9342df59953725c96a8c04760dff`
-- Last exact owner-authored validation Head before this increment:
-  `acf32cb1f498e2a49835f7b44e28c046a91adbbc`
+- Exact owner-authored validation Head:
+  `04d57b61bb34ef759573ca1e51388ff18fd750c9`
+- Exact validation CI: run `30776817126`, run number `1025`, success
 - Completed substeps:
-  - disabled-by-default AvalAI policy and sanitized User API boundary;
+  - disabled-by-default policy and sanitized User API boundary;
   - exactly-one-call fake canary composition;
   - immutable SQLite staging-result authority;
-  - Core configuration, registry and lifespan ownership;
-  - deterministic staging-result linkage to Invocation and Trace evidence;
-  - durable sanitized cancellation and provider-transport uncertainty results;
-  - typed canonical reconciliation disposition;
+  - config, registry and lifespan ownership;
+  - Invocation/Trace linkage;
+  - cancellation and transport-uncertainty persistence;
+  - canonical reconciliation disposition;
   - protected manual CLI/workflow and sanitized artifact boundary.
-- Next substep after exact-head CI: complete the staging ADR, operator runbook and
-  protected-environment readiness audit. Do not dispatch the live workflow until
-  the user explicitly approves the exact commit, model and maximum spend.
+- Next substep: staging ADR, operator runbook and protected-environment
+  readiness audit. Do not dispatch the live workflow until the user explicitly
+  approves the exact commit, reviewed model and hard maximum spend.
 
-The current Handoff commit is the branch `HEAD`; resolve its SHA from Git before
-starting the next execution. Never write an assumed self-referential SHA. The
-immutable product SHA above and exact CI evidence below are authoritative for
-this increment.
+The current Handoff commit is the branch `HEAD`; resolve it from Git before the
+next execution. Do not write an assumed self-referential SHA.
 
-## Architecture and invariants
+## Governing invariants
 
 Simorgh remains authoritative for Task and Invocation identity, durable state,
-budget, usage, replay, privacy and execution. Trace remains an immutable audit
+budget, usage, replay, privacy and execution. Trace is an immutable audit
 projection and cannot authorize execution or rewrite Invocation truth.
 
-Phase 1.9 continues to preserve these invariants:
+Phase 1.9 preserves these constraints:
 
-- live staging is disabled for ordinary runtime and ordinary CI;
+- ordinary runtime and ordinary CI never use live provider credentials;
 - one staging run permits at most one model request;
 - no automatic retry, provider/model/domain failover, streaming or tool use;
-- fixed Core-authored input only, with no user/conversation/project content;
-- exact replay checks durable staging authority before credit, catalog, provider
-  or User API entry;
-- replay adds zero model call, zero User API call and zero usage;
-- InvocationStore state and committed usage remain source authority;
-- exact provider cost is billing evidence for staging only;
-- Trace-linked reads fail closed if Invocation or terminal Trace evidence is
-  missing, inconsistent or corrupt;
+- fixed Core-authored input only; no user, conversation or repository content;
+- replay checks durable staging authority before any external boundary;
+- replay adds zero provider, catalog, credit or transaction calls and zero usage;
+- exact provider cost is staging billing evidence only;
 - cancellation and transport uncertainty remain conservative and durable;
-- raw prompt, output, exception text, headers, credentials, IP addresses and raw
+- raw prompt/output, exception text, headers, credentials, IP addresses and raw
   provider/User API bodies are never persisted or uploaded;
-- the protected workflow cannot be triggered by push, pull request, schedule,
-  API endpoint or model output.
+- live execution is possible only through a manual protected workflow.
 
-## Completed protected manual execution boundary
+## Completed manual staging boundary
 
-### Native Task and specialist authority
+### Native task and routing authority
 
-A new explicit internal task kind and reviewed specialist definition were added:
+A reviewed internal task/specialist pair now exists:
 
 ```text
 TaskKind.LIVE_PROVIDER_STAGING
 system.live-provider-staging@1.0.0
 ```
 
-The specialist has:
+It is read-only, has no tool/connector permissions, allows FAST tier only,
+permits exactly one model call, zero retries and one branch, and carries bounded
+token, cost and elapsed-time ceilings.
 
-- read-only/no-side-effect policy;
-- no tool or connector allowlist;
-- FAST-tier model policy only;
-- exactly one model-call ceiling;
-- zero retries and one parallel branch;
-- bounded input/output token, cost and elapsed-time ceilings.
+The CLI submits a fixed `TaskEnvelope` through `AgentTaskControlPlane`. The task
+has no independent wall-clock deadline; the reviewed 60-second limit remains in
+`TaskBudget`, preventing caller/control-plane clock skew.
 
-The CLI first submits a fixed read-only `TaskEnvelope` through the existing
-`AgentTaskControlPlane`. The task has no wall-clock deadline; the reviewed
-60-second ceiling remains authoritative inside `TaskBudget`, avoiding clock
-skew between test/workflow callers and the durable control plane.
+### Direct routed Invocation Trace projection
 
-### Direct routed Invocation Trace support
+Trace reconciliation can now project root model/tool invocations owned directly
+by the exact routed specialist. A root is accepted only when request identity,
+agent ID and agent version match the durable routing decision, it has no parent
+or cancellation owner, and it is not the router classifier. Unrelated root
+invocations are ignored. Staging code never manufactures Trace events directly.
 
-Trace reconciliation now projects root model/tool invocations owned directly by
-the exact routed specialist. A direct root is eligible only when:
-
-- request identity matches the durable task;
-- invocation kind is model or tool;
-- parent invocation and cancellation owner are absent;
-- agent ID and version exactly match the durable `RoutingDecision`;
-- the invocation is not the router classifier invocation.
-
-The invocation start is parented to the routing event and its terminal evidence
-uses the existing Invocation authority. Unrelated root invocations are ignored.
-This is a generic governed runtime capability; no staging code manufactures or
-writes Trace events directly.
-
-### Dedicated composition CLI
+### Dedicated CLI composition
 
 `services/core/src/simorgh_core/agents/live_provider_staging_cli.py` provides:
 
@@ -116,87 +94,65 @@ python -m simorgh_core.agents.live_provider_staging_cli run ...
 python -m simorgh_core.agents.live_provider_staging_cli verify ...
 ```
 
-The run command:
+The run path validates reviewed URLs/model, enters the existing Core lifespan,
+submits the fixed task, reuses Task/Invocation/Trace/staging-result authorities,
+runs `LiveProviderStagingService`, validates terminal evidence, performs exact
+replay and emits only a sanitized artifact. Provider/User API wrappers count
+calls but do not grant authority or alter retry behavior.
 
-1. validates exact reviewed AvalAI API/User API URLs and the single reviewed
-   model ID;
-2. enters the existing Core lifespan;
-3. submits and routes the fixed staging TaskEnvelope;
-4. reuses the existing Task, Invocation, Trace and staging-result authorities;
-5. runs `LiveProviderStagingService` through `BudgetedModelGateway`;
-6. validates terminal Invocation/Trace evidence;
-7. executes the identical staging identity again to prove durable replay;
-8. records external-call and committed-usage deltas;
-9. emits only a strict sanitized artifact.
+`AvalAIProvider.close()` now explicitly releases the SDK HTTP client.
 
-Provider and User API wrappers count bounded operations only. They do not grant
-execution authority or modify provider behavior. `AvalAIProvider` now exposes an
-explicit async `close()` so the protected CLI releases its SDK HTTP client.
+### Sanitized artifact authority
 
-### Versioned sanitized artifact
+`LiveProviderStagingArtifact` is strict, frozen and versioned. Its canonical
+identity covers source commit, workflow metadata, sanitized result, validated
+Trace evidence, bounded call counters, replay proof and committed usage before
+and after replay.
 
-`LiveProviderStagingArtifact` is strict, frozen and versioned. It contains only:
+A passed artifact requires:
 
-- source commit and workflow metadata;
-- staging/request/invocation IDs;
-- the already-sanitized staging result;
-- validated terminal Trace evidence;
-- bounded first-run call counts;
-- replay external-call deltas;
-- committed usage before and after replay;
-- typed pass/failure disposition;
-- canonical SHA-256 and deterministic artifact UUID.
-
-A passing artifact requires:
-
-- an exact completed reconciliation result;
+- exact completed reconciliation;
 - valid terminal Invocation and Trace evidence;
-- exactly one model request on the first run;
+- exactly one first-run model request;
 - one catalog and credit preflight;
-- at least one bounded transaction lookup;
-- replay of the same immutable result identity;
-- zero provider/catalog/credit/transaction calls during replay;
-- zero committed-usage mutation during replay.
+- at least one transaction lookup;
+- replay of the same immutable result;
+- zero external replay calls;
+- zero committed-usage mutation.
 
-The artifact writer uses canonical JSON, a one-megabyte ceiling, atomic replace
-and file mode `0600`. Verification reparses the strict contract and revalidates
-its hash and identity.
+The writer uses canonical JSON, a one-megabyte ceiling, atomic replacement and
+mode `0600`. The privacy scanner rejects canary strings, authorization/bearer,
+API-key, cookie, header, IP, safety, raw-response and environment-dump markers,
+plus the exact runtime credential value.
 
-The privacy scanner rejects the fixed canary strings, authorization/bearer/API
-key/cookie/header/IP/safety/raw-response/environment-dump markers and the exact
-runtime credential value supplied only in process memory.
+### Protected manual workflow
 
-### Manual protected GitHub workflow
+`.github/workflows/live-provider-staging.yml`:
 
-`.github/workflows/live-provider-staging.yml` has only `workflow_dispatch` and:
-
-- requires an exact reviewed 40-character commit SHA;
-- requires that input SHA equal the workflow dispatch SHA and checkout SHA;
-- offers only the reviewed `gpt-5.4-mini` model choice;
-- uses one non-cancelling repository concurrency group;
+- has only `workflow_dispatch`;
+- requires a reviewed 40-character SHA that equals dispatch and checkout SHA;
+- offers only `gpt-5.4-mini`;
+- uses one non-cancelling concurrency group;
 - has read-only repository permissions;
-- pins every action to a full commit SHA;
-- installs exact constrained direct dependency versions;
-- runs Ruff, strict MyPy and fake acceptance before any secret boundary;
-- binds the live job to the `live-provider-staging` environment;
-- references `AVALAI_API_KEY` exactly once, only in the protected execution step;
+- pins actions to complete commit SHAs;
+- installs constrained direct dependency versions;
+- runs Ruff, strict MyPy and fake acceptance before the secret boundary;
+- binds the live job to environment `live-provider-staging`;
+- references `AVALAI_API_KEY` exactly once in the protected execution step;
 - uses isolated temporary SQLite authorities;
-- verifies the artifact schema/hash/privacy contract;
-- uploads only the sanitized JSON artifact with 30-day retention.
+- verifies schema/hash/privacy and uploads only sanitized JSON for 30 days.
 
-The workflow was committed and statically tested but was **not dispatched** in
-this increment. No environment secret was read and no real AvalAI or User API
-request was made.
+The workflow was **not dispatched** in this increment. No environment secret was
+read and no real AvalAI or User API request occurred.
 
-Repository code cannot prove that the GitHub environment, required reviewers or
-environment secret are configured. Those remain operator prerequisites before
-any approved live acceptance run.
+Repository code cannot prove environment existence, reviewer rules or secret
+configuration. These remain operator prerequisites.
 
 ## Files changed by this increment
 
-The exact product diff from previous Handoff Head
+The product diff from previous Handoff Head
 `acf32cb1f498e2a49835f7b44e28c046a91adbbc` to product Head
-`8ff42c2fb94c9342df59953725c96a8c04760dff` contains exactly these 14 paths:
+`8ff42c2fb94c9342df59953725c96a8c04760dff` contains exactly 14 paths:
 
 - `.github/constraints/live-provider-staging.txt`
 - `.github/workflows/live-provider-staging.yml`
@@ -213,35 +169,27 @@ The exact product diff from previous Handoff Head
 - `services/core/tests/test_live_provider_staging_workflow.py`
 - `services/core/tests/test_trace_child_invocations.py`
 
-No transfer workflow, patcher, generated database, WAL/SHM file, process-lock
-file, credential or temporary diagnostic artifact remains in the product diff.
+No transfer workflow, patcher, generated database, WAL/SHM, credential or
+diagnostic artifact remains in the product diff.
 
 ## Test coverage
 
 This increment adds 13 tests:
 
 - four artifact contract/privacy/tamper tests;
-- two zero-network native CLI composition/replay tests;
-- six static protected-workflow boundary tests;
+- two zero-network native composition/replay tests;
+- six static workflow-security tests;
 - one direct routed root Invocation Trace test.
 
-Coverage proves:
-
-- artifact round-trip, mode, canonical identity and tamper rejection;
-- forbidden canary and exact-secret marker rejection;
-- success cannot be claimed without exact result, Trace and replay evidence;
-- fake composition uses the native lifespan and durable authorities;
-- first run performs one model request and replay performs zero external calls;
-- incomplete reconciliation remains typed and never retries the model;
-- unrelated root invocations are excluded from Trace;
-- workflow has no push/pull-request/schedule trigger;
-- secret appears only after pre-secret quality gates in the protected job;
-- exact commit/model/action/dependency pinning remains enforced;
-- ordinary CI cannot invoke the live CLI or reference its credential.
+The tests prove native authority composition, exactly one fake model call,
+zero-call replay, unchanged usage, incomplete reconciliation without retry,
+strict artifact privacy/tamper rejection, unrelated-root Trace exclusion,
+manual-only triggering, protected secret placement, action/dependency pinning and
+ordinary-CI isolation.
 
 ## Validation evidence
 
-Deterministic transfer and Core product gate:
+Deterministic product gate:
 
 ```text
 Product Head: 8ff42c2fb94c9342df59953725c96a8c04760dff
@@ -249,79 +197,71 @@ Workflow: Phase 1.9 Direct Routed Trace Transfer
 Run ID: 30776688407
 Run number: 7
 Conclusion: success
-Ruff: all checks passed
+Ruff: passed
 strict MyPy: no issues in 83 source files
 Core: 564 passed, 2 dependency warnings, 12.66s
 real provider/User API calls: zero
-live workflow dispatches by this implementation: zero
+live workflow dispatches: zero
 ```
 
-The ordinary CI generated directly from the bot-authored product commit is:
+The direct CI from the bot-authored product commit was `action_required` with no
+jobs (run `30776723861`, number `1024`). This was workflow authorization behavior,
+not a product failure.
+
+Exact owner-authored full validation:
 
 ```text
-Run ID: 30776723861
-Run number: 1024
-Conclusion: action_required
-Jobs created: zero
+Validated Head: 04d57b61bb34ef759573ca1e51388ff18fd750c9
+Workflow: CI
+Run ID: 30776817126
+Run number: 1025
+Conclusion: success
+core-quality: success
+android-quality: success
+Ruff: passed
+strict MyPy: no issues in 83 source files
+Core: 564 passed, 2 dependency warnings, 11.59s
+Android assembleDebug: passed
+Android testDebugUnitTest: passed
+Android lintDebug: passed
+Debug APK upload: passed
+real provider/User API calls: zero
+live workflow dispatches: zero
 ```
 
-This is GitHub workflow authorization behavior for the bot-authored commit, not
-a Core or Android product failure. This owner-authored Handoff commit must
-trigger full ordinary CI against the same product tree. Do not proceed to the
-next production substep unless both Core and Android jobs on that exact Head are
-green.
+Artifacts from run `30776817126`:
 
-Previous exact owner-authored validation remains:
-
-```text
-Validated Head: acf32cb1f498e2a49835f7b44e28c046a91adbbc
-CI run ID: 30774703671
-CI run number: 998
-Core: success — 551 passed
-Android: success — assembleDebug, JVM tests, lint and APK upload
-```
+- `core-quality-diagnostics` — ID `8842311487`,
+  SHA-256 `96293a45556347b5f5e7a851d4c5fd614c0f520448f0864fb4f4f6ab17668c09`
+- `core-test-report` — ID `8842311648`,
+  SHA-256 `994428ee15ee3e18dcc45cc91f511bfa5b9d8d74de560a7722076eb8f5997143`
+- `android-build-diagnostics` — ID `8842315909`,
+  SHA-256 `4cd6bd8cba96acf4c0724c646169c09404bc57ebdb638b6155050aee161ca44c`
+- `simorgh-android-debug` — ID `8842316100`,
+  SHA-256 `4352679cc866994f517e3ab8f70589f98d36b51f8d75e922e8565d56ab27b2ad`
 
 ## Security and failure semantics
 
-- Missing credentials, URL/model mismatch or preflight failure fails before
-  provider entry.
-- CLI error output is fixed and sanitized; exception text is not printed.
-- A failed run may produce only a typed failed artifact and the workflow exits
-  nonzero unless a fully passed artifact verifies.
-- Exact input SHA must equal the dispatch commit and checkout commit.
-- `AVALAI_API_KEY` is not available to the pre-secret job.
-- Workflow actions and direct dependencies are pinned.
-- Failed artifact verification or missing artifact causes workflow failure.
-- No public API endpoint or autonomous execution path was introduced.
-- Existing cancellation, uncertainty, no-retry and replay semantics are unchanged.
+- missing credentials or URL/model/preflight mismatch blocks provider entry;
+- CLI stderr is fixed and sanitized;
+- failed or missing artifact verification fails the workflow;
+- passed status cannot be asserted without exact result, Trace and replay proof;
+- input SHA must equal dispatch and checkout SHA;
+- the secret is unavailable to the pre-secret job;
+- actions and direct dependencies are pinned;
+- no endpoint or autonomous live path was introduced;
+- cancellation, uncertainty, no-retry and replay semantics are unchanged.
 
 ## Remaining Phase 1.9 work
 
-1. Add the staging ADR and complete the operator runbook for environment setup,
-   review/approval, dispatch, interpretation, incident response, credential
-   rotation and emergency disablement.
-2. Audit the exact final commit and verify the protected GitHub environment,
-   required reviewer and `AVALAI_API_KEY` environment secret are configured.
-3. Obtain explicit user approval for the exact commit, reviewed model and hard
-   maximum spend.
-4. Dispatch one approved live canary, validate its sanitized artifact, reconcile
-   exact transaction cost and prove zero-call/zero-charge replay.
-5. Complete review audit and merge PR #70.
-
-## Explicit non-goals still in force
-
-- no live dispatch without explicit user approval;
-- no live provider in ordinary CI;
-- no production/autonomous live-model enablement;
-- no public model endpoint;
-- no automatic or scheduled live test;
-- no provider/model/domain failover;
-- no streaming, multimodal, tools or batch validation;
-- no raw prompt/output/provider/User API body persistence;
-- no Android mutation;
-- no Phase 1.10 workflow;
-- no Voice, Notification, Scheduling, Channels, Delegation, MCP, Memory,
-  Personal Work Graph or self-improvement.
+1. Add the staging ADR and operator runbook.
+2. Audit protected-environment, reviewer and secret readiness without inventing
+   evidence unavailable through repository APIs.
+3. Prepare an exact live-acceptance checklist with commit, model and hard limits.
+4. Obtain explicit user approval for exact commit/model/maximum spend.
+5. Dispatch one canary, validate sanitized artifact, reconcile exact cost and
+   prove zero-call/zero-charge replay.
+6. Complete review audit and merge PR #70.
 
 ## Mandatory reads for the next execution
 
@@ -341,19 +281,14 @@ Android: success — assembleDebug, JVM tests, lint and APK upload
 - `services/core/src/simorgh_core/agents/live_provider_staging_contracts.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_artifact.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_cli.py`
-- `services/core/src/simorgh_core/agents/live_provider_staging_store.py`
-- `services/core/src/simorgh_core/agents/live_provider_staging_sqlite_store.py`
 - `services/core/src/simorgh_core/agents/live_provider_staging_trace.py`
 - `services/core/src/simorgh_core/agents/trace_child_invocations.py`
 - `services/core/src/simorgh_core/agents/trace_reconciliation.py`
 - `services/core/src/simorgh_core/agents/model_gateway.py`
 - `services/core/src/simorgh_core/providers/avalai.py`
 - `services/core/src/simorgh_core/providers/avalai_user_api.py`
-- `services/core/tests/test_live_provider_staging.py`
 - `services/core/tests/test_live_provider_staging_artifact.py`
 - `services/core/tests/test_live_provider_staging_cli.py`
-- `services/core/tests/test_live_provider_staging_reconciliation.py`
-- `services/core/tests/test_live_provider_staging_uncertainty.py`
 - `services/core/tests/test_live_provider_staging_workflow.py`
 - `services/core/tests/test_trace_child_invocations.py`
 - `.github/workflows/ci.yml`
@@ -364,29 +299,25 @@ Also inspect every PR #70 comment, review, changed file and check created after
 ## Exact continuation point
 
 First resolve the current branch Head and verify ordinary CI triggered by this
-Handoff update. If either Core or Android is not green, inspect and fix only that
-exact failure before changing production code.
+final Handoff update. If either Core or Android is not green, fix only that exact
+failure before changing production code.
 
-Once exact-head CI is green, perform one narrow Phase 1.9 documentation and
-operational-readiness increment without dispatching the live workflow:
+Then perform one narrow Phase 1.9 documentation and operational-readiness
+increment without dispatching the live workflow:
 
-- add an ADR for the manually approved one-call AvalAI boundary, protected
-  environment, no-retry uncertainty semantics, exact transaction reconciliation
-  and sanitized artifact authority;
-- add an operator runbook covering protected environment creation, optional or
-  required reviewer setup, environment-secret creation, exact commit/model/cost
-  review, manual dispatch, artifact verification, result interpretation,
-  suspected duplicate charge, unknown Invocation, cost mismatch, credential
-  rotation and emergency workflow disablement;
-- add static tests that keep the ADR/runbook and workflow controls synchronized;
-- inspect whether the repository connector can prove environment/reviewer/secret
-  configuration; record unprovable operator prerequisites without inventing
-  evidence;
-- prepare a precise live-acceptance checklist containing the exact commit,
-  reviewed model and hard ceilings.
+- add an ADR for manual approval, protected environment, one-call/no-retry
+  semantics, exact reconciliation and sanitized artifact authority;
+- add an operator runbook covering environment/reviewer/secret setup, exact
+  commit/model/cost review, dispatch, verification, result interpretation,
+  duplicate-charge/unknown-invocation/cost-mismatch response, credential rotation
+  and emergency disablement;
+- add static tests keeping ADR/runbook and workflow controls synchronized;
+- record which environment/reviewer/secret prerequisites cannot be proven from
+  available repository APIs;
+- prepare a precise live-acceptance checklist with exact commit, model and hard
+  ceilings.
 
 Do not dispatch `.github/workflows/live-provider-staging.yml`, use a credential
-or make any real AvalAI/User API call without a separate explicit user approval
-for the exact commit, model and maximum spend. Update this Handoff with exact
-product SHA and full Core/Android CI evidence when that documentation/readiness
-increment is complete.
+or make a real AvalAI/User API call without separate explicit user approval for
+the exact commit, model and maximum spend. Update this Handoff with exact product
+SHA and full Core/Android CI evidence when that increment is complete.
